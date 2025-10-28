@@ -1,16 +1,7 @@
-# config.py
 
-# --- Pyrogram Credentials ---
-API_ID = 1234567 # Replace with your actual API ID
-API_HASH = "YOUR_API_HASH" # Replace with your actual API Hash
-TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN" # Replace with your bot token
-
-# --- MongoDB Credentials ---
-MONGO_URI = "YOUR_MONGODB_CONNECTION_URI"
-
-# Database and Collection names
-MONGO_DB_NAME = "series_data"
-SERIES_COLLECTION = "user_series" 
-
-# Conversation states (for Pyrogram's Filters/Data storage)
-# Pyrogram typically manages state via conversation, but here we'll use a simple flag for context
+API_ID = 20860011 # Replace with your actual API ID
+API_HASH = "8523438cd39e124dfe7038a1eb5b5873" # Replace with your actual API Hash
+TELEGRAM_BOT_TOKEN = "7661197159:AAHwppy1JjmEBXucY1gxdbfGKVpuqjl_gFg" # Replace with your bot token
+MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+MONGO_DB_NAME = "Series-Bot"
+SERIES_COLLECTION = "User-Series" 
