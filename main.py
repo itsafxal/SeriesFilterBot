@@ -2,6 +2,7 @@ import os
 import re
 import asyncio
 from datetime import datetime, timedelta
+import time
 
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -423,40 +424,32 @@ async def send_file_cb(client: Client, query):
         print(f"Error sending file to {query.from_user.id}: {e}")
         await query.answer("Failed to send file. Ensure I can send you messages in your private chat.", show_alert=True)
 
-import asyncio
-import re
-import time
-# ... other imports ...
-
-# --- Startup Logic (Final Corrected Block) ---
+# --- Startup Logic (Final Working Block) ---
 
 if __name__ == "__main__":
     print("Bot is starting...")
     
-    # 1. Define the asynchronous startup sequence to run before blocking
-    async def initial_setup():
-        # Await bot.start() to ensure connection is established
-        await bot.start()
-        # Send a notification to the admin(s)
-        await send_startup_message(bot)
-        
-    try:
-        # 2. Run the asynchronous setup task
-        asyncio.get_event_loop().run_until_complete(initial_setup())
+    # Define the asynchronous function that runs ONCE the client is connected.
+    async def on_start_up(client):
+        # The client object passed here is already running.
         print("Initial setup complete. Running bot indefinitely...")
+        await send_startup_message(client)
+
+    try:
+        # Use bot.run() with the on_start_up function as the 'before_start' or directly run
+        # Pyrogram's run() method handles the event loop and blocking correctly.
+        # We define a function to call once started and pass it via the 'start' parameter if available,
+        # but the simplest way is to let the run() method handle everything.
         
-        # 3. Use the built-in blocking run() method for indefinite running.
-        # This is the most compatible way to keep the client running.
-        bot.run()
-        
+        # Pyrogram v2+ simple execution:
+        bot.run(on_start_up) 
+
     except Exception as e:
-        # Crucial: Handle FloodWait or other critical exceptions during startup/running
+        # Crucial: Handle FloodWait or other critical exceptions
         error_str = str(e)
         if 'FLOOD_WAIT' in error_str:
-             # Extract and print the required wait time (if possible)
              wait_time_match = re.search(r'wait of (\d+) seconds', error_str)
              wait = int(wait_time_match.group(1)) if wait_time_match else 0
-             print(f"FATAL ERROR: FloodWait encountered. You must wait {wait} seconds before trying again.")
+             print(f"FATAL ERROR: FloodWait encountered. Please wait {wait} seconds before trying again.")
         else:
-            # Handle other fatal errors
             print(f"Fatal error during bot execution: {e}")
