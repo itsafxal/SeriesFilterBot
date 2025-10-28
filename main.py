@@ -9,7 +9,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from pyrogram.errors import MessageNotModified, FloodWait
 
 # Pyrogram v2+ requires motor[asyncio]
-from motor.motor_asyncio import AsyncIOMotorClient 
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # Load configuration from config.py
 try:
@@ -21,14 +21,20 @@ except ImportError:
 # --- Configuration & Utility Fixes ---
 
 # Ensure ADMINS is a list of integers
-if isinstance(ADMINS, str):
-    try:
-        ADMINS = [int(i.strip()) for i in ADMINS.split(',') if i.strip().isdigit()]
-    except ValueError:
-        print("ADMINS in config must contain only user IDs (numbers).")
-        ADMINS = []
-elif not isinstance(ADMINS, (list, tuple, set)):
-    ADMINS = []
+def parse_admins(admins_input):
+    if isinstance(admins_input, str):
+        try:
+            return [int(i.strip()) for i in admins_input.split(',') if i.strip().isdigit()]
+        except ValueError:
+            print("ADMINS in config must contain only user IDs (numbers).")
+            return []
+    elif isinstance(admins_input, (list, tuple, set)):
+        return [int(i) for i in admins_input if isinstance(i, int)]
+    return []
+
+ADMINS = parse_admins(ADMINS)
+if not ADMINS:
+    print("Warning: ADMINS list is empty or invalid. Indexing command will not work.")
 
 # Constants
 BATCH_SIZE = 500
@@ -44,12 +50,25 @@ class MongoDBCore:
     """Handles all MongoDB connections and operations for file indexing."""
 
     def __init__(self, uri, db_name):
-        self._client = AsyncIOMotorClient(uri)
+        # Increased timeout to handle potential slow connections
+        self._client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=5000) 
         self.db = self._client[db_name]
         self.col = self.db.series_files
-
+        self.is_connected = False
+        
+    async def connect(self):
+        """Attempts to verify database connection."""
+        try:
+            await self._client.admin.command('ping')
+            self.is_connected = True
+            print("MongoDB connection successful.")
+        except Exception as e:
+            print(f"MongoDB connection failed: {e}")
+            self.is_connected = False
+            
     async def save_file(self, file_data: dict):
         """Saves a single file document to the database."""
+        if not self.is_connected: return
         # Ensure indexes exist for fast search/grouping
         await self.col.create_index([
             ("title_search", 1), 
@@ -57,7 +76,6 @@ class MongoDBCore:
             ("episode", 1)
         ], background=True)
         try:
-            # Use update_one with upsert=True to prevent duplicate key errors 
             await self.col.update_one(
                 {"file_id": file_data["file_id"]},
                 {"$set": file_data},
@@ -68,6 +86,7 @@ class MongoDBCore:
 
     async def get_distinct_series_titles(self, query: str):
         """Finds distinct series titles that match the search query."""
+        if not self.is_connected: return []
         sanitized_query = re.escape(query.strip())
         regex = re.compile(sanitized_query, re.IGNORECASE)
         pipeline = [
@@ -80,6 +99,7 @@ class MongoDBCore:
 
     async def get_series_seasons(self, series_title: str):
         """Returns distinct season numbers for a given series title."""
+        if not self.is_connected: return []
         pipeline = [
             {"$match": {"title_search": series_title}},
             {"$group": {"_id": "$season"}},
@@ -90,6 +110,7 @@ class MongoDBCore:
 
     async def get_season_episodes(self, series_title: str, season: int, offset: int = 0):
         """Returns episodes for a specific series and season with pagination."""
+        if not self.is_connected: return [], None
         query = {"title_search": series_title, "season": season}
         total_count = await self.col.count_documents(query)
         episodes = await self.col.find(query).sort("episode", 1).skip(offset).limit(MAX_BUTTONS_PER_PAGE).to_list(length=None)
@@ -99,10 +120,12 @@ class MongoDBCore:
 
     async def get_file_by_id(self, file_id: str):
         """Retrieves file details by its file_id."""
+        if not self.is_connected: return None
         return await self.col.find_one({"file_id": file_id})
 
     async def delete_all(self):
         """Deletes all documents in the collection (for re-indexing)."""
+        if not self.is_connected: return
         await self.col.delete_many({})
 
 db_handler = MongoDBCore(MONGO_URI, DATABASE_NAME)
@@ -152,7 +175,9 @@ async def send_startup_message(client: Client):
     
     for admin_id in ADMINS:
         try:
+            # Added a slight delay between messages to prevent immediate FloodWait
             await client.send_message(admin_id, message)
+            await asyncio.sleep(0.5) 
         except Exception as e:
             print(f"Failed to send startup message to admin {admin_id}: {e}")
 
@@ -174,9 +199,10 @@ bot = Client(
     bot_token=BOT_TOKEN
 )
 
-@bot.on_message(filters.command("start"))
+@bot.on_message(filters.command("start") & (filters.private | filters.group))
 async def start_command(client, message):
     """Handles the /start command."""
+    print(f"Handling /start command from {message.from_user.id}")
     await message.reply_text(
         "👋 **Welcome!** I am a Series Auto-Filter Bot.\n\n"
         "Just send me the name of the TV Series you are looking for, "
@@ -189,7 +215,9 @@ async def index_command(client: Client, message: Message):
     """
     Admin command to index ONLY series video files from a specified channel.
     """
-    
+    if not db_handler.is_connected:
+        return await message.reply("❌ Database is not connected. Cannot index.")
+        
     # 1. Check if the message is a reply to a forwarded message
     if not message.reply_to_message or not message.reply_to_message.forward_from_chat:
         return await message.reply(
@@ -264,12 +292,12 @@ async def index_command(client: Client, message: Message):
     await status_msg.edit_text(f"✅ **Indexing complete!** Total series episodes indexed: **{count}**.")
 
 
-# --- FIX: Removed the problematic ~filters.edited and added an internal check ---
-@bot.on_message(filters.text & (filters.private | filters.group) & filters.incoming)
+# --- Main Auto-Filter Handler ---
+@bot.on_message(filters.text & (filters.private | filters.group))
 async def auto_filter(client: Client, message: Message):
     """Initial search handler."""
     
-    # FIX: Ignore edited messages by checking the message object itself
+    # FIX: Ignore edited messages
     if message.edit_date:
         return
 
@@ -279,6 +307,9 @@ async def auto_filter(client: Client, message: Message):
     if len(query) < 3 or len(query) > 150:
         return 
     
+    if not db_handler.is_connected:
+        return await message.reply("❌ Database is currently unavailable. Please try again later.")
+
     # Perform search
     titles = await db_handler.get_distinct_series_titles(query)
 
@@ -302,17 +333,24 @@ async def auto_filter(client: Client, message: Message):
         "<blockquote>⚠️ ᴀꜰᴛᴇʀ 15 ᴍɪɴᴜᴛᴇꜱ ᴛʜɪꜱ ᴍᴇꜱꜱᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟᴇᴛᴇᴅ 🗑️</blockquote>"
     )
     
-    sent_message = await message.reply_text(
-        caption,
-        reply_markup=InlineKeyboardMarkup(buttons),
-        quote=True
-    )
-    asyncio.create_task(add_auto_delete_message(sent_message.id, sent_message.chat.id, AUTO_DEL_TIME))
+    try:
+        sent_message = await message.reply_text(
+            caption,
+            reply_markup=InlineKeyboardMarkup(buttons),
+            quote=True
+        )
+        asyncio.create_task(add_auto_delete_message(sent_message.id, sent_message.chat.id, AUTO_DEL_TIME))
+    except FloodWait as e:
+        print(f"Hit FloodWait: sleeping for {e.value} seconds.")
+        await asyncio.sleep(e.value)
+    except Exception as e:
+        print(f"Error sending filter message: {e}")
 
 
 @bot.on_callback_query(filters.regex(r"^series#"))
 async def select_series_cb(client, query):
     """Handles selection of a Series Title, and presents Seasons."""
+    if not db_handler.is_connected: return await query.answer("DB unavailable.", show_alert=True)
     series_search_title = query.data.split("#")[1]
     
     seasons = await db_handler.get_series_seasons(series_search_title)
@@ -349,6 +387,7 @@ async def select_series_cb(client, query):
 @bot.on_callback_query(filters.regex(r"^season#"))
 async def select_season_cb(client, query):
     """Handles selection of a Season, and presents Episodes with pagination."""
+    if not db_handler.is_connected: return await query.answer("DB unavailable.", show_alert=True)
     try:
         _, series_search_title, season_str, offset_str = query.data.split("#")
         season = int(season_str)
@@ -409,6 +448,7 @@ async def back_to_series_cb(client, query):
 @bot.on_callback_query(filters.regex(r"^file#"))
 async def send_file_cb(client: Client, query):
     """Handles selection of an Episode, and sends the file."""
+    if not db_handler.is_connected: return await query.answer("DB unavailable.", show_alert=True)
     file_id = query.data.split("#")[1]
     
     file_data = await db_handler.get_file_by_id(file_id)
@@ -425,7 +465,8 @@ async def send_file_cb(client: Client, query):
         await query.answer("File sent to your DMs!", show_alert=True)
     except Exception as e:
         print(f"Error sending file to {query.from_user.id}: {e}")
-        await query.answer("Failed to send file. Please start a chat with the bot first.", show_alert=True)
+        # This error often occurs if the bot hasn't been started in a private chat by the user
+        await query.answer("Failed to send file. Please start a chat with the bot first (/start).", show_alert=True)
 
 # --- Startup Logic (Final Working Block) ---
 
@@ -435,19 +476,20 @@ if __name__ == "__main__":
     # Define the asynchronous function that runs ONCE the client is connected.
     async def on_start_up():
         print("Initial setup complete. Running bot indefinitely...")
-        # Send the notification after the client is confirmed running
+        # 1. Connect to MongoDB
+        await db_handler.connect()
+        # 2. Send the notification after the client is confirmed running
         await send_startup_message(bot)
 
     try:
-        # Use bot.run() with the coroutine call (on_start_up())
-        # This correctly starts the client and runs the async function before blocking.
+        # bot.run() runs the client and then executes the startup coroutine.
         bot.run(on_start_up()) 
 
     except Exception as e:
         error_str = str(e)
         if 'FLOOD_WAIT' in error_str:
-             wait_time_match = re.search(r'wait of (\d+) seconds', error_str)
-             wait = int(wait_time_match.group(1)) if wait_time_match else 0
-             print(f"FATAL ERROR: FloodWait encountered. You must wait {wait} seconds before trying again.")
+            wait_time_match = re.search(r'wait of (\d+) seconds', error_str)
+            wait = int(wait_time_match.group(1)) if wait_time_match else 0
+            print(f"FATAL ERROR: FloodWait encountered. You must wait {wait} seconds before trying again.")
         else:
             print(f"Fatal error during bot execution: {e}")
