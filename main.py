@@ -533,12 +533,12 @@ async def send_file_cb(client: Client, query):
         else:
              await query.answer("An unexpected error occurred while sending the file.", show_alert=True)
 
-# --- Startup Logic (The corrected and final block) ---
+# --- Startup Logic (New and Corrected Block) ---
 
-async def startup_tasks(client):
+async def run_startup_tasks(client):
     """
-    Function to run once the client connection is established.
-    This replaces the problematic @bot.on_ready() decorator.
+    Function to run the database connection and admin notification 
+    AFTER the client has successfully started.
     """
     print("Initial setup starting...")
     # 1. Connect to the Database
@@ -547,22 +547,38 @@ async def startup_tasks(client):
     # 2. Send the Admin Notification
     await send_startup_message(client)
     
-    print("Initial setup complete. Bot is running indefinitely...")
-
+    print("Initial setup complete. Bot is listening for updates...")
 
 if __name__ == "__main__":
     print("Bot is starting...")
     try:
-        # Start the client and run the startup_tasks before going idle
-        bot.run(startup_tasks(bot))
+        # 1. Start the client connection
+        bot.start() 
+        print("Pyrogram Client started. Running initial tasks...")
         
-        # NOTE: If bot.run() (Pyrogram V1) doesn't work, 
-        # use the explicit start/stop/idle pattern (V2+ recommendation):
-        # 
-        # bot.start()
-        # bot.loop.run_until_complete(startup_tasks(bot))
-        # idle()
-        # bot.stop() 
+        # 2. Explicitly run the async startup function in the event loop
+        # We must use bot.loop.run_until_complete() here if bot.start() 
+        # is called outside of an async block, but Pyrogram handles this 
+        # gracefully by just awaiting the function if it's run via run()
+        # For the start/idle pattern, we can simply await it since start()
+        # doesn't block the execution flow of the main script.
+        # However, to be certain it runs, we'll use a direct call if start()
+        # is used, or simply rely on the loop's execution.
+        
+        # The clean way with Pyrogram V2+ is to use Client.run() with a callback
+        # if you want to avoid 'idle()'. Let's stick to the V2+ explicit pattern.
+        
+        # We need to run the task using the client's event loop
+        bot.loop.run_until_complete(run_startup_tasks(bot))
+
+        # 3. Enter the Pyrogram idle state to keep the bot running
+        print("Entering idle state...")
+        idle()
 
     except Exception as e:
         print(f"FATAL: Bot failed to run: {e}")
+    finally:
+        # 4. Ensure the client connection is closed when stopping
+        if bot and bot.is_running:
+            bot.stop()
+            print("Bot gracefully stopped.")
