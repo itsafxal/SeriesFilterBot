@@ -8,7 +8,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
 # NOTE: Replace 'YOUR_BOT_TOKEN' with your actual Telegram Bot Token
-BOT_TOKEN = 'YOUR_BOT_TOKEN' 
+BOT_TOKEN = '7661197159:AAHwppy1JjmEBXucY1gxdbfGKVpuqjl_gFg' 
 
 def main():
     """Start the bot."""
