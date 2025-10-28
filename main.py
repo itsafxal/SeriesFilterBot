@@ -424,25 +424,21 @@ async def send_file_cb(client: Client, query):
         print(f"Error sending file to {query.from_user.id}: {e}")
         await query.answer("Failed to send file. Ensure I can send you messages in your private chat.", show_alert=True)
 
-# --- Startup Logic (Final Working Block) ---
-
 if __name__ == "__main__":
     print("Bot is starting...")
     
-    # Define the asynchronous function that runs ONCE the client is connected.
-    async def on_start_up(client):
-        # The client object passed here is already running.
+    # 1. Define the asynchronous function that runs ONCE the client is connected.
+    #    It must be defined to take NO arguments if using the simple bot.run() call.
+    async def on_start_up():
+        # NOTE: The client object is accessed via the 'bot' global variable here
         print("Initial setup complete. Running bot indefinitely...")
-        await send_startup_message(client)
+        await send_startup_message(bot)
 
     try:
-        # Use bot.run() with the on_start_up function as the 'before_start' or directly run
-        # Pyrogram's run() method handles the event loop and blocking correctly.
-        # We define a function to call once started and pass it via the 'start' parameter if available,
-        # but the simplest way is to let the run() method handle everything.
-        
-        # Pyrogram v2+ simple execution:
-        bot.run(on_start_up) 
+        # 2. Use the built-in blocking run() method.
+        #    It takes a coroutine (the async function) and executes it *before* the main event loop starts.
+        #    NOTE: This method starts the client, runs the coroutine, then blocks indefinitely.
+        bot.run(on_start_up()) 
 
     except Exception as e:
         # Crucial: Handle FloodWait or other critical exceptions
