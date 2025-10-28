@@ -26,9 +26,11 @@ def main():
     # Command Handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("addfile", lambda update, context: addfile_command(update, context, db_collection, ADMIN_USER_ID)))
 
     # Message Handler (for filtering - this is where the core logic will go)
     # The handler will use a context-aware callback to pass the DB connection.
+    
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, lambda update, context: filter_series(update, context, db)
     ))
