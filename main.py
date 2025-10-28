@@ -1,13 +1,15 @@
 import os
 import re
 import asyncio
-from datetime import datetime, timedelta
 import time
+from datetime import datetime, timedelta
 
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from pyrogram.errors import MessageNotModified
-from motor.motor_asyncio import AsyncIOMotorClient
+
+# Pyrogram v2+ requires motor[asyncio]
+from motor.motor_asyncio import AsyncIOMotorClient 
 
 # Load configuration from config.py
 try:
@@ -18,10 +20,9 @@ except ImportError:
 
 # --- Configuration & Utility Fixes ---
 
-# Ensure ADMINS is a list of integers, converting it if it's a single string.
+# Ensure ADMINS is a list of integers
 if isinstance(ADMINS, str):
     try:
-        # **FIX:** Convert comma-separated string to a list of integers
         ADMINS = [int(i.strip()) for i in ADMINS.split(',') if i.strip().isdigit()]
     except ValueError:
         print("ADMINS in config must contain only user IDs (numbers).")
@@ -33,9 +34,9 @@ elif not isinstance(ADMINS, (list, tuple, set)):
 BATCH_SIZE = 500
 MAX_BUTTONS_PER_PAGE = 8
 AUTO_DEL_TIME = timedelta(minutes=15)
-MIN_FILE_SIZE_MB = 50 # New minimum size filter in MB
-MIN_FILE_SIZE_BYTES = MIN_FILE_SIZE_MB * 1024 * 1024 # Convert to bytes
-SEARCH_CACHE = {} # Simple in-memory cache
+MIN_FILE_SIZE_MB = 50 
+MIN_FILE_SIZE_BYTES = MIN_FILE_SIZE_MB * 1024 * 1024 
+SEARCH_CACHE = {} 
 
 # --- Database Handler Class ---
 
@@ -43,6 +44,7 @@ class MongoDBCore:
     """Handles all MongoDB connections and operations for file indexing."""
 
     def __init__(self, uri, db_name):
+        # We don't connect immediately; the connection happens when the first operation is requested
         self._client = AsyncIOMotorClient(uri)
         self.db = self._client[db_name]
         self.col = self.db.series_files
@@ -56,10 +58,15 @@ class MongoDBCore:
             ("episode", 1)
         ], background=True)
         try:
-            await self.col.insert_one(file_data)
+            # Use update_one with upsert=True to prevent duplicate key errors 
+            # if a message is somehow indexed twice, checking file_id
+            await self.col.update_one(
+                {"file_id": file_data["file_id"]},
+                {"$set": file_data},
+                upsert=True
+            )
         except Exception as e:
-            if "duplicate key" not in str(e):
-                print(f"Error saving file: {e}")
+            print(f"Error saving file: {e}")
 
     async def get_distinct_series_titles(self, query: str):
         """Finds distinct series titles that match the search query."""
@@ -132,32 +139,13 @@ def parse_series_name(file_name: str):
         title_raw = re.sub(r'(\d{3,4}p|x26[45]|HEVC|BluRay|WEB-DL|AMZN|NF|HDTV|\W+)\b', ' ', title_raw, flags=re.IGNORECASE).strip()
         title_search = re.sub(r'\W+', ' ', title_raw).strip().lower()
         
-        # Final sanity check on title
+        # Final sanity check on title length
         if len(title_search) < 2:
             return None, None, None, None
             
         return title_raw, title_search, season, episode
 
     return None, None, None, None
-
-async def add_auto_delete_message(message_id, chat_id, delay: timedelta):
-    """Simulates auto-delete by scheduling a task."""
-    await asyncio.sleep(delay.total_seconds())
-    try:
-        await bot.delete_messages(chat_id, message_id)
-    except Exception as e:
-        # Ignore errors if the message is already deleted
-        if 'MESSAGE_NOT_FOUND' not in str(e):
-             print(f"Failed to delete message: {e}")
-
-# --- Pyrogram Client and Handlers ---
-
-bot = Client(
-    "series_autofilter_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
 
 async def send_startup_message(client: Client):
     """Sends a notification to the admin(s) upon bot startup."""
@@ -168,9 +156,24 @@ async def send_startup_message(client: Client):
         try:
             await client.send_message(admin_id, message)
         except Exception as e:
-            # This handles 'user not found' or 'bot blocked' cases
             print(f"Failed to send startup message to admin {admin_id}: {e}")
 
+async def add_auto_delete_message(message_id, chat_id, delay: timedelta):
+    """Schedules message deletion."""
+    await asyncio.sleep(delay.total_seconds())
+    try:
+        await bot.delete_messages(chat_id, message_id)
+    except Exception:
+        pass # Ignore errors if the message is already deleted
+
+# --- Pyrogram Client and Handlers ---
+
+bot = Client(
+    "series_autofilter_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
 
 @bot.on_message(filters.command("start"))
 async def start_command(client, message):
@@ -262,7 +265,7 @@ async def index_command(client: Client, message: Message):
     await status_msg.edit_text(f"✅ **Indexing complete!** Total series episodes indexed: **{count}**.")
 
 
-@bot.on_message(filters.text & filters.private & filters.incoming & filters.reply | filters.text & filters.group & filters.incoming)
+@bot.on_message(filters.text & (filters.private | (filters.group & filters.incoming)) & ~filters.edited)
 async def auto_filter(client: Client, message: Message):
     """Initial search handler."""
     query = message.text.strip()
@@ -271,24 +274,22 @@ async def auto_filter(client: Client, message: Message):
     if len(query) < 3 or len(query) > 150:
         return 
     
+    # Perform search
     titles = await db_handler.get_distinct_series_titles(query)
 
     if not titles:
         sent = await message.reply(
-            f"Hᴇʏ {cyber} 💫,\nNᴏ Sᴇᴀʀᴄʜ Rᴇꜱᴜʟᴛ Fᴏᴜɴᴅ Fᴏʀ Yᴏᴜʀ Rᴇᴏ̨ᴜᴇsᴛᴇᴅ Sᴇʀɪᴇꜱ.\n\n"
-            "➪ Sᴇɴᴅ Mᴇ A Cᴏʀʀᴇᴄᴛ Sᴘᴇʟʟɪɴɢ Oʀ Pʟᴇᴀꜱᴇ Cʜᴇᴄᴋ Fᴏʀ Thᴇ Sᴇʀɪᴇꜱ TɪᴛLᴇ.✨",
+            f"Hᴇʏ {cyber} 💫,\nNᴏ Sᴇᴀʀᴄʜ Rᴇꜱᴜʟᴛ Fᴏᴜɴᴅ Fᴏʀ Yᴏᴜʀ Rᴇᴏ̨ᴜᴇsᴛᴇᴅ Sᴇʀɪᴇꜱ.",
             quote=True
         )
         asyncio.create_task(add_auto_delete_message(sent.id, sent.chat.id, AUTO_DEL_TIME))
         return
 
+    # Create selection buttons
     buttons = [[InlineKeyboardButton(
         title['display_title'],
         callback_data=f"series#{title['search_title']}"
     )] for title in titles]
-
-    search_key = f"{message.from_user.id}_{message.id}"
-    SEARCH_CACHE[search_key] = query
 
     caption = (
         f"**Hᴇʏ {cyber}! Pʟᴇᴀꜱᴇ Sᴇʟᴇᴄᴛ A Sᴇʀɪᴇꜱ Bᴇʟᴏᴡ:**\n\n"
@@ -335,7 +336,8 @@ async def select_series_cb(client, query):
     except MessageNotModified:
         pass 
     except Exception as e:
-        return await query.answer("An error occurred. The original search message might be deleted.", show_alert=True)
+        # Fallback for when the message can no longer be edited (e.g., auto-deleted)
+        return await query.answer("Cannot edit message. Please search again.", show_alert=True)
     
     await query.answer()
 
@@ -375,7 +377,7 @@ async def select_season_cb(client, query):
     if nav_buttons:
         buttons.append(nav_buttons)
         
-    # Back to Series button (FIXED: handler added)
+    # Back to Series button
     buttons.append([InlineKeyboardButton("⬅️ Back to Seasons", callback_data=f"back_series#{series_search_title}")])
 
     try:
@@ -388,15 +390,14 @@ async def select_season_cb(client, query):
         )
     except MessageNotModified:
         pass
-    except Exception as e:
-        return await query.answer("An error occurred. The original message might be deleted.", show_alert=True)
+    except Exception:
+        return await query.answer("Cannot edit message. Please search again.", show_alert=True)
         
     await query.answer()
 
-# FIX: Added handler for the 'Back to Seasons' button
 @bot.on_callback_query(filters.regex(r"^back_series#"))
 async def back_to_series_cb(client, query):
-    """Handles the 'Back to Seasons' button click by re-running select_series_cb logic."""
+    """Handles the 'Back to Seasons' button click."""
     # We only need the series search title, the rest is handled by select_series_cb
     query.data = f"series#{query.data.split('#')[1]}"
     await select_series_cb(client, query)
@@ -410,10 +411,10 @@ async def send_file_cb(client: Client, query):
     file_data = await db_handler.get_file_by_id(file_id)
 
     if not file_data:
-        return await query.answer("File not found in database!", show_alert=True)
+        return await query.answer("File not found in database! The file may have been removed.", show_alert=True)
         
     try:
-        # Send the file using its file_id
+        # Send the file using its file_id to the user's private chat
         await client.send_document(
             chat_id=query.from_user.id,
             document=file_data['file_id'],
@@ -422,30 +423,32 @@ async def send_file_cb(client: Client, query):
         await query.answer("File sent to your DMs!", show_alert=True)
     except Exception as e:
         print(f"Error sending file to {query.from_user.id}: {e}")
-        await query.answer("Failed to send file. Ensure I can send you messages in your private chat.", show_alert=True)
+        # The bot must be able to send messages to the user in their private chat
+        await query.answer("Failed to send file. Please start a chat with the bot first.", show_alert=True)
+
+# --- Startup Logic (Final Working Block) ---
 
 if __name__ == "__main__":
     print("Bot is starting...")
     
-    # 1. Define the asynchronous function that runs ONCE the client is connected.
-    #    It must be defined to take NO arguments if using the simple bot.run() call.
+    # Define the asynchronous function that runs ONCE the client is connected.
+    # It must be defined without the 'client' argument if used with bot.run(coroutine_call)
     async def on_start_up():
-        # NOTE: The client object is accessed via the 'bot' global variable here
         print("Initial setup complete. Running bot indefinitely...")
         await send_startup_message(bot)
 
     try:
-        # 2. Use the built-in blocking run() method.
-        #    It takes a coroutine (the async function) and executes it *before* the main event loop starts.
-        #    NOTE: This method starts the client, runs the coroutine, then blocks indefinitely.
+        # Use bot.run() with the coroutine call. This correctly handles:
+        # 1. Starting the client (fixing 'already connected').
+        # 2. Running the on_start_up function.
+        # 3. Blocking the script indefinitely (fixing 'idle' error).
         bot.run(on_start_up()) 
 
     except Exception as e:
-        # Crucial: Handle FloodWait or other critical exceptions
         error_str = str(e)
         if 'FLOOD_WAIT' in error_str:
              wait_time_match = re.search(r'wait of (\d+) seconds', error_str)
              wait = int(wait_time_match.group(1)) if wait_time_match else 0
-             print(f"FATAL ERROR: FloodWait encountered. Please wait {wait} seconds before trying again.")
+             print(f"FATAL ERROR: FloodWait encountered. You must wait {wait} seconds before trying again.")
         else:
             print(f"Fatal error during bot execution: {e}")
