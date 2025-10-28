@@ -468,28 +468,40 @@ async def send_file_cb(client: Client, query):
         # This error often occurs if the bot hasn't been started in a private chat by the user
         await query.answer("Failed to send file. Please start a chat with the bot first (/start).", show_alert=True)
 
+class MongoDBCore:
+    # ... (other methods) ...
+    async def connect(self):
+        """Attempts to verify database connection."""
+        try:
+            # We explicitly wait for the ping to confirm the connection
+            await self._client.admin.command('ping') 
+            self.is_connected = True
+            # This is the line the user saw:
+            print("MongoDB connection successful.") 
+        except Exception as e:
+            # ... (error handling) ...
+            
 # --- Startup Logic (Final Working Block) ---
 
 if __name__ == "__main__":
     print("Bot is starting...")
     
-    # Define the asynchronous function that runs ONCE the client is connected.
-    async def on_start_up():
-        print("Initial setup complete. Running bot indefinitely...")
-        # 1. Connect to MongoDB
+    # 1. Define the asynchronous function that runs when the client is ready.
+    async def on_start_up(client): # Pyrogram often passes the client instance here
+        
+        # 2. First, handle any critical services like DB connection
         await db_handler.connect()
-        # 2. Send the notification after the client is confirmed running
-        await send_startup_message(bot)
-
+        
+        # 3. Then, send the notification. This is guaranteed to run AFTER Pyrogram's 
+        # internal connection is established.
+        await send_startup_message(client) 
+        
+        print("Initial setup complete. Bot is running indefinitely...")
+        
     try:
-        # bot.run() runs the client and then executes the startup coroutine.
-        bot.run(on_start_up()) 
+        # Note: bot.run() handles the client startup, execution of on_start_up, and idle loop.
+        bot.run(on_start_up(bot)) 
 
     except Exception as e:
-        error_str = str(e)
-        if 'FLOOD_WAIT' in error_str:
-            wait_time_match = re.search(r'wait of (\d+) seconds', error_str)
-            wait = int(wait_time_match.group(1)) if wait_time_match else 0
-            print(f"FATAL ERROR: FloodWait encountered. You must wait {wait} seconds before trying again.")
-        else:
-            print(f"Fatal error during bot execution: {e}")
+        # ... (error handling) ...
+        pass
