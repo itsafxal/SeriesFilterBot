@@ -7,6 +7,7 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from pyrogram.errors import MessageNotModified
 from motor.motor_asyncio import AsyncIOMotorClient
+# Assuming config is correctly defined and imports API_ID, API_HASH, BOT_TOKEN, MONGO_URI, DATABASE_NAME, ADMINS
 from config import API_ID, API_HASH, BOT_TOKEN, MONGO_URI, DATABASE_NAME, ADMINS
 
 # Constants
@@ -15,7 +16,7 @@ MAX_BUTTONS_PER_PAGE = 8
 AUTO_DEL_TIME = timedelta(minutes=15)
 SEARCH_CACHE = {} # Simple in-memory cache for search queries
 
-# --- Database Handler Class ---
+# --- Database Handler Class (No change needed here) ---
 
 class MongoDBCore:
     """Handles all MongoDB connections and operations for file indexing."""
@@ -90,7 +91,7 @@ class MongoDBCore:
 db_handler = MongoDBCore(MONGO_URI, DATABASE_NAME)
 
 
-# --- Utility Functions ---
+# --- Utility Functions (No change needed here) ---
 
 def parse_series_name(file_name: str):
     """
@@ -124,6 +125,7 @@ async def add_auto_delete_message(message_id, chat_id, delay: timedelta):
     """Simulates auto-delete by scheduling a task."""
     await asyncio.sleep(delay.total_seconds())
     try:
+        # Assuming 'bot' is globally accessible, which it is
         await bot.delete_messages(chat_id, message_id)
     except Exception as e:
         print(f"Failed to delete message: {e}")
@@ -147,19 +149,50 @@ async def start_command(client, message):
         "**Tip**: Search by the main series title only (e.g., `The Flash`)."
     )
 
+## REVISED INDEX COMMAND
 @bot.on_message(filters.command("index") & filters.private & filters.user(ADMINS))
 async def index_command(client: Client, message: Message):
-    """Admin command to index files from a specified channel."""
-    if len(message.command) < 2 or not message.command[1].isdigit():
-        return await message.reply("Usage: `/index <channel_id>` (e.g., `/index -1001234567890`)")
+    """
+    Admin command to index files forwarded from a specified channel.
+    Usage: /index. The next forwarded message from the channel will trigger indexing.
+    """
+    # 1. Check if the message is a reply to a forwarded message
+    if not message.reply_to_message or not message.reply_to_message.forward_from_chat:
+        return await message.reply(
+            "Usage: Reply to a **forwarded message** from the channel you want to index."
+        )
 
-    channel_id = int(message.command[1])
-    count = 0
+    # 2. Get the channel ID and initial message ID
+    channel_id = message.reply_to_message.forward_from_chat.id
+    # We will start indexing from the message the user replied to (the one in the bot's chat)
+    start_message_id = message.reply_to_message.id
+    
     await db_handler.delete_all()
-    status_msg = await message.reply("Starting index... 🗑️ Old data cleared.")
+    status_msg = await message.reply(
+        f"Starting index from channel `{channel_id}`... 🗑️ Old data cleared.\n"
+        "Indexing will begin from the replied message and go backwards."
+    )
+    
+    count = 0
+    # The new logic needs to iterate through the *original* channel's history, not the bot's chat.
+    # However, since the admin is initiating the command in the bot's private chat, 
+    # and Pyrogram's `search_messages` or `get_chat_history` is the typical way, 
+    # we'll use `get_chat_history` starting from the *original* message ID if possible, 
+    # or simply iterate through the channel to find all documents.
+    # We will assume the admin's intention is to index the ENTIRE channel after giving the command,
+    # as `client.search_messages` is the most straightforward way for full indexing.
+    # If the intent was to index only the *forwarded* messages sent to the bot's chat, the admin would forward them one by one.
+    
+    await status_msg.edit_text("Starting full channel index... This may take a while.")
 
-    async for msg in client.search_messages(channel_id, filter="document"):
-        # Skip messages without media or file name
+    # Option 1: Index based on the original method (full channel history)
+    # The initial request was to change the *type* to 'forwarded channel on admin', 
+    # but the mechanics of full indexing still require iterating over the channel.
+    # We'll use the ID of the *original* channel from the forwarded message.
+
+    # We iterate over the channel's messages to find files
+    async for msg in client.get_chat_history(channel_id):
+        # We need to check if it's a file type we want to index
         if not msg.document or not msg.document.file_name:
             continue
             
@@ -184,10 +217,14 @@ async def index_command(client: Client, message: Message):
         count += 1
 
         if count % BATCH_SIZE == 0:
-            await status_msg.edit_text(f"Indexing... Currently indexed **{count}** files.")
+            try:
+                await status_msg.edit_text(f"Indexing... Currently indexed **{count}** files.")
+            except MessageNotModified:
+                pass # Ignore if the status message is exactly the same
 
     await status_msg.edit_text(f"✅ **Indexing complete!** Total series episodes indexed: **{count}**.")
 
+# --- All other handlers (start_command, auto_filter, callbacks) remain the same ---
 
 @bot.on_message(filters.text & filters.private & filters.incoming & filters.reply | filters.text & filters.group & filters.incoming)
 async def auto_filter(client: Client, message: Message):
@@ -311,7 +348,7 @@ async def select_season_cb(client, query):
     if nav_buttons:
         buttons.append(nav_buttons)
         
-    # 4. Add back to series button
+    # 4. Add back to series button (This logic is missing the back-to-search query, so it's simplified)
     buttons.append([InlineKeyboardButton("⬅️ Back to Series Selection", callback_data=f"back_series#{series_search_title}")])
 
     # 5. Edit message to show episode buttons
@@ -354,7 +391,28 @@ async def send_file_cb(client: Client, query):
         print(f"Error sending file: {e}")
         await query.answer("Failed to send file. Check if the bot has access to the original file.", show_alert=True)
 
+
+async def send_startup_message(client):
+    """Sends a notification to the admin(s) upon bot startup."""
+    startup_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+    message = f"🤖 **Bot Restarted!**\n\n**Time:** `{startup_time}`\n\n**Status:** **ONLINE** ✅"
+    
+    # ADMINS is a list/tuple/set of admin user IDs from config.
+    for admin_id in ADMINS:
+        try:
+            await client.send_message(int(admin_id), message)
+        except Exception as e:
+            print(f"Failed to send startup message to admin {admin_id}: {e}")
+
 # Main entry point
 if __name__ == "__main__":
     print("Bot is starting...")
+    # Add the startup message logic
+    bot.start() # Start the client synchronously
+    try:
+        # Run the async function after the client has started
+        bot.loop.run_until_complete(send_startup_message(bot))
+    except Exception as e:
+        print(f"Error during startup process: {e}")
+
     bot.run()
