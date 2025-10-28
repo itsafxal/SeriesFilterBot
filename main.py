@@ -1,41 +1,40 @@
-from gotgbot.api import Bot
-from gotgbot.ext import Application, CommandHandler
-import asyncio
-import sys
+import logging
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from bot.handlers import start_command, help_command, filter_series, error_handler
+from bot.database import initialize_db
 
-# Import the Database instance (which uses pymongo) and the handlers
-from conversation import series_handler, other_handlers
-from db import db 
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+)
+# NOTE: Replace 'YOUR_BOT_TOKEN' with your actual Telegram Bot Token
+BOT_TOKEN = 'YOUR_BOT_TOKEN' 
 
-async def main() -> None:
-    """Starts the bot."""
-    TOKEN = "YOUR_BOT_TOKEN" 
+def main():
+    """Start the bot."""
+    # Initialize the database connection
+    db = initialize_db()
     
-    if TOKEN == "YOUR_BOT_TOKEN":
-        print("ERROR: Please replace 'YOUR_BOT_TOKEN' with your actual bot token.")
-        sys.exit(1)
+    # Create the Application and pass your bot's token.
+    application = Application.builder().token(BOT_TOKEN).build()
 
-    # 1. Initialize Bot and Application
-    bot = Bot(token=TOKEN)
-    application = Application(bot=bot)
+    # --- Register Handlers ---
+    # Command Handlers
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
 
-    # 2. Add Handlers
-    application.add_handler(series_handler)
-    for handler in other_handlers:
-        application.add_handler(handler)
-        
-    print("Bot started. Polling for updates...")
-    
-    # 3. Start the bot 
-    await application.run_polling()
+    # Message Handler (for filtering - this is where the core logic will go)
+    # The handler will use a context-aware callback to pass the DB connection.
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, lambda update, context: filter_series(update, context, db)
+    ))
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Bot stopped by user.")
-    except Exception as e:
-        print(f"An error occurred in main: {e}")
-    finally:
-        # Crucial step: Close the pymongo connection when the bot stops
-        db.close()
+    # Error Handler
+    application.add_error_handler(error_handler)
+
+    # Start the Bot
+    print("Bot is running...")
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
