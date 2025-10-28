@@ -1,7 +1,7 @@
 from pymongo import MongoClient
 
 # NOTE: Replace 'YOUR_MONGO_URI' and 'series_db' as needed
-MONGO_URI = "mongodb://localhost:27017/" # Example URI
+MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" # Example URI
 DATABASE_NAME = "series_db"
 COLLECTION_NAME = "series_data"
 
