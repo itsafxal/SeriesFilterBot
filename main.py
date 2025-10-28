@@ -533,13 +533,36 @@ async def send_file_cb(client: Client, query):
         else:
              await query.answer("An unexpected error occurred while sending the file.", show_alert=True)
 
-
 # --- Startup Logic (The corrected and final block) ---
+
+async def startup_tasks(client):
+    """
+    Function to run once the client connection is established.
+    This replaces the problematic @bot.on_ready() decorator.
+    """
+    print("Initial setup starting...")
+    # 1. Connect to the Database
+    await db_handler.connect()
+    
+    # 2. Send the Admin Notification
+    await send_startup_message(client)
+    
+    print("Initial setup complete. Bot is running indefinitely...")
+
+
 if __name__ == "__main__":
     print("Bot is starting...")
     try:
-        # Use bot.run() without a function call for the main loop.
-        # The on_start_up function handles the necessary async setup (DB, startup message).
-        bot.run() 
+        # Start the client and run the startup_tasks before going idle
+        bot.run(startup_tasks(bot))
+        
+        # NOTE: If bot.run() (Pyrogram V1) doesn't work, 
+        # use the explicit start/stop/idle pattern (V2+ recommendation):
+        # 
+        # bot.start()
+        # bot.loop.run_until_complete(startup_tasks(bot))
+        # idle()
+        # bot.stop() 
+
     except Exception as e:
         print(f"FATAL: Bot failed to run: {e}")
