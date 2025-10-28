@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
-from pyrogram.errors import MessageNotModified
+from pyrogram.errors import MessageNotModified, FloodWait
 
 # Pyrogram v2+ requires motor[asyncio]
 from motor.motor_asyncio import AsyncIOMotorClient 
@@ -44,7 +44,6 @@ class MongoDBCore:
     """Handles all MongoDB connections and operations for file indexing."""
 
     def __init__(self, uri, db_name):
-        # We don't connect immediately; the connection happens when the first operation is requested
         self._client = AsyncIOMotorClient(uri)
         self.db = self._client[db_name]
         self.col = self.db.series_files
@@ -59,7 +58,6 @@ class MongoDBCore:
         ], background=True)
         try:
             # Use update_one with upsert=True to prevent duplicate key errors 
-            # if a message is somehow indexed twice, checking file_id
             await self.col.update_one(
                 {"file_id": file_data["file_id"]},
                 {"$set": file_data},
@@ -162,6 +160,7 @@ async def add_auto_delete_message(message_id, chat_id, delay: timedelta):
     """Schedules message deletion."""
     await asyncio.sleep(delay.total_seconds())
     try:
+        # Use the global 'bot' client instance
         await bot.delete_messages(chat_id, message_id)
     except Exception:
         pass # Ignore errors if the message is already deleted
@@ -265,9 +264,15 @@ async def index_command(client: Client, message: Message):
     await status_msg.edit_text(f"✅ **Indexing complete!** Total series episodes indexed: **{count}**.")
 
 
-@bot.on_message(filters.text & (filters.private | (filters.group & filters.incoming)) & ~filters.edited)
+# --- FIX: Removed the problematic ~filters.edited and added an internal check ---
+@bot.on_message(filters.text & (filters.private | filters.group) & filters.incoming)
 async def auto_filter(client: Client, message: Message):
     """Initial search handler."""
+    
+    # FIX: Ignore edited messages by checking the message object itself
+    if message.edit_date:
+        return
+
     query = message.text.strip()
     cyber = message.from_user.mention if message.from_user else "User"
 
@@ -335,9 +340,8 @@ async def select_series_cb(client, query):
         )
     except MessageNotModified:
         pass 
-    except Exception as e:
-        # Fallback for when the message can no longer be edited (e.g., auto-deleted)
-        return await query.answer("Cannot edit message. Please search again.", show_alert=True)
+    except Exception:
+        return await query.answer("An error occurred. The original message might be deleted.", show_alert=True)
     
     await query.answer()
 
@@ -398,7 +402,6 @@ async def select_season_cb(client, query):
 @bot.on_callback_query(filters.regex(r"^back_series#"))
 async def back_to_series_cb(client, query):
     """Handles the 'Back to Seasons' button click."""
-    # We only need the series search title, the rest is handled by select_series_cb
     query.data = f"series#{query.data.split('#')[1]}"
     await select_series_cb(client, query)
 
@@ -414,7 +417,6 @@ async def send_file_cb(client: Client, query):
         return await query.answer("File not found in database! The file may have been removed.", show_alert=True)
         
     try:
-        # Send the file using its file_id to the user's private chat
         await client.send_document(
             chat_id=query.from_user.id,
             document=file_data['file_id'],
@@ -423,7 +425,6 @@ async def send_file_cb(client: Client, query):
         await query.answer("File sent to your DMs!", show_alert=True)
     except Exception as e:
         print(f"Error sending file to {query.from_user.id}: {e}")
-        # The bot must be able to send messages to the user in their private chat
         await query.answer("Failed to send file. Please start a chat with the bot first.", show_alert=True)
 
 # --- Startup Logic (Final Working Block) ---
@@ -432,16 +433,14 @@ if __name__ == "__main__":
     print("Bot is starting...")
     
     # Define the asynchronous function that runs ONCE the client is connected.
-    # It must be defined without the 'client' argument if used with bot.run(coroutine_call)
     async def on_start_up():
         print("Initial setup complete. Running bot indefinitely...")
+        # Send the notification after the client is confirmed running
         await send_startup_message(bot)
 
     try:
-        # Use bot.run() with the coroutine call. This correctly handles:
-        # 1. Starting the client (fixing 'already connected').
-        # 2. Running the on_start_up function.
-        # 3. Blocking the script indefinitely (fixing 'idle' error).
+        # Use bot.run() with the coroutine call (on_start_up())
+        # This correctly starts the client and runs the async function before blocking.
         bot.run(on_start_up()) 
 
     except Exception as e:
