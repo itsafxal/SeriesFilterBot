@@ -28,15 +28,28 @@ def find_series(collection, query):
     # {"title": {"$regex": query, "$options": "i"}}
     return collection.find({"title": query})
 
-# --- EXAMPLE USAGE (Not part of the bot logic, just for testing) ---
-# if __name__ == '__main__':
-#     series_collection = initialize_db()
-#     new_series = {
-#         "title": "The Mandalorian",
-#         "season": 3,
-#         "episode": 8,
-#         "link": "some_telegram_file_link",
-#         "tags": ["sci-fi", "star-wars"]
-#     }
-#     add_series_data(series_collection, new_series)
-#     print(f"Added series with ID: {new_series['_id']}")
+# In bot/database.py
+
+# ... (Existing imports and functions: initialize_db, create_indexes, find_series) ...
+
+def add_series_entry(collection, series_info: dict):
+    """
+    Inserts a new series document (file/episode metadata) into the collection.
+
+    Args:
+        collection: The active MongoDB collection object.
+        series_info (dict): A dictionary containing the file's metadata.
+            Expected keys: 'title', 'season', 'episode', 'file_id', 'link', etc.
+            
+    Returns:
+        str: The MongoDB ObjectId of the newly inserted document.
+    """
+    try:
+        # 1. Insert the document
+        result = collection.insert_one(series_info)
+        
+        # 2. Return the unique ID
+        return str(result.inserted_id)
+    except Exception as e:
+        print(f"Error inserting series entry: {e}")
+        return None
