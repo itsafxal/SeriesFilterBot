@@ -2,3 +2,4 @@ pyrofork
 TgCrypto
 motor
 pymongo
+gotgbot
