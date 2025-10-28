@@ -9,6 +9,10 @@ logging.basicConfig(
 )
 # NOTE: Replace 'YOUR_BOT_TOKEN' with your actual Telegram Bot Token
 BOT_TOKEN = '7661197159:AAHwppy1JjmEBXucY1gxdbfGKVpuqjl_gFg' 
+# In main.py
+# ... (Other definitions) ...
+ADMIN_USER_ID = "5483128891" # <--- REPLACE with your Telegram User ID!
+# ... (Other definitions) ...
 
 def main():
     """Start the bot."""
