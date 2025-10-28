@@ -23,10 +23,10 @@ app = Client(
 async def start_handler(client: Client, message: Message):
     """Starts the series tracking conversation."""
     await message.reply_text(
-        f"Hi **{message.from_user.first_name}**! Let's track a new series.\n"
-        "Send me the **name** of the series you want to track or save.",
+        f"Hi **{message.from_user.first_name}**! Let's track a new series\\.\n"
+        "Send me the **name** of the series you want to track or save\\.",
         reply_markup=ForceReply(True),
-        parse_mode="Markdown"
+        parse_mode="MarkdownV2" # FIX: Correct Pyrogram parse mode
     )
     # Start the series tracking flow
     await series_name_step(client, message)
@@ -39,18 +39,26 @@ async def list_handler(client: Client, message: Message):
 
     if not user_series:
         await message.reply_text(
-            "You haven't saved any series yet. Use /start to begin tracking."
+            "You haven't saved any series yet\\. Use /start to begin tracking\\.",
+            parse_mode="MarkdownV2"
         )
         return
 
-    reply_text = "📚 **Your Tracked Series and Progress:**\n\n"
+    reply_text = "📚 **Your Tracked Series and Progress:**\\n\\n"
     for item in user_series:
         title = item.get('series_title')
+        # Escape any special markdown characters in the title
+        safe_title = title.replace('-', '\\-').replace('.', '\\.')
         season = item.get('season')
         episode = item.get('episode')
-        reply_text += f"• **{title}** - S{season}E{episode}\n"
+        
+        # Ensure season and episode are displayed correctly
+        season_str = str(season) if season is not None else '?'
+        episode_str = str(episode) if episode is not None else '?'
+        
+        reply_text += f"• **{safe_title}** \\- S{season_str}E{episode_str}\\n"
 
-    await message.reply_text(reply_text, parse_mode="Markdown")
+    await message.reply_text(reply_text, parse_mode="MarkdownV2") # FIX: Correct Pyrogram parse mode
 
 
 # --- CONVERSATION FLOW USING client.listen ---
@@ -62,13 +70,18 @@ async def series_name_step(client: Client, message: Message):
     response: Message = await client.listen(chat_id=message.chat.id, user_id=message.from_user.id)
     series_title = response.text
     
-    # Store data in user's dictionary (or a persistent state manager if needed)
-    response.from_user.series_title = series_title 
+    # Store data in user's dictionary (Pyrogram attaches data to the user object)
+    # We use a try/except for Attribute Error in case of /cancel or /list during conversation
+    try:
+        response.from_user.series_title = series_title 
+    except AttributeError:
+        await response.reply_text("Session error\\. Please use /start to begin a new tracking session\\.", parse_mode="MarkdownV2")
+        return
     
     await response.reply_text(
-        f"Tracking series: **{series_title}**.\n"
-        f"Now, please send the **season number** (e.g., 1, 2, 3) you are currently watching.",
-        parse_mode="Markdown"
+        f"Tracking series: **{series_title}**\\.\n"
+        f"Now, please send the **season number** \\(e\\.g\\., 1, 2, 3\\) you are currently watching\\.",
+        parse_mode="MarkdownV2" # FIX: Correct Pyrogram parse mode
     )
     await season_number_step(client, response)
 
@@ -86,15 +99,22 @@ async def season_number_step(client: Client, message: Message):
         response.from_user.season = season 
         
         await response.reply_text(
-            f"You chose Season {season}. Now, send the **episode number** (e.g., 5, 10)."
+            f"You chose Season {season}\\. Now, send the **episode number** \\(e\\.g\\., 5, 10\\)\\.",
+            parse_mode="MarkdownV2" # FIX: Correct Pyrogram parse mode
         )
         await episode_number_step(client, response)
         
     except ValueError:
         await response.reply_text(
-            "Invalid season number. Please send a valid whole number for the season. Try again."
+            "Invalid season number\\. Please send a valid whole number for the season\\. Try again\\.",
+            parse_mode="MarkdownV2"
         )
         await season_number_step(client, message) # Restart this step
+    except AttributeError:
+         await response.reply_text(
+            "Session error\\. Please use /start to begin a new tracking session\\.",
+            parse_mode="MarkdownV2"
+        )
 
 async def episode_number_step(client: Client, message: Message):
     """Listens for the episode number, saves to DB, and ends the flow."""
@@ -117,24 +137,26 @@ async def episode_number_step(client: Client, message: Message):
 
         # 2. Format reply
         reply_text = (
-            f"✅ **Progress Saved!**\n"
-            f"You are currently on: **{series_title}** - S{season}E{episode}.\n\n"
-            "Use /start to track a new series or /list to see all your progress."
+            f"✅ **Progress Saved!**\\n"
+            f"You are currently on: **{series_title}** \\- S{season}E{episode}\\.\\n\\n"
+            "Use /start to track a new series or /list to see all your progress\\."
         )
-        await response.reply_text(reply_text, parse_mode="Markdown")
+        await response.reply_text(reply_text, parse_mode="MarkdownV2") # FIX: Correct Pyrogram parse mode
 
-        # Cleanup stored data (optional, but good practice)
+        # Cleanup stored data
         del response.from_user.series_title
         del response.from_user.season
         
     except ValueError:
         await response.reply_text(
-            "Invalid episode number. Please send a valid whole number for the episode. Try again."
+            "Invalid episode number\\. Please send a valid whole number for the episode\\. Try again\\.",
+            parse_mode="MarkdownV2"
         )
         await episode_number_step(client, message) # Restart this step
     except AttributeError:
          await response.reply_text(
-            "Something went wrong with the session. Please use /start to begin a new tracking session."
+            "Session error\\. Please use /start to begin a new tracking session\\.",
+            parse_mode="MarkdownV2"
         )
         
 if __name__ == "__main__":
