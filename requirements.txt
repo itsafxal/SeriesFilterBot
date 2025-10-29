@@ -1,3 +1,4 @@
 pyrotgfork
 pymongo
 python-dotenv
+motor
