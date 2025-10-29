@@ -7,7 +7,7 @@ DATABASE_NAME = "CyberTGx"
 COLLECTION_NAME = "SeriesBot"
 DATABASE_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
-INDEXING_CHANNEL_ID = '-1003110605300'
+INDEXING_CHANNEL_ID = '-1003203060954'
 
 LOG_LEVEL =  'INFO'
 
