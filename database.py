@@ -12,12 +12,13 @@ from config import DATABASE_URI, DATABASE_NAME, COLLECTION_NAME, LOG_LEVEL # COL
 GENERIC_COLLECTION_NAME = "generic_files" # Name for the collection storing non-series files
 BROADCAST_USERS_FILE = 'broadcast_users.json' # NOTE: In a production MongoDB environment, broadcast users should also be stored in Mongo for better scalability and consistency. Keeping the original file-based logic for users for simplicity based on the structure provided.
 
+
 # Global MongoDB client and collections
 client = None
 db = None
 series_collection = None
-generic_collection = None # New global for generic files
-broadcast_collection = None # New global for broadcast users
+generic_collection = None
+broadcast_collection = None 
 
 # Set up logging early
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ logging.basicConfig(
 )
 
 def init_db():
-    """Initializes the MongoDB connection and collections."""
+    """Initializes the MongoDB connection and collections, including index fixes."""
     global client, db, series_collection, generic_collection, broadcast_collection
     try:
         # NOTE: Added serverSelectionTimeoutMS for robustness
@@ -39,28 +40,21 @@ def init_db():
         # 1. Series Collection Setup
         series_collection = db[COLLECTION_NAME]
         
-        # --- FIX FOR IndexOptionsConflict (Error Code 85) ---
-        # Attempt to drop the old conflicting index or the previously named index.
-        # This ensures the new index can be created cleanly.
-        try:
-            # Drop the explicitly named index first, in case options changed
-            series_collection.drop_index('series_search_index')
-        except OperationFailure:
-            pass # Index didn't exist with this name, continue
+        # --- FIX 1: Resolve IndexOptionsConflict for Series Collection ---
+        # Safely attempt to drop conflicting indexes (auto-named and custom-named)
+        conflicting_series_indexes = [
+            'series_search_index',
+            'series_name_text_season_1_episode_1' # From the first traceback
+        ]
+        for idx_name in conflicting_series_indexes:
+            try:
+                series_collection.drop_index(idx_name)
+                logger.warning(f"Successfully dropped old conflicting index: {idx_name}")
+            except OperationFailure:
+                pass # Index did not exist, or it was not deletable (e.g., _id_), safe to ignore
+        # -----------------------------------------------------------------
 
-        try:
-            # Drop the index name that was mentioned in the error traceback
-            # This handles cases where MongoDB auto-names an index that conflicts.
-            series_collection.drop_index('series_name_text_season_1_episode_1')
-        except OperationFailure:
-            pass # Index didn't exist with this name, continue
-        # ---------------------------------------------------
-
-        # NOTE: Text indexes on multiple fields will index the concatenated content.
-        # For better search results, a single TEXT index on the primary search field ('series_name') 
-        # is often sufficient, with the other fields being regular indexes for filtering/sorting.
-        # Using a compound index with TEXT requires the TEXT field to be first.
-        
+        # Create the primary search index
         series_collection.create_index([
             ('series_name', pymongo.TEXT),
             ('season', 1),  
@@ -73,27 +67,47 @@ def init_db():
             ('message_id', 1)
         ], unique=True, name='unique_message_id_index')
         
+        
         # 2. Generic Files Collection Setup
         generic_collection = db[GENERIC_COLLECTION_NAME]
+
+        # --- FIX 2: Resolve IndexOptionsConflict for Generic Files Collection ---
+        # Safely attempt to drop conflicting indexes
+        conflicting_generic_indexes = [
+            'unique_file_id',
+            'file_unique_id_1' # From the second traceback
+        ]
+        for idx_name in conflicting_generic_indexes:
+            try:
+                generic_collection.drop_index(idx_name)
+                logger.warning(f"Successfully dropped old conflicting index: {idx_name}")
+            except OperationFailure:
+                pass # Safe to ignore
+        # -------------------------------------------------------------------------
+        
         # Unique index on file_unique_id (Telegram's unique identifier)
         generic_collection.create_index('file_unique_id', unique=True, name='unique_file_id')
         
+        
         # 3. Broadcast Users Collection Setup
         broadcast_collection = db['broadcast_users']
+        
+        # Ensure user_id index exists (no need for complex drop logic unless error occurs)
         broadcast_collection.create_index('user_id', unique=True, name='unique_user_id')
         
         logger.info("MongoDB connection and collections successfully initialized.")
 
-    except ConnectionFailure as e: # Catch the correct type of PyMongo connection error
+    except ConnectionFailure as e: 
         logger.error(f"MongoDB connection failed: {e}")
         raise
     except ConfigurationError as e:
         logger.error(f"MongoDB configuration error: {e}")
         raise
     except Exception as e:
+        # Log the full traceback for unexpected errors during startup
         logger.error(f"An unexpected error occurred during DB initialization: {e}", exc_info=True)
-        # Re-raise the exception to stop the application startup
-        raise
+        raise 
+
 # --- Broadcast Users Functions ---
 
 def save_user_for_broadcast(user_id: int) -> bool:
@@ -105,7 +119,6 @@ def save_user_for_broadcast(user_id: int) -> bool:
             {'$set': {'last_active': datetime.utcnow()}},
             upsert=True
         )
-        # Check if a new document was inserted (a new user)
         if result.upserted_id:
              logger.info(f"New user registered for broadcast: {user_id}")
         return True
@@ -117,7 +130,6 @@ def get_all_broadcast_users() -> list[int]:
     """Retrieves all registered user IDs for broadcasting."""
     if broadcast_collection is None: return []
     try:
-        # Fetch only the user_id field
         return [doc['user_id'] for doc in broadcast_collection.find({}, {'user_id': 1})]
     except Exception as e:
         logger.error(f"Failed to retrieve broadcast users: {e}")
@@ -137,10 +149,9 @@ def add_series_file(series_name: str, season: int, episode: int, channel_id: str
             "message_id": message_id,
             "indexed_at": datetime.utcnow()
         }
-        # Use insert_one and catch DuplicateKeyError to handle duplicates
         series_collection.insert_one(file_doc)
-        return True # File added successfully
-    except pymongo.errors.DuplicateKeyError:
+        return True
+    except DuplicateKeyError:
         # File (message_id/channel_id pair) already exists
         return False
     except Exception as e:
@@ -151,16 +162,14 @@ def search_series(query: str) -> list[tuple[str, int, int]]:
     """Searches for series files matching the query using MongoDB's text index."""
     if series_collection is None: return []
     try:
-        # Escape special regex characters in the query for better control, then use regex search
         escaped_query = re.escape(query.strip())
         regex = re.compile(f".*{escaped_query}.*", re.IGNORECASE)
         
-        # Use a case-insensitive regex search on the series_name
         results = series_collection.find(
             {'series_name': {'$regex': regex}},
             {'series_name': 1, 'season': 1, 'episode': 1}
         )
-        # The result in the main_bot.py suggests returning a list of tuples: (series_name, season, episode, ...)
+        
         return [(doc['series_name'], doc['season'], doc['episode']) for doc in results]
     except Exception as e:
         logger.error(f"Series search failed: {e}")
@@ -170,9 +179,7 @@ def get_unique_seasons_by_name(series_name: str) -> list[int]:
     """Gets a sorted list of unique season numbers for a given series."""
     if series_collection is None: return []
     try:
-        # Use the distinct command to get all unique season values
         seasons = series_collection.distinct('season', {'series_name': series_name})
-        # Remove any non-integer or zero season values that might have crept in
         return sorted([s for s in seasons if isinstance(s, int) and s > 0])
     except Exception as e:
         logger.error(f"Failed to get unique seasons for {series_name}: {e}")
@@ -182,7 +189,6 @@ def get_all_files_by_season(series_name: str, season: int) -> list[dict]:
     """Retrieves all file entries (channel_id, message_id) for a specific season."""
     if series_collection is None: return []
     try:
-        # Fetch only the required fields, sorted by episode number
         files = series_collection.find(
             {'series_name': series_name, 'season': season},
             {'channel_id': 1, 'message_id': 1, '_id': 0}
@@ -203,10 +209,9 @@ def save_generic_file(file_data: dict) -> tuple[bool, int]:
     """
     if generic_collection is None: return False, 2
     try:
-        # Insert with checks for duplicate file_unique_id
         generic_collection.insert_one(file_data)
         return True, 1
-    except pymongo.errors.DuplicateKeyError:
+    except DuplicateKeyError:
         # File (file_unique_id) already exists
         return False, 0
     except Exception as e:
