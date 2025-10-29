@@ -12,6 +12,8 @@ SERIES_PATTERN = re.compile(
 # Keywords often indicating a movie or non-series file (kept for context, but logic prioritizes SXXEXX)
 MOVIE_KEYWORDS = ['movie', '1080p', '720p', 'bluray', 'dvdrip', 'webrip', 'x265', 'film']
 
+# utils.py - FIX: Name cleanup in parse_series_info
+
 def parse_series_info(filename):
     """
     Attempts to extract series name, season, and episode from a filename.
@@ -24,22 +26,22 @@ def parse_series_info(filename):
 
     se_part = match.group(0) 
     
-    # 1. Get the name part
+    # 1. Get the name part (up to the SXXEXX match)
     name_part = filename[:match.start()]
     
-    # 2. Aggressively strip trailing non-word characters and separators (FIX for Aarya [ issue)
-    # This removes characters like ' [', ' .', ' -', ']' from the end of the name
-    name_part = re.sub(r'[\s\.\-\[\]]+$', '', name_part).strip() 
+    # 2. Aggressively strip everything after the *series name* but before the SXXEXX tag
+    # This specifically targets common file delimiters like '.', '_', ' -', or spaces before the SXXEXX tag.
+    name_part = re.sub(r'[\s\.\-\[\]_]+$', '', name_part).strip() 
     
-    # 3. Replace internal separators and clean up spaces
+    # 3. Replace internal separators ('.', '_') with a single space for a clean, searchable name
     name = name_part.replace('.', ' ').replace('_', ' ').strip()
-    name = re.sub(r'\s+', ' ', name).strip()
+    name = re.sub(r'\s+', ' ', name).strip() # Reduce multiple spaces to one
+    
+    # If the name is still empty, something is wrong.
+    if not name:
+        return None
 
-    # If the name is empty after cleanup, try to use the part before the first separator
-    if not name and name_part:
-         name = name_part.split(' ')[0]
-
-    # 4. S/E parsing
+    # 4. S/E parsing (This part is correct)
     s_match = re.search(r'[Ss](\d{1,2})', se_part, re.IGNORECASE)
     e_match = re.search(r'[Ee](\d{1,3})', se_part, re.IGNORECASE)
     
@@ -51,7 +53,7 @@ def parse_series_info(filename):
         return name.title(), season, episode
     
     return None
-
+    
 def is_series_file(filename):
     """
     Checks if the filename looks like a series episode.
