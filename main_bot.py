@@ -3,7 +3,8 @@ import logging
 import requests 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from database import save_user_for_broadcast, add_series_file, get_all_broadcast_users
+# ✅ CORRECT IMPORT IN main_bot.py
+from database import save_user_for_broadcast, add_series_file, get_all_broadcast_users, init_db
 from utils import is_series_file, parse_series_info
 from config import BOT_TOKEN, ADMIN_USER_ID, LOG_LEVEL, MAX_SEARCH_RESULTS, REQUIRED_CHANNEL, INDEX_CHANNEL_ID 
 
@@ -371,10 +372,12 @@ async def post_init(application: Application) -> None:
         except Exception as e:
             logging.error(f"Failed to send restart message to admin: {e}")
 
+# main_bot.py (Line 376, inside main)
 def main() -> None:
     """Start the bot."""
     init_db() # Initialize the database connection
     
+    # ... rest of the function ...
     application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     # --- Register Handlers ---
