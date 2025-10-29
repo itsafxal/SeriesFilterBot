@@ -33,151 +33,166 @@ series_collection = None
 generic_collection = None
 broadcast_users_set = set()
 
-def init_db():
-    """Initializes the MongoDB connection and collections."""
-    global mongo_client, db, series_collection, generic_collection
-    try:
-        mongo_client = MongoClient(DATABASE_URI, serverSelectionTimeoutMS=5000)
-        mongo_client.admin.command('ismaster') 
-        
-        db = mongo_client[DATABASE_NAME]
-        series_collection = db[COLLECTION_NAME]
-        generic_collection = db[GENERIC_COLLECTION_NAME]
-
-        # Ensure indexes for series files
-        series_collection.create_index(
-            [("series_name", pymongo.ASCENDING), ("season", pymongo.ASCENDING), ("episode", pymongo.ASCENDING)], 
-            unique=True, 
-            name="series_season_episode_unique"
-        )
-        series_collection.create_index("series_name", name="series_name_idx")
-        
-        # --- FIX APPLIED HERE: Using the existing index name 'unique_file_id' ---
-        generic_collection.create_index("file_unique_id", unique=True, name="unique_file_id")
-        
-        logger.info("MongoDB connection and collections initialized successfully.")
-        
-        load_broadcast_users() 
-
-    except (ConnectionFailure, ConfigurationError, OperationFailure) as e:
-        logger.error(f"Failed to connect or initialize MongoDB: {e}")
-        raise
-
-# --- Broadcast User Logic (Using JSON File) ---
-
-def load_broadcast_users():
-    """Loads broadcast users from the JSON file into memory."""
+def _load_broadcast_users():
+    """Loads broadcast users from the JSON file."""
     global broadcast_users_set
     try:
         with open(BROADCAST_USERS_FILE, 'r') as f:
             data = json.load(f)
-            broadcast_users_set = set(int(uid) for uid in data) 
+            broadcast_users_set = set(data)
         logger.info(f"Loaded {len(broadcast_users_set)} broadcast users.")
     except FileNotFoundError:
-        logger.warning(f"Broadcast users file '{BROADCAST_USERS_FILE}' not found.")
-        broadcast_users_set = set()
+        logger.warning(f"{BROADCAST_USERS_FILE} not found. Starting with empty set.")
+    except json.JSONDecodeError:
+        logger.error(f"Error decoding {BROADCAST_USERS_FILE}. Starting with empty set.")
     except Exception as e:
         logger.error(f"Error loading broadcast users: {e}")
-        broadcast_users_set = set()
 
-def save_broadcast_users():
-    """Saves the in-memory set of broadcast users to the JSON file."""
+def _save_broadcast_users():
+    """Saves broadcast users to the JSON file."""
     try:
         with open(BROADCAST_USERS_FILE, 'w') as f:
             json.dump(list(broadcast_users_set), f)
     except Exception as e:
         logger.error(f"Error saving broadcast users: {e}")
 
-def save_user_for_broadcast(user_id: int) -> None:
-    """Adds a user ID to the broadcast list if not already present."""
+
+def init_db():
+    """Initializes the MongoDB connection and collections."""
+    global mongo_client, db, series_collection, generic_collection
+    try:
+        # **Completion of MongoClient initialization**
+        mongo_client = MongoClient(DATABASE_URI, serverSelectionTimeoutMS=5000)
+        # The ismaster command is cheap and does not require auth.
+        mongo_client.admin.command('ismaster')
+        logger.info("Successfully connected to MongoDB.")
+        
+        db = mongo_client[DATABASE_NAME]
+        series_collection = db[COLLECTION_NAME]
+        generic_collection = db[GENERIC_COLLECTION_NAME]
+
+        # Ensure indexes for fast searching and uniqueness
+        series_collection.create_index([("series_name", pymongo.ASCENDING), ("season", pymongo.ASCENDING), ("episode", pymongo.ASCENDING)], unique=True)
+        series_collection.create_index([("series_name", "text")])
+        
+        generic_collection.create_index("file_unique_id", unique=True)
+        generic_collection.create_index([("file_name", "text"), ("caption", "text")])
+
+        _load_broadcast_users()
+    except (ConnectionFailure, ConfigurationError) as e:
+        logger.error(f"MongoDB connection failed: {e}")
+        # In a real-world bot, you might want to exit here or run a fallback mode.
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during DB initialization: {e}")
+
+
+def save_user_for_broadcast(user_id: int):
+    """Adds a user ID to the broadcast set and saves it."""
+    global broadcast_users_set
     if user_id not in broadcast_users_set:
         broadcast_users_set.add(user_id)
-        save_broadcast_users() 
+        _save_broadcast_users()
         logger.info(f"User {user_id} registered for broadcast.")
 
 def get_all_broadcast_users() -> List[int]:
-    """Returns all user IDs registered for broadcast."""
+    """Returns a list of all registered user IDs for broadcast."""
     return list(broadcast_users_set)
-
-# --- Series File Logic ---
 
 def add_series_file(series_name: str, season: int, episode: int, channel_id: str, message_id: int) -> bool:
     """
-    Saves a series episode file reference to MongoDB.
-    Returns True if added, False if duplicate.
+    Saves a series episode file reference to the database.
+    Returns True if saved, False if duplicate or failed.
     """
+    if series_collection is None:
+        return False
+
+    document = {
+        "series_name": series_name,
+        "season": season,
+        "episode": episode,
+        "channel_id": channel_id,
+        "message_id": message_id,
+        "indexed_at": datetime.utcnow()
+    }
+    
     try:
-        document = {
-            "series_name": series_name,
-            "season": season,
-            "episode": episode,
-            "channel_id": channel_id,
-            "message_id": message_id,
-            "indexed_at": datetime.utcnow()
-        }
-        
         series_collection.insert_one(document)
         return True
     except pymongo.errors.DuplicateKeyError:
+        # File (series/season/episode) already exists
         return False
     except Exception as e:
-        logger.error(f"Error adding series file: {e}")
+        logger.error(f"Error saving series file: {e}")
         return False
 
-def search_series(query: str) -> List[Tuple[str, int, int]]:
-    """
-    Searches for series based on a regex query.
-    Returns a list of (series_name, season, episode).
-    """
-    regex_pattern = re.compile(f".*{re.escape(query)}.*", re.IGNORECASE)
-    
-    results = series_collection.find(
-        {"series_name": {"$regex": regex_pattern}},
-        {"series_name": 1, "season": 1, "episode": 1, "_id": 0}
-    ).limit(50) 
-    
-    return [(d['series_name'], d['season'], d['episode']) for d in results]
-
-
-def get_unique_seasons_by_name(series_name: str) -> List[int]:
-    """
-    Gets all unique season numbers for a given series.
-    Returns a sorted list of integers.
-    """
-    pipeline = [
-        {"$match": {"series_name": series_name}},
-        {"$group": {"_id": "$season"}},
-        {"$sort": {"_id": 1}}
-    ]
-    
-    seasons = [doc['_id'] for doc in series_collection.aggregate(pipeline)]
-    return seasons
-
-
-def get_all_files_by_season(series_name: str, season: int) -> List[Dict[str, Any]]:
-    """
-    Retrieves all file references for a specific season.
-    """
-    files = series_collection.find(
-        {"series_name": series_name, "season": season},
-        {"channel_id": 1, "message_id": 1, "_id": 0}
-    ).sort("episode", pymongo.ASCENDING)
-    
-    return list(files)
-
-# --- Generic File Logic ---
 
 def save_generic_file(file_data: Dict[str, Any]) -> Tuple[bool, int]:
     """
-    Saves a generic file reference to MongoDB.
-    Returns: (is_new_file, status_code)
-    status_code: 1=Success, 0=Duplicate, 2=Error
+    Saves a generic file reference to the database.
+    Returns: (success_bool, status_code: 1=saved, 0=duplicate, 2=error)
     """
+    if generic_collection is None:
+        return False, 2
+
     try:
+        # Ensure file_unique_id exists for unique constraint check
+        if not file_data.get("file_unique_id"):
+             logger.warning("Generic file missing file_unique_id, skipping.")
+             return False, 2
+
         generic_collection.insert_one(file_data)
-        return True, 1 # Success
+        return True, 1
     except pymongo.errors.DuplicateKeyError:
-        return False, 0 # Duplicate
+        # File (based on file_unique_id) already exists
+        return False, 0
     except Exception as e:
         logger.error(f"Error saving generic file: {e}")
-        return False, 2 # Error
+        return False, 2
+
+
+def search_series(query: str) -> List[Tuple[str, int, int]]:
+    """
+    Performs a text search for series files based on the query.
+    Returns a list of (series_name, season, episode) tuples.
+    """
+    if series_collection is None:
+        return []
+
+    # Use MongoDB's $text search on the 'series_name' index
+    # Note: Text search is case-insensitive by default in many configurations
+    # We will also use a simple regex as fallback/alternative for broader match
+    regex_query = re.escape(query.strip())
+    
+    results = series_collection.find(
+        {"series_name": {"$regex": regex_query, "$options": "i"}}
+    ).sort([("series_name", pymongo.ASCENDING), ("season", pymongo.ASCENDING), ("episode", pymongo.ASCENDING)])
+    
+    # Extract only the necessary info for the first selection menu
+    data = [(doc['series_name'], doc['season'], doc['episode']) for doc in results]
+    return data
+
+def get_unique_seasons_by_name(series_name: str) -> List[int]:
+    """
+    Gets a sorted list of unique season numbers for a given series name.
+    """
+    if series_collection is None:
+        return []
+
+    # Find unique season numbers for the exact series name (case-sensitive as stored)
+    seasons = series_collection.distinct("season", {"series_name": series_name})
+    return sorted([int(s) for s in seasons])
+
+def get_all_files_by_season(series_name: str, season: int) -> List[Dict[str, Any]]:
+    """
+    Gets all file documents for a specific series name and season.
+    Returns a list of dictionaries.
+    """
+    if series_collection is None:
+        return []
+
+    files = series_collection.find(
+        {"series_name": series_name, "season": season}
+    ).sort("episode", pymongo.ASCENDING)
+    
+    # Return as list of dictionaries
+    return list(files)
