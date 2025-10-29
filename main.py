@@ -2,24 +2,21 @@ import re
 import os
 import asyncio
 import logging
-from gotgbot.ext import Application, Defaults
-from gotgbot.ext.handlers import CommandHandler, MessageHandler, CallbackQueryHandler
-from gotgbot.ext.filters import TEXT, COMMANDS, MessageFilter
-from gotgbot import Bot
-from gotgbot.types import (
-    InlineKeyboardMarkup, 
-    InlineKeyboardButton, 
-    Update, 
-    Message
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import (
+    Application, 
+    CommandHandler, 
+    MessageHandler, 
+    CallbackQueryHandler, 
+    filters,
+    ContextTypes
 )
 from motor.motor_asyncio import AsyncIOMotorClient # Reverted to async motor
 
-# Set up logging
+# --- Setup Logging ---
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-# Disable logging for httpx, which is used by gotgbot internally
-logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -36,15 +33,8 @@ mongo_client = AsyncIOMotorClient(MONGO_URI)
 db = mongo_client["SeriesBotDB"]
 files_collection = db["files"]
 
-# NOTE: Indices are created automatically on the first connection or insert,
-# or you can run them manually if needed.
-# files_collection.create_index([("normalized_name", 1), ("season", 1)])
-# files_collection.create_index([("normalized_name", "text")])
-
-
-# --- User Client (Still Pyrogram for Channel History) ---
-# NOTE: Gotgbot does not index channels. We keep the Pyrogram User Client 
-# to fetch channel history for the /index command.
+# --- Pyrogram User Client (Still required for Channel History) ---
+# PTB does not handle user accounts/channel history reading, so we keep Pyrogram for /index.
 from pyrogram import Client as PyrogramClient
 
 user_app = PyrogramClient(
@@ -60,17 +50,15 @@ user_app = PyrogramClient(
 async def search_series(query: str):
     """Searches MongoDB for unique series names matching the query."""
     regex_query = re.escape(query).replace(" ", ".*")
-    series_names = await files_collection.distinct(
+    return await files_collection.distinct(
         "normalized_name", 
         {"normalized_name": {"$regex": regex_query, "$options": "i"}}
     )
-    return series_names
 
 async def get_unique_seasons_by_name(series_name: str):
     """Gets unique season numbers for a given series."""
     seasons = await files_collection.distinct("season", {"normalized_name": series_name})
-    seasons = sorted([s for s in seasons if s > 0])
-    return seasons
+    return sorted([s for s in seasons if s > 0])
 
 async def get_all_files_by_season(series_name: str, season: int):
     """Gets file details (channel_id, message_id) for a specific season."""
@@ -121,11 +109,28 @@ def parse_series_info(file_name: str):
     return file_name.title().strip(), 0, 0 
 
 # ###################################################
-# ## GOTGBOT HANDLERS ##
+# ## PTB HANDLERS ##
 # ###################################################
 
-async def start_command(bot: Bot, update: Update):
-    """Handles the /start command and welcomes the user."""
+async def send_restart_message(application: Application):
+    """Sends a notification to the owner when the bot starts successfully."""
+    try:
+        await application.bot.send_message(
+            chat_id=OWNER_ID,
+            text="✨ <b>Bot Restarted!</b>\n\nFile filter service is online and ready.",
+            parse_mode="HTML" 
+        )
+        logger.info("Sent restart message to owner.")
+    except Exception as e:
+        logger.error(f"Failed to send restart message to owner: {e}")
+
+async def post_init(application: Application) -> None:
+    """The startup hook for PTB."""
+    await send_restart_message(application)
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles the /start command."""
     welcome_text = (
         "👋 <b>Welcome! I'm your Series File Filter Bot.</b>\n\n"
         "Just send me the <b>name of a series</b> you are looking for, "
@@ -136,19 +141,19 @@ async def start_command(bot: Bot, update: Update):
     if update.effective_message:
         await update.effective_message.reply_html(welcome_text)
 
-async def search_handler(bot: Bot, update: Update):
-    """Handles user text search queries and initiates the series selection menu."""
+async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles user text search queries."""
     if not update.effective_message or not update.effective_message.text:
         return
 
     query = update.effective_message.text.strip()
     
-    # Calls the Motor wrapper
     unique_names = await search_series(query)
     
     if unique_names:
         keyboard = []
         for name in sorted(unique_names):
+            # PTB uses str for callback data
             callback_data = f'series_select|{name}'
             button_text = name[:50] + '...' if len(name) > 50 else name
             keyboard.append([InlineKeyboardButton(button_text, callback_data)])
@@ -160,38 +165,37 @@ async def search_handler(bot: Bot, update: Update):
     else:
         await update.effective_message.reply_text(f"❌ No series files found matching '{query}'.")
 
-async def callback_query_handler(bot: Bot, update: Update):
+async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles button clicks for series and season selection."""
-    if not update.callback_query or not update.callback_query.data:
-        await update.callback_query.answer("Invalid callback data.", show_alert=True)
-        return
-
     query = update.callback_query
+    if not query or not query.data:
+        await query.answer("Invalid request.")
+        return
+        
     data = query.data.split('|')
     action_type = data[0]
     
     try:
         if action_type == 'series_select':
             series_name = data[1]
-            await show_season_menu(query.message, series_name)
+            await show_season_menu(query, series_name)
             
         elif action_type == 'season_send':
             series_name = data[1]
             season = int(data[2])
-            await send_season_files(query.message, series_name, season)
+            await send_season_files(query, series_name, season)
     except Exception as e:
         logger.error(f"Error in callback: {e}")
         await query.answer("An internal error occurred. Try again.", show_alert=True)
     
     await query.answer()
 
-async def show_season_menu(message: Message, series_name: str):
+async def show_season_menu(query, series_name: str) -> None:
     """Displays buttons for all unique seasons of the selected series."""
-    # Calls the Motor wrapper
     seasons = await get_unique_seasons_by_name(series_name)
     
     if not seasons:
-        await message.edit_text(text=f"❌ No seasons found for {series_name}.")
+        await query.edit_message_text(text=f"❌ No seasons found for {series_name}.")
         return
 
     keyboard = []
@@ -209,29 +213,27 @@ async def show_season_menu(message: Message, series_name: str):
         keyboard.append(row)
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
     caption = f"📺 {series_name}\n\nSelect a Season:"
     
-    await message.edit_text(caption, reply_markup=reply_markup)
+    await query.edit_message_text(caption, reply_markup=reply_markup)
 
 
-async def send_season_files(message: Message, series_name: str, season: int):
+async def send_season_files(query, series_name: str, season: int) -> None:
     """Sends all files belonging to the selected season using copy_message."""
-    user_chat_id = message.chat.id
-    # Calls the Motor wrapper
+    user_chat_id = query.message.chat_id
     files = await get_all_files_by_season(series_name, season)
+    bot = query.bot
     
     if not files:
-        await message.reply_text(text=f"❌ No files found for {series_name} Season {season:02d}.")
+        await bot.send_message(user_chat_id, text=f"❌ No files found for {series_name} Season {season:02d}.")
         return
 
-    status_message = await message.reply_text(
+    status_message = await bot.send_message(
+        user_chat_id,
         f"📦 Sending {len(files)} files for {series_name} Season {season:02d}..."
     )
 
     success_count = 0
-    # NOTE: Gotgbot's Bot.copy_message is the preferred way
-    bot = message.bot 
     
     for file_entry in files:
         channel_id = file_entry.get('channel_id')
@@ -239,14 +241,14 @@ async def send_season_files(message: Message, series_name: str, season: int):
         
         if channel_id and message_id:
             try:
-                # Use gotgbot's copy_message
+                # PTB uses copy_message (similar to Pyrogram/Gotgbot)
                 await bot.copy_message(
                     chat_id=user_chat_id,
                     from_chat_id=channel_id,
                     message_id=message_id
                 )
                 success_count += 1
-                await asyncio.sleep(0.5) # Flood limit buffer
+                await asyncio.sleep(0.5) 
             except Exception as e:
                 logger.error(f"Failed to copy message {message_id} from {channel_id}: {e}")
 
@@ -255,15 +257,15 @@ async def send_season_files(message: Message, series_name: str, season: int):
     try:
         await status_message.edit_text(final_message)
     except Exception:
-        await message.reply_text(final_message)
+        await bot.send_message(user_chat_id, final_message)
 
 
-async def index_channel_files_command(bot: Bot, update: Update):
+async def index_channel_files_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Command to start indexing files from the DUMP_CHANNEL_ID (Owner Only)."""
     if update.effective_user and update.effective_user.id != OWNER_ID:
         await update.effective_message.reply_text("⛔️ You are not authorized to run this command.")
         return
-    
+        
     status_message = await update.effective_message.reply_text(
         f"⏳ Starting index of files from channel {DUMP_CHANNEL_ID}. This may take a while..."
     )
@@ -273,7 +275,7 @@ async def index_channel_files_command(bot: Bot, update: Update):
         await user_app.start()
         logger.info("Pyrogram User Client started for indexing.")
     except Exception as e:
-        error_msg = f"❌ Failed to start User Client for indexing. Check session file/login: {e}"
+        error_msg = f"❌ Failed to start Pyrogram User Client for indexing: {e}"
         await status_message.edit_text(error_msg)
         logger.error(error_msg)
         return
@@ -292,11 +294,11 @@ async def index_channel_files_command(bot: Bot, update: Update):
     await status_message.edit_text(final_message)
 
 
-async def index_channel_files(status_message: Message):
-    """Iterates through a channel and stores file metadata in MongoDB."""
+async def index_channel_files(status_message) -> int:
+    """Iterates through a channel using Pyrogram and stores file metadata in MongoDB."""
     
     indexed_count = 0
-    buffer = [] # Buffer for bulk inserts
+    buffer = [] 
     
     try:
         # Use the Pyrogram User Client (user_app) to read history
@@ -343,57 +345,38 @@ async def index_channel_files(status_message: Message):
     return indexed_count
 
 
-# --- Startup Hook for Gotgbot ---
-
-async def post_init(application: Application) -> None:
-    """Sends restart message after the bot is fully started."""
-    bot = application.bot
-    # Use the bot's own ID to send a dummy message to check status,
-    # then send the restart message.
-    try:
-        # Use bot.send_message to send the notification
-        await bot.send_message(
-            chat_id=OWNER_ID,
-            text="✨ <b>Bot Restarted!</b>\n\nFile filter service is online and ready.",
-            parse_mode="HTML"
-        )
-        logger.info("Sent restart message to owner.")
-    except Exception as e:
-        logger.error(f"Failed to send restart message to owner: {e}")
-
-
 # ###################################################
 # ## MAIN EXECUTION ##
 # ###################################################
 
 def main() -> None:
-    """Start the bot."""
+    """Start the bot using python-telegram-bot's Application."""
     
-    # 1. Setup Gotgbot Application
-    defaults = Defaults(parse_mode="HTML")
+    # 1. Setup Application with HTML parsing default and startup hook
     application = (
         Application.builder()
         .token(BOT_TOKEN)
-        .defaults(defaults)
-        .post_init(post_init) # Add the startup hook
+        .defaults(ContextTypes.DEFAULT_TYPE(parse_mode="HTML"))
+        .post_init(post_init) 
         .build()
     )
 
     # 2. Setup Handlers
+    
     # Command handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("index", index_channel_files_command))
     
-    # Message handler (non-commands, non-private)
-    # Filter for private chat and non-command text
-    private_text_filter = TEXT & ~COMMANDS & MessageFilter(lambda msg: msg.chat.type == 'private')
+    # Message handler for regular text (not commands, only in private chats)
+    private_text_filter = filters.TEXT & (~filters.COMMAND) & filters.ChatType.PRIVATE
     application.add_handler(MessageHandler(private_text_filter, search_handler))
     
-    # Callback query handler
+    # Callback query handler (filters all inline button clicks)
     application.add_handler(CallbackQueryHandler(callback_query_handler))
 
     # 3. Run the Bot
-    logger.info("Starting Gotgbot...")
+    logger.info("Starting python-telegram-bot...")
+    # Use polling for simplicity in deployment environments like the one implied by /app/main.py
     application.run_polling(poll_interval=1.0)
 
 if __name__ == "__main__":
