@@ -7,7 +7,6 @@ import logging
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
-# Import DESCENDING for proper sorting in the search aggregation
 from pymongo import MongoClient, TEXT, DESCENDING 
 
 # --- Configuration Placeholders (Your actual values) ---
@@ -23,7 +22,6 @@ CHANNELS = [-1001996538290]
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-# Set logging level to DEBUG for the duplicate skip message to appear only if level is DEBUG
 logger = logging.getLogger(__name__)
 
 
@@ -54,21 +52,16 @@ async def search_series(query: str):
     """
     Searches MongoDB for unique series names matching the query. 
     Prioritizes text index for better fuzzy matching.
-    FIXED: MongoDB aggregation error by projecting textScore explicitly.
     """
     def sync_search():
         # 1. First, attempt a fuzzy search using the $text index for high tolerance
         pipeline_text_search = [
             {"$match": {"$text": {"$search": query}}},
-            # --- FIX FOR PYMONGO.ERRORS.OPERATIONFAILURE START ---
-            # Project the score explicitly to avoid the '$computed0' error
             {"$project": {
                 "normalized_name": 1,
                 "search_score": {"$meta": "textScore"} 
             }},
-            # Sort using the explicitly named field
             {"$sort": {"search_score": DESCENDING}}, 
-            # --- FIX FOR PYMONGO.ERRORS.OPERATIONFAILURE END ---
             {"$group": {"_id": "$normalized_name"}},
             {"$project": {"_id": 0, "name": "$_id"}}
         ]
@@ -120,14 +113,13 @@ async def save_file_to_db(file_doc: dict):
                 upsert=True
             )
             
-            # Logging for indexing status
             if result.upserted_id:
-                logger.info(f"DB: INSERTED new file. ID: {file_doc['message_id']}")
-            elif result.matched_count > 0 and result.modified_count == 0:
-                logger.debug(f"DB: SKIPPED (Duplicate found and data is unchanged) for ID: {file_doc['message_id']}")
-            elif result.matched_count > 0 and result.modified_count > 0:
-                logger.info(f"DB: UPDATED existing file (Metadata changed) for ID: {file_doc['message_id']}")
-                
+                logger.info(f"DB: INSERTED new file. Msg ID: {file_doc['message_id']}")
+            elif result.modified_count > 0:
+                logger.info(f"DB: UPDATED existing file. Msg ID: {file_doc['message_id']}")
+            else:
+                 logger.debug(f"DB: SKIPPED (Duplicate unchanged). Msg ID: {file_doc['message_id']}")
+
             return True
         except Exception as e:
             logger.error(f"Failed to insert/update file doc: {e}")
@@ -142,6 +134,7 @@ async def save_file_to_db(file_doc: dict):
 def parse_series_info(file_name: str):
     """
     Attempts to extract Series Name, Season (SXX), and Episode (EXX) from a filename.
+    Includes aggressive cleanup to ensure all files for the same series share the exact same normalized name.
     """
     if not file_name:
         return "", 0, 0
@@ -154,13 +147,24 @@ def parse_series_info(file_name: str):
         
         normalized_name = re.sub(r"([. _-]+)?[sS]\d+[eE]\d+([. _-]+)?", " ", file_name).strip()
         
-        common_terms = ["4K", "1080P", "720P", "HDRIP", "WEB-DL", "AMZN", "NETFLIX", 
-                         "DDP5.1", "X265", "x264", "MULTISUB", "AAC", "10BIT", "MKV", "WEBRIP"] 
+        # 2. Aggressively clean common garbage terms, quality, and language tags.
+        # This list is expanded to remove nearly anything that isn't the core title.
+        common_terms = [
+            "4K", "1080P", "720P", "HDRIP", "WEB-DL", "AMZN", "NETFLIX", "DDP5.1", "X265", "x264", 
+            "MULTISUB", "AAC", "10BIT", "MKV", "WEBRIP", "PSA", "DUB", "SUB", "MULTI", "REPACK", 
+            "COMPLETE", "BLURAY", "HDTV", "HULU", "AMZN", "S01", "S02", "S03", "S04", "S05", # Including SXX if it somehow survives regex
+            "ENG", "SPA", "ITA", "FRE", "GER", "DUAL", "AUDIO" # Language and Audio tags
+        ]
         
         for term in common_terms:
+            # Use \b to ensure whole word match and ignore case
             normalized_name = re.sub(r"\b" + re.escape(term) + r"\b", "", normalized_name, flags=re.IGNORECASE).strip()
 
-        normalized_name = re.sub(r"\[.*?\]|\(.*?\)", " ", normalized_name).strip()
+        # 3. Aggressively remove bracketed/parenthesized tags AND @channel tags
+        # This handles [@T4TVseries]
+        normalized_name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", normalized_name).strip()
+        
+        # 4. Replace multiple spaces/dots/underscores with a single space, then Title case it
         normalized_name = re.sub(r"[. _]+", " ", normalized_name).title().strip()
         
         return normalized_name, season, episode
@@ -238,7 +242,8 @@ async def search_handler(_, message):
         keyboard = []
         for name in sorted(unique_names):
             callback_data = f'series_select|{name}'
-            button_text = name[:50] + '...' if len(name) > 50 else name
+            # Limit button text length for clean display
+            button_text = name[:50] + '...' if len(name) > 50 else name 
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -280,7 +285,6 @@ async def show_season_menu(query, series_name: str):
             pass
         return
 
-    # Use asyncio.gather to concurrently fetch file counts (resolves previous async_generator error)
     tasks = [get_all_files_by_season(series_name, s) for s in seasons]
     all_season_files = await asyncio.gather(*tasks)
     total_files = sum(len(files_list) for files_list in all_season_files)
