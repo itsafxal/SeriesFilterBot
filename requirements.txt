@@ -1,5 +1,3 @@
-pymongo
 python-telegram-bot
 motor
-TgCrypto
-gotgbot
+git+http://github.com/PaulSonOfLars/gotgbot
