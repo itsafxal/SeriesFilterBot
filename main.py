@@ -2,18 +2,10 @@ import re
 import os
 import asyncio
 import logging
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import (
-    Application, 
-    CommandHandler, 
-    MessageHandler, 
-    CallbackQueryHandler, 
-    filters,
-    ContextTypes,
-    Defaults # <<< CORRECTED IMPORT
-)
+from pyrotgfork import Client, filters
+from pyrotgfork.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrotgfork.errors import MessageNotModified
 from motor.motor_asyncio import AsyncIOMotorClient 
-from pyrogram import Client as PyrogramClient # For Indexing
 
 # --- Setup Logging ---
 logging.basicConfig(
@@ -35,12 +27,17 @@ mongo_client = AsyncIOMotorClient(MONGO_URI)
 db = mongo_client["SeriesBotDB"]
 files_collection = db["files"]
 
-# --- Pyrogram User Client (Still required for Channel History) ---
-user_app = PyrogramClient(
-    "IndexerUser",
+# --- PyroTGfork Client Setup ---
+# Initialize the client for BOT operations. 
+# We use in_memory=True to avoid creating a session file for the bot token.
+app = Client(
+    "SeriesFilterBot",
     api_id=API_ID,
-    api_hash=API_HASH
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    in_memory=True # Avoids disk session files for the bot
 )
+
 
 # ###################################################
 # ## DATABASE FUNCTIONS (Async Motor) ##
@@ -107,28 +104,26 @@ def parse_series_info(file_name: str):
     
     return file_name.title().strip(), 0, 0 
 
+
 # ###################################################
-# ## PTB HANDLERS ##
+# ## PYROTGFORK HANDLERS ##
 # ###################################################
 
-async def send_restart_message(application: Application):
+async def send_restart_message(client):
     """Sends a notification to the owner when the bot starts successfully."""
     try:
-        # Note: parse_mode="HTML" is now set by default in the Application builder.
-        await application.bot.send_message(
+        await client.send_message(
             chat_id=OWNER_ID,
-            text="✨ <b>Bot Restarted!</b>\n\nFile filter service is online and ready."
+            text="✨ <b>Bot Restarted!</b>\n\nFile filter service is online and ready.",
+            parse_mode="html" 
         )
         logger.info("Sent restart message to owner.")
     except Exception as e:
         logger.error(f"Failed to send restart message to owner: {e}")
 
-async def post_init(application: Application) -> None:
-    """The startup hook for PTB."""
-    await send_restart_message(application)
-
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# Handler for the /start command
+@app.on_message(filters.command("start") & filters.private)
+async def start_command(_, message):
     """Handles the /start command."""
     welcome_text = (
         "👋 <b>Welcome! I'm your Series File Filter Bot.</b>\n\n"
@@ -137,15 +132,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>Example:</b> <code>The Last of Us</code>\n\n"
         f"<b>Admin:</b> Use <code>/index</code> to update the file database."
     )
-    if update.effective_message:
-        await update.effective_message.reply_html(welcome_text)
+    await message.reply_text(welcome_text, parse_mode='html')
 
-async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# Handler for plain text messages in private chat
+@app.on_message(filters.text & filters.private & ~filters.command(["start", "index"]))
+async def search_handler(_, message):
     """Handles user text search queries."""
-    if not update.effective_message or not update.effective_message.text:
-        return
-
-    query = update.effective_message.text.strip()
+    query = message.text.strip()
+    
     unique_names = await search_series(query)
     
     if unique_names:
@@ -153,22 +147,20 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         for name in sorted(unique_names):
             callback_data = f'series_select|{name}'
             button_text = name[:50] + '...' if len(name) > 50 else name
+            # PyroTGfork uses the Pyrogram format for buttons
             keyboard.append([InlineKeyboardButton(button_text, callback_data)])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         response = f"🔎 Found {len(unique_names)} matching series. Please select one:"
-        await update.effective_message.reply_text(response, reply_markup=reply_markup)
+        await message.reply_text(response, reply_markup=reply_markup)
     else:
-        await update.effective_message.reply_text(f"❌ No series files found matching '{query}'.")
+        await message.reply_text(f"❌ No series files found matching '{query}'.")
 
-async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# Handler for inline button presses
+@app.on_callback_query(filters.regex(r"series_select|season_send"))
+async def callback_query_handler(_, query):
     """Handles button clicks for series and season selection."""
-    query = update.callback_query
-    if not query or not query.data:
-        await query.answer("Invalid request.")
-        return
-        
     data = query.data.split('|')
     action_type = data[0]
     
@@ -187,12 +179,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     
     await query.answer()
 
-async def show_season_menu(query, series_name: str) -> None:
+async def show_season_menu(query, series_name: str):
     """Displays buttons for all unique seasons of the selected series."""
     seasons = await get_unique_seasons_by_name(series_name)
     
     if not seasons:
-        await query.edit_message_text(text=f"❌ No seasons found for {series_name}.")
+        try:
+            await query.message.edit_text(text=f"❌ No seasons found for {series_name}.")
+        except MessageNotModified:
+            pass
         return
 
     keyboard = []
@@ -212,21 +207,22 @@ async def show_season_menu(query, series_name: str) -> None:
     reply_markup = InlineKeyboardMarkup(keyboard)
     caption = f"📺 {series_name}\n\nSelect a Season:"
     
-    await query.edit_message_text(caption, reply_markup=reply_markup)
+    try:
+        await query.message.edit_text(caption, reply_markup=reply_markup)
+    except MessageNotModified:
+        pass
 
 
-async def send_season_files(query, series_name: str, season: int) -> None:
+async def send_season_files(query, series_name: str, season: int):
     """Sends all files belonging to the selected season using copy_message."""
-    user_chat_id = query.message.chat_id
+    user_chat_id = query.message.chat.id
     files = await get_all_files_by_season(series_name, season)
-    bot = query.bot
     
     if not files:
-        await bot.send_message(user_chat_id, text=f"❌ No files found for {series_name} Season {season:02d}.")
+        await query.message.reply_text(text=f"❌ No files found for {series_name} Season {season:02d}.")
         return
 
-    status_message = await bot.send_message(
-        user_chat_id,
+    status_message = await query.message.reply_text(
         f"📦 Sending {len(files)} files for {series_name} Season {season:02d}..."
     )
 
@@ -238,7 +234,7 @@ async def send_season_files(query, series_name: str, season: int) -> None:
         
         if channel_id and message_id:
             try:
-                await bot.copy_message(
+                await app.copy_message(
                     chat_id=user_chat_id,
                     from_chat_id=channel_id,
                     message_id=message_id
@@ -253,52 +249,62 @@ async def send_season_files(query, series_name: str, season: int) -> None:
     try:
         await status_message.edit_text(final_message)
     except Exception:
-        await bot.send_message(user_chat_id, final_message)
+        await query.message.reply_text(final_message)
 
+# ###################################################
+# ## INDEXING COMMAND (PyroTGfork User Client) ##
+# ###################################################
 
-async def index_channel_files_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+@app.on_message(filters.command("index") & filters.private)
+async def index_channel_files_command(client, message):
     """Command to start indexing files from the DUMP_CHANNEL_ID (Owner Only)."""
-    if update.effective_user and update.effective_user.id != OWNER_ID:
-        await update.effective_message.reply_text("⛔️ You are not authorized to run this command.")
+    if message.from_user.id != OWNER_ID:
+        await message.reply_text("⛔️ You are not authorized to run this command.")
         return
-        
-    status_message = await update.effective_message.reply_text(
-        f"⏳ Starting index of files from channel {DUMP_CHANNEL_ID}. This may take a while..."
+    
+    # 1. Create a temporary client for indexing (requires user privileges)
+    # ⚠️ THIS WILL LIKELY FAIL IN NON-INTERACTIVE ENVIRONMENTS! ⚠️
+    # To fix this, you must initialize the indexer client with a session string:
+    # indexer_app = Client(USER_SESSION_STRING, API_ID, API_HASH)
+    indexer_app = Client("IndexerUser", api_id=API_ID, api_hash=API_HASH)
+
+    status_message = await message.reply_text(
+        f"⏳ Attempting to start indexer. **If this hangs, the user login failed.** Channel: {DUMP_CHANNEL_ID}"
     )
     
-    # 1. Start the Pyrogram User Client
+    # 2. Start the Indexer Client
     try:
-        await user_app.start()
-        logger.info("Pyrogram User Client started for indexing.")
+        await indexer_app.start()
+        logger.info("PyroTGfork User Client started for indexing.")
     except Exception as e:
-        error_msg = f"❌ Failed to start Pyrogram User Client for indexing: {e}"
+        error_msg = f"❌ Failed to start Indexer Client for login: {e}"
         await status_message.edit_text(error_msg)
         logger.error(error_msg)
         return
 
-    # 2. Clear the old index
+    # 3. Clear the old index
     await clear_index() 
     await status_message.edit_text(f"Indexing... Cleared old index. Starting file processing.")
 
-    # 3. Call the indexing function
-    total_indexed = await index_channel_files(status_message)
+    # 4. Call the indexing function
+    total_indexed = await index_channel_files(indexer_app, status_message)
     
-    # 4. Stop the Pyrogram User Client
-    await user_app.stop() 
+    # 5. Stop the Indexer Client
+    await indexer_app.stop() 
     
     final_message = f"🎉 Indexing Complete!\n\nTotal files indexed: {total_indexed}."
     await status_message.edit_text(final_message)
 
 
-async def index_channel_files(status_message) -> int:
-    """Iterates through a channel using Pyrogram and stores file metadata in MongoDB."""
+async def index_channel_files(indexer_client, status_message):
+    """Iterates through a channel using PyroTGfork and stores file metadata in MongoDB."""
     
     indexed_count = 0
     buffer = [] 
     
     try:
-        # Use the Pyrogram User Client (user_app) to read history
-        async for msg in user_app.get_chat_history(DUMP_CHANNEL_ID): 
+        # Use the indexer client to read history
+        async for msg in indexer_client.get_chat_history(DUMP_CHANNEL_ID): 
             
             if msg.document or msg.video:
                 file_name = msg.document.file_name if msg.document else (msg.video.file_name or "")
@@ -342,33 +348,12 @@ async def index_channel_files(status_message) -> int:
 # ## MAIN EXECUTION ##
 # ###################################################
 
-def main() -> None:
-    """Start the bot using python-telegram-bot's Application."""
-    
-    # 1. Define Defaults object (Fixes the TypeError)
-    defaults = Defaults(parse_mode="HTML")
-
-    # 2. Setup Application
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .defaults(defaults) # <<< Correct usage of the Defaults object
-        .post_init(post_init) 
-        .build()
-    )
-
-    # 3. Setup Handlers
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("index", index_channel_files_command))
-    
-    private_text_filter = filters.TEXT & (~filters.COMMAND) & filters.ChatType.PRIVATE
-    application.add_handler(MessageHandler(private_text_filter, search_handler))
-    
-    application.add_handler(CallbackQueryHandler(callback_query_handler))
-
-    # 4. Run the Bot
-    logger.info("Starting python-telegram-bot...")
-    application.run_polling(poll_interval=1.0)
-
 if __name__ == "__main__":
-    main()
+    logger.info("Starting PyroTGfork bot...")
+    
+    # Add a handler to run startup tasks (like sending the restart message)
+    async def startup_tasks(_):
+        await send_restart_message(app)
+
+    # Use the app.run() entry point
+    app.run(startup_tasks)
