@@ -1,2 +1,3 @@
 pyrofork
-python-telegram-bot==20.x motor
+python-telegram-bot
+motor
