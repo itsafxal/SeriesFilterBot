@@ -20,7 +20,7 @@ CHANNELS = [-1001996538290]
 
 # --- Bulk Indexing Placeholders (REPLACE THESE) ---
 ADMINS = [123456789]  # Your Admin User ID(s)
-LOG_CHANNEL = -1001234567890 # Your Log Channel ID
+LOG_CHANNEL = [-1001996538290] # Your Log Channel ID
 lock = asyncio.Lock()
 class Temp:
     CURRENT = 1
