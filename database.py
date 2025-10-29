@@ -1,6 +1,7 @@
 import pymongo
 from pymongo import MongoClient
-from pymongo.errors import ConnectionError, ConfigurationError, OperationFailure
+from pymongo.errors import ConnectionFailure, ConfigurationError, OperationFailure # Use ConnectionFailure
+# ----------------
 import re
 import json
 import logging
