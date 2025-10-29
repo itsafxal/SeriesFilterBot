@@ -1,4 +1,4 @@
-# bot_main.py (Complete Code for Real-time Series Indexing Bot)
+# bot_main.py (Complete Code for Real-time Series Indexing Bot - Revised)
 
 import re
 import os
@@ -10,7 +10,6 @@ from pyrogram.errors import MessageNotModified
 from pymongo import MongoClient, TEXT
 
 # --- Configuration Placeholders (Your actual values) ---
-# NOTE: Replace these with your actual credentials for production.
 API_ID = 28643132
 API_HASH = "510c3009ea589830a89e045bf8aae656"
 BOT_TOKEN = "7661197159:AAHwppy1JjmEBXucY1gxdbfGKVpuqjl_gFg"
@@ -108,6 +107,8 @@ async def save_file_to_db(file_doc: dict):
 def parse_series_info(file_name: str):
     """
     Attempts to extract Series Name, Season (SXX), and Episode (EXX) from a filename.
+    
+    REVISED: Added better cleanup for embedded tags like [Series World Tm].
     """
     if not file_name:
         return "", 0, 0
@@ -119,15 +120,21 @@ def parse_series_info(file_name: str):
         season = int(match.group(1))
         episode = int(match.group(2))
         
-        # Remove the SXXEXX part and surrounding separators
+        # 1. Remove the SXXEXX part and surrounding separators
         normalized_name = re.sub(r"([. _-]+)?[sS]\d+[eE]\d+([. _-]+)?", " ", file_name).strip()
         
-        # Clean common garbage terms (case-insensitive)
-        for term in ["4K", "1080P", "720P", "HDRIP", "WEB-DL", "AMZN", "NETFLIX", "DDP5.1", "X265", "x264", "MULTISUB", "AAC"]:
+        # 2. Clean common garbage terms (case-insensitive)
+        common_terms = ["4K", "1080P", "720P", "HDRIP", "WEB-DL", "AMZN", "NETFLIX", 
+                        "DDP5.1", "X265", "x264", "MULTISUB", "AAC", "10BIT", "MKV", "WEBRIP"] # Added 10BIT, MKV, WEBRIP
+        
+        for term in common_terms:
             # Use \b for word boundaries to avoid matching parts of longer words
             normalized_name = re.sub(r"\b" + re.escape(term) + r"\b", "", normalized_name, flags=re.IGNORECASE).strip()
 
-        # Replace multiple spaces/dots/underscores with a single space, then Title case it
+        # 3. Aggressively remove bracketed/parenthesized channel/source tags (e.g., [@Series World Tm])
+        normalized_name = re.sub(r"\[.*?\]|\(.*?\)", " ", normalized_name).strip()
+        
+        # 4. Replace multiple spaces/dots/underscores with a single space, then Title case it
         normalized_name = re.sub(r"[. _]+", " ", normalized_name).title().strip()
         
         return normalized_name, season, episode
@@ -172,6 +179,8 @@ async def media_handler(_, message):
             "timestamp": message.date
         }
         
+        # IMPORTANT: Run the bot, delete old entries in MongoDB, and re-index
+        # to see the unified names reflected immediately.
         saved = await save_file_to_db(file_doc)
         if saved:
             logger.info(f"Indexed new file: {normalized_name} S{season:02d}E{episode:02d} from message {message.id}")
@@ -195,7 +204,7 @@ async def start_command(_, message):
         "I automatically index new files posted in the archive channels.\n\n"
         "Just send me the <b>name of a series</b> you are looking for, "
         "and I'll show you the available seasons and episodes from the index.\n\n"
-        "<b>Example:</b> <code>The Last of Us</code>"
+        "<b>Example:</b> <code>Loki</code>"
     )
     await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
@@ -209,12 +218,14 @@ async def search_handler(_, message):
     
     if unique_names:
         keyboard = []
+        # Sort names alphabetically
         for name in sorted(unique_names):
+            # The action is now always 'series_select'
             callback_data = f'series_select|{name}'
             # Truncate long names for button text
             button_text = name[:50] + '...' if len(name) > 50 else name
             
-            # FIXED: Using keyword argument 'callback_data='
+            # Use a full button row for the series name
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -257,16 +268,18 @@ async def show_season_menu(query, series_name: str):
             pass
         return
 
+    # Count the total episodes/files for the series
+    total_files = sum(len(await get_all_files_by_season(series_name, s)) for s in seasons)
+    
     keyboard = []
     row = []
     for season in seasons:
         callback_data = f'season_send|{series_name}|{season}'
-        button_text = f"S{season:02d}"
+        button_text = f"Season {season}"
         
-        # FIXED: Using keyword argument 'callback_data='
         row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
         
-        if len(row) >= 5: # 5 buttons per row for better layout
+        if len(row) >= 4: # Changed to 4 buttons per row for better layout
             keyboard.append(row)
             row = []
     
@@ -274,7 +287,12 @@ async def show_season_menu(query, series_name: str):
         keyboard.append(row)
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    caption = f"📺 <b>{series_name}</b>\n\nSelect a Season:"
+    # Added total files count to the caption
+    caption = (
+        f"📺 <b>{series_name}</b>\n"
+        f"<i>Total Files Indexed: {total_files} in {len(seasons)} seasons.</i>\n\n"
+        "Select a Season to get the files:"
+    )
     
     try:
         await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
