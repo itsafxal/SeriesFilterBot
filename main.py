@@ -35,8 +35,7 @@ try:
     # 1. Compound index for fast unique checks and sorting
     files_collection.create_index([("normalized_name", 1), ("season", 1)], background=True)
     
-    # 2. **CRITICAL FIX**: Ensure the required TEXT INDEX for fuzzy search is created
-    # Use explicit name and background execution for robustness.
+    # 2. Ensure the required TEXT INDEX for fuzzy search is created
     files_collection.create_index(
         [("normalized_name", TEXT)], 
         name="series_name_text_index", 
@@ -69,7 +68,7 @@ async def search_series(query: str):
     Prioritizes text index for better fuzzy matching.
     """
     def sync_search():
-        # 1. Text Search (requires the text index which was the source of the error)
+        # 1. Text Search 
         pipeline_text_search = [
             {"$match": {"$text": {"$search": query}}},
             {"$project": {
@@ -86,7 +85,6 @@ async def search_series(query: str):
             if results:
                 return results
         except Exception as e:
-            # If text index is still missing or fails, log it and fall back to regex
             logger.warning(f"Text search failed (Index issue likely): {e}. Falling back to Regex.")
         
         # 2. Fallback to the original regex search
@@ -152,19 +150,22 @@ async def save_file_to_db(file_doc: dict):
 def parse_series_info(file_name: str):
     """
     Attempts to extract Series Name, Season (SXX), and Episode (EXX) from a filename.
-    Aggressively cleans name to ensure maximum unification (only one button per series).
+    FIX: Updated regex to properly match SXX_EXX patterns.
     """
     if not file_name:
         return "", 0, 0
         
-    match = re.search(r"[sS](\d+)[eE](\d+)", file_name)
+    # FIX APPLIED HERE: Added separator group ([. _-]) between SXX and EXX
+    # This matches patterns like S01E01, S01.E01, S01_E01
+    match = re.search(r"[sS](\d+)[. _-]*[eE](\d+)", file_name)
     
     if match:
         season = int(match.group(1))
         episode = int(match.group(2))
         
         # 1. Remove the SXXEXX part and surrounding separators
-        normalized_name = re.sub(r"([. _-]+)?[sS]\d+[eE]\d+([. _-]+)?", " ", file_name).strip()
+        # Need a more flexible regex to remove the entire SXXEXX pattern
+        normalized_name = re.sub(r"([. _-]+)?[sS]\d+[. _-]*[eE]\d+([. _-]+)?", " ", file_name).strip()
         
         # 2. Aggressively clean common garbage terms, quality, language, AND YEAR tags.
         common_terms = [
@@ -172,13 +173,12 @@ def parse_series_info(file_name: str):
             "AMZN", "NETFLIX", "HULU", "DDP5.1", "X265", "x264", "10BIT", "MKV", 
             "MULTISUB", "AAC", "PSA", "DUB", "SUB", "MULTI", "REPACK", "COMPLETE", 
             "ENG", "SPA", "ITA", "FRE", "GER", "DUAL", "AUDIO", 
-            r"(19|20)\d{2}", # Matches 19xx or 20xx (The Flash 2014 fix)
+            r"(19|20)\d{2}", 
             "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10" 
         ]
         
         for term in common_terms:
             flags = re.IGNORECASE
-            # Exclude word boundary for the year regex pattern
             if r"(19|20)\d{2}" not in term:
                  term = r"\b" + term + r"\b"
             
@@ -273,7 +273,6 @@ async def search_handler(_, message):
         for name in sorted(unique_names):
             callback_data = f'series_select|{name}'
             button_text = name[:50] + '...' if len(name) > 50 else name 
-            # Single button for the unified series name
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
