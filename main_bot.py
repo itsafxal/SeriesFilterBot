@@ -8,25 +8,17 @@ from telegram.error import BadRequest, TimedOut
 from datetime import datetime
 from database import (
     save_user_for_broadcast, 
-    add_series_file, 
-    get_all_broadcast_users, 
     init_db, 
     search_series, 
     get_unique_seasons_by_name, 
     get_all_files_by_season, 
-    save_generic_file
+    # Removed: add_series_file, get_all_broadcast_users, save_generic_file
 )
-from utils import is_series_file, parse_series_info
-from config import BOT_TOKEN, LOG_LEVEL, REQUIRED_CHANNEL, INDEX_CHANNEL_ID, LOG_CHANNEL, ADMINS
+from config import BOT_TOKEN, LOG_LEVEL, REQUIRED_CHANNEL, ADMINS
+# Removed: INDEX_CHANNEL_ID, LOG_CHANNEL
 
-# --- Global State Management (Replacing pyrogram's `utils.temp`) ---
-class BotState:
-    def __init__(self):
-        self.CANCEL = False
-        self.CURRENT = 0
-        self.INDEX_LOCK = asyncio.Lock() # Lock for concurrent indexing processes
-
-temp = BotState()
+# --- Global State Management (Indexing state removed) ---
+# Removed BotState class and 'temp' global state as they are only used for indexing.
 
 
 # Configure logging
@@ -125,62 +117,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "**📚 Bot Commands & Usage:**\n"
         "1. **Search:** Just type the series name (e.g., `Aarya`).\n"
         "2. **/start**: Get a welcome message and register for broadcasts.\n"
-        "3. **Indexing (Admins Only):** Forward a file/message link to the bot to request indexing."
-        "\n\n**Admin Commands:**\n"
-        "4. **/setskip <number>**: Sets the starting message ID for full chat indexing."
+        # Removed indexing mention
     )
     await update.message.reply_text(message, parse_mode='Markdown')
 
-async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles messages posted in the indexed channel (to save series files)."""
-    channel_post = update.channel_post
-    # Only index from the configured channel ID
-    if str(channel_post.chat.id) != str(INDEX_CHANNEL_ID):
-        return
-
-    # Check for Document, Video, or Audio, but prioritize Document for series
-    file_media = channel_post.document or channel_post.video or channel_post.audio
-    
-    if not channel_post or not file_media:
-        return 
-
-    file_name = file_media.file_name or channel_post.caption or ""
-
-    if is_series_file(file_name):
-        series_info = parse_series_info(file_name)
-        if series_info:
-            series_name, season, episode = series_info
-            
-            channel_id = str(channel_post.chat.id)
-            message_id = channel_post.message_id
-            
-            # This is where new files are added if they are not duplicates
-            if add_series_file(series_name, season, episode, channel_id, message_id):
-                logging.info(f"Indexed Series File: {series_name} S{season:02d}E{episode:02d}")
-        else:
-            logging.info(f"Ignored Movie/Non-Series File (Post): {file_name}")
-    else:
-        # Check if the file is a generic media file (e.g., just video/audio/doc not series format)
-        if channel_post.video or channel_post.audio or channel_post.document:
-            media = channel_post.document or channel_post.video or channel_post.audio
-            
-            # Prepare data for generic file indexing (similar to Pyrogram's file object)
-            file_data = {
-                "chat_id": str(channel_post.chat.id),
-                "message_id": channel_post.message_id,
-                "file_unique_id": media.file_unique_id,
-                "file_id": media.file_id,
-                "file_name": media.file_name or "",
-                "file_size": media.file_size or 0,
-                "mime_type": media.mime_type or "",
-                "caption": channel_post.caption or "",
-                "indexed_at": datetime.utcnow()
-            }
-            
-            # Save the file (ignoring series logic)
-            aynav, vnay = save_generic_file(file_data)
-            if aynav:
-                logging.info(f"Indexed Generic File: {file_data.get('file_name', 'NoName')}")
+# Removed: async def channel_post_handler(...) - No automatic file indexing
 
 ###################################################
 ## 🔎 Autofilter Logic Handlers ##
@@ -227,58 +168,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         season = int(data[2])
         await send_season_files(query, series_name, season, context)
         
-    elif action_type == 'index_cancel':
-        temp.CANCEL = True
-        return await query.answer("Cancelling Indexing")
+    # Removed: 'index_cancel', 'index_accept', 'index_reject' logic
         
-    elif action_type in ['index_accept', 'index_reject']:
-        _, chat_id_str, lst_msg_id_str, from_user_id_str = data
-        
-        chat_id = chat_id_str
-        lst_msg_id = int(lst_msg_id_str)
-        from_user = int(from_user_id_str)
-
-        if action_type == 'index_reject':
-            await query.message.delete()
-            await context.bot.send_message(from_user,
-                                          f'Your Submission for indexing `{chat_id}` has been declined by our moderators.',
-                                          reply_to_message_id=lst_msg_id, parse_mode=ParseMode.MARKDOWN)
-            return
-
-        # Handle 'index_accept'
-        if temp.INDEX_LOCK.locked():
-            return await query.answer('Wait until previous process complete.', show_alert=True)
-        
-        msg = query.message
-        await query.answer('Processing...⏳', show_alert=True)
-        
-        # Send acceptance message if not an admin
-        if from_user not in ADMINS:
-            await context.bot.send_message(from_user,
-                                          f'Your Submission for indexing `{chat_id}` has been accepted by our moderators and will be added soon.',
-                                          reply_to_message_id=lst_msg_id, parse_mode=ParseMode.MARKDOWN)
-        
-        await msg.edit_text(
-            "Starting Indexing",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton('Cancel', callback_data='index_cancel')]]
-            )
-        )
-        
-        # Convert chat_id string to int if it's numeric (channel/group ID)
-        try:
-            chat_id = int(chat_id)
-        except ValueError:
-            # It's a username/link, keep it as string
-            pass
-
-        # Start the indexing task
-        context.job_queue.run_once(
-            lambda context: index_files_to_db_wrapper(context.bot, chat_id, lst_msg_id, msg),
-            0,
-            name=f"index_{chat_id}"
-        )
-
     else:
         await query.edit_message_text(text="Invalid action.")
 
@@ -288,11 +179,10 @@ async def show_season_menu(query, series_name, context):
     overview = get_series_overview(series_name) 
     
     if not seasons:
-        # Use edit_message_text if the original message was text, or send new message
         try:
-             await query.message.edit_text(text=f"❌ No seasons found for **{series_name}**.", parse_mode='Markdown')
+              await query.message.edit_text(text=f"❌ No seasons found for **{series_name}**.", parse_mode='Markdown')
         except Exception:
-             await context.bot.send_message(query.message.chat_id, text=f"❌ No seasons found for **{series_name}**.", parse_mode='Markdown')
+              await context.bot.send_message(query.message.chat_id, text=f"❌ No seasons found for **{series_name}**.", parse_mode='Markdown')
         return
 
     keyboard = []
@@ -341,11 +231,10 @@ async def send_season_files(query, series_name, season, context):
     files = get_all_files_by_season(series_name, season)
     
     if not files:
-        # Check if the message is a photo/caption message or a simple text message to edit
         try:
-             await query.message.edit_text(text=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='Markdown')
+              await query.message.edit_text(text=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='Markdown')
         except Exception:
-             await context.bot.send_message(user_chat_id, text=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='Markdown')
+              await context.bot.send_message(user_chat_id, text=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='Markdown')
         return
 
     # Send a status message (since the previous message was deleted)
@@ -382,248 +271,10 @@ async def send_season_files(query, series_name, season, context):
 
 
 ###################################################
-## 📝 Indexing Logic Handlers ##
+## 📝 Indexing Logic Handlers (Removed) ##
 ###################################################
+# Removed: send_for_index, index_files_to_db_wrapper, index_files_to_db, set_skip_number
 
-async def send_for_index(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles forwarded messages or links for indexing submission."""
-    message = update.message
-    chat_id = None
-    last_msg_id = None
-
-    if message.text:
-        regex = re.compile(r"(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$")
-        match = regex.match(message.text)
-        if not match:
-            return await message.reply_text('Invalid link')
-        
-        chat_id_part = match.group(4)
-        last_msg_id = int(match.group(5))
-        
-        if chat_id_part.isnumeric():
-            # Private channel link uses 'c/' which maps to -100 + channel_id
-            chat_id = int("-100" + chat_id_part)
-        else:
-            # Public username/link
-            chat_id = chat_id_part
-            
-    elif (hasattr(message, 'forward_from_chat') and 
-          message.forward_from_chat and 
-          message.forward_from_chat.type == ChatType.CHANNEL):
-        
-        last_msg_id = message.forward_from_message_id
-        chat_id = message.forward_from_chat.username or message.forward_from_chat.id
-    else:
-        # Returns if it's not a link, and not a forwarded message from a channel
-        return
-
-    try:
-        # Check if the bot can see the chat
-        chat_info = await context.bot.get_chat(chat_id)
-        # Check if the last message ID is valid
-        # This will fail if the bot is not an admin in a private channel/group or if the message doesn't exist
-        try:
-             await context.bot.get_message(chat_id, last_msg_id)
-        except BadRequest:
-             return await message.reply_text('Make Sure That Iam An Admin In The Channel/Group, and the message ID is valid.')
-
-    except BadRequest as e:
-        if 'chat not found' in str(e) or 'is not a peer' in str(e):
-            return await message.reply_text('This may be a private channel / group. Make me an admin over there to index the files.')
-        else:
-            logging.exception(e)
-            return await message.reply_text(f'Errors - {e}')
-    except Exception as e:
-        logging.exception(e)
-        return await message.reply_text(f'Errors - {e}')
-
-
-    # Convert numeric chat_id back to string for callback data if it's an int
-    chat_id_str = str(chat_id)
-
-    # --- Admin Bypass ---
-    if message.from_user.id in ADMINS:
-        buttons = [
-            [
-                InlineKeyboardButton('Yes',
-                                     callback_data=f'index_accept|{chat_id_str}|{last_msg_id}|{message.from_user.id}')
-            ],
-            [
-                InlineKeyboardButton('close', callback_data='close_data'),
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(buttons)
-        return await message.reply_text(
-            f'Do you Want To Index This Channel/ Group ?\n\nChat ID/ Username: <code>{chat_id_str}</code>\nLast Message ID: <code>{last_msg_id}</code>',
-            reply_markup=reply_markup, parse_mode=ParseMode.HTML)
-
-
-    # --- Non-Admin Request (Requires approval) ---
-    # Get invite link (only possible for private chats if bot is admin)
-    link = "Private Chat (Admin Required)"
-    if isinstance(chat_id, int) and chat_info.type != ChatType.PRIVATE:
-        try:
-            link = (await context.bot.create_chat_invite_link(chat_id)).invite_link
-        except BadRequest:
-            link = "Admin required for invite link"
-        except Exception as e:
-            logging.warning(f"Failed to get invite link for {chat_id}: {e}")
-            link = f"Error: {e}"
-    elif isinstance(chat_id, str):
-        link = f"@{chat_id}"
-
-
-    buttons = [
-        [
-            InlineKeyboardButton('Accept Index',
-                                 callback_data=f'index_accept|{chat_id_str}|{last_msg_id}|{message.from_user.id}')
-        ],
-        [
-            InlineKeyboardButton('Reject Index',
-                                 callback_data=f'index_reject|{chat_id_str}|{message.id}|{message.from_user.id}'),
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(buttons)
-    await context.bot.send_message(LOG_CHANNEL,
-                            f'#IndexRequest\n\nBy : {message.from_user.mention} (<code>{message.from_user.id}</code>)\nChat ID/ Username - <code> {chat_id_str}</code>\nLast Message ID - <code>{last_msg_id}</code>\nInviteLink - {link}',
-                            reply_markup=reply_markup, parse_mode=ParseMode.HTML)
-    
-    await message.reply_text('ThankYou For the Contribution, Wait For My Moderators to verify the files.')
-
-
-async def index_files_to_db_wrapper(bot, chat, lst_msg_id, msg):
-    """A wrapper to call the main async indexing function from job_queue."""
-    await index_files_to_db(bot, chat, lst_msg_id, msg)
-
-async def index_files_to_db(bot, chat_id, last_msg_id, msg: Message):
-    """The main function to iterate and index files from a chat."""
-    total_files = 0
-    duplicate = 0
-    errors = 0
-    deleted = 0
-    no_media = 0
-    unsupported = 0
-    
-    temp.CURRENT = 0 # Reset current count before starting iteration
-    
-    async with temp.INDEX_LOCK:
-        try:
-            current = temp.CURRENT
-            temp.CANCEL = False
-            
-            message_id = last_msg_id
-            
-            while message_id >= 1 and not temp.CANCEL:
-                current += 1
-                
-                if current % 20 == 0:
-                    can = [[InlineKeyboardButton('Cancel', callback_data='index_cancel')]]
-                    reply = InlineKeyboardMarkup(can)
-                    try:
-                        await msg.edit_text(
-                            text=f"Total messages fetched: <code>{current}</code>\nTotal messages saved: <code>{total_files}</code>\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>",
-                            reply_markup=reply, parse_mode=ParseMode.HTML)
-                    except (BadRequest, TimedOut):
-                        # Ignore edit message errors, just continue indexing
-                        pass
-                    
-                try:
-                    message = await bot.get_message(chat_id, message_id)
-                except BadRequest as e:
-                    if 'message not found' in str(e).lower():
-                        deleted += 1
-                        message_id -= 1
-                        continue
-                    else:
-                        errors += 1
-                        message_id -= 1
-                        continue
-                except Exception as e:
-                    errors += 1
-                    logging.exception(f"Error fetching message {message_id}: {e}")
-                    message_id -= 1
-                    continue
-                
-                # Check for media types (Document, Video, Audio)
-                media = message.document or message.video or message.audio
-
-                if message.empty:
-                    deleted += 1
-                elif not media:
-                    no_media += 1
-                elif not (message.document or message.video or message.audio):
-                    unsupported += 1
-                else:
-                    # Logic to save the file
-                    # We prioritize series logic first, then fallback to generic save
-                    
-                    file_name = media.file_name or message.caption or ""
-                    
-                    if is_series_file(file_name):
-                        series_info = parse_series_info(file_name)
-                        if series_info:
-                            series_name, season, episode = series_info
-                            if add_series_file(series_name, season, episode, str(chat_id), message.message_id):
-                                total_files += 1
-                            else:
-                                duplicate += 1
-                        else:
-                            # It has SXXEYY but parsing failed, treat as unsupported/error
-                            unsupported += 1
-                    else:
-                        # Save as generic file
-                        file_data = {
-                            "chat_id": str(chat_id),
-                            "message_id": message.message_id,
-                            "file_unique_id": media.file_unique_id,
-                            "file_id": media.file_id,
-                            "file_name": media.file_name or "",
-                            "file_size": media.file_size or 0,
-                            "mime_type": media.mime_type or "",
-                            "caption": message.caption or "",
-                            "indexed_at": datetime.utcnow()
-                        }
-                        
-                        aynav, vnay = save_generic_file(file_data)
-                        if aynav:
-                            total_files += 1
-                        elif vnay == 0:
-                            duplicate += 1
-                        elif vnay == 2:
-                            errors += 1
-
-                message_id -= 1 # Move to the previous message
-
-            # Post-loop update for cancellation
-            if temp.CANCEL:
-                await msg.edit_text(f"Successfully Cancelled!!\n\nSaved <code>{total_files}</code> files to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>", parse_mode=ParseMode.HTML)
-                return
-
-        except Exception as e:
-            # Assuming `logger` should be `logging` here based on your imports
-            logging.exception(e)
-            await msg.edit_text(f'Error: {e}')
-        else:
-            await msg.edit_text(f'Succesfully saved <code>{total_files}</code> to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>', parse_mode=ParseMode.HTML)
-
-
-async def set_skip_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sets the starting message ID (skip number) for full chat indexing."""
-    # Check if the user is an admin
-    if update.message.from_user.id not in ADMINS:
-        return await update.message.reply_text("Permission Denied. Only admins can use this command.")
-
-    if not context.args or len(context.args) != 1:
-        return await update.message.reply_text("Usage: /setskip <number>")
-    
-    try:
-        skip = int(context.args[0])
-    except ValueError:
-        return await update.message.reply_text("Skip number should be an integer.")
-    
-    # Store the skip number in the temporary state
-    temp.CURRENT = skip
-    await update.message.reply_text(f"Successfully set **SKIP** number as `{skip}`. The next full index will start from message ID {skip}.", parse_mode=ParseMode.MARKDOWN)
 
 def main() -> None:
     """Start the bot."""
@@ -641,28 +292,9 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, search_handler))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     
-    # Channel indexing handler (does NOT need subscription check)
-    media_filter = (
-        filters.ATTACHMENT
-        | filters.VIDEO
-        | filters.AUDIO
-    )
-    application.add_handler(MessageHandler(
-        filters.UpdateType.CHANNEL_POST 
-        & filters.ChatType.CHANNEL
-        & media_filter, 
-        channel_post_handler))
-
-    # --- New Indexing Handlers (Admin Logic) ---
-    admin_filter = filters.User(ADMINS)
-    
-    # Handle /setskip (Admin only)
-    application.add_handler(CommandHandler('setskip', set_skip_number, filters=admin_filter & filters.ChatType.PRIVATE))
-    
-    # Handle index submission (Forwarded message or Link in private chat)
-    index_filter = filters.ChatType.PRIVATE & (filters.FORWARDED | filters.Regex(r"(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$"))
-    application.add_handler(MessageHandler(index_filter, send_for_index))
-
+    # Removed: Channel indexing handler
+    # Removed: Admin commands (/setskip)
+    # Removed: Index submission handler
 
     print("Bot is running...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
