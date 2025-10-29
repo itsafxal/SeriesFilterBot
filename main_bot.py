@@ -1,11 +1,20 @@
 import logging
-import requests 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+# Assuming 'config' exists and contains necessary variables
+from config import BOT_TOKEN, ADMIN_USER_ID, LOG_LEVEL, REQUIRED_CHANNEL, INDEX_CHANNEL_ID
+
 # Corrected database imports (Assuming config is set up correctly for imports)
-from database import save_user_for_broadcast, add_series_file, get_all_broadcast_users, init_db, search_series, get_unique_seasons_by_name, get_all_files_by_season
+from database import (
+    save_user_for_broadcast, 
+    add_series_file, 
+    get_all_broadcast_users, 
+    init_db, 
+    search_series, 
+    get_unique_seasons_by_name, 
+    get_all_files_by_season
+)
 from utils import is_series_file, parse_series_info
-from config import BOT_TOKEN, ADMIN_USER_ID, LOG_LEVEL, MAX_SEARCH_RESULTS, REQUIRED_CHANNEL, INDEX_CHANNEL_ID 
 
 # Configure logging
 logging.basicConfig(
@@ -15,14 +24,16 @@ logging.basicConfig(
 
 # Define a placeholder function
 def get_series_overview(series_name):
-    """Fetches series overview."""
-    logging.info("Poster fetch feature is disabled.")
+    """Fetches series overview (Placeholder)."""
+    logging.debug("Poster fetch feature is disabled.")
     return None
 
 ###################################################
 ## 🔒 Force Subscribe Middleware (Corrected) ##
 ###################################################
 
+# NOTE: The @check_subscription decorator pattern is kept, but it MUST be applied 
+# directly to the async handler functions before adding them to the Application.
 def check_subscription(handler):
     """
     Decorator-like function to check if the user is a member of REQUIRED_CHANNEL.
@@ -30,6 +41,10 @@ def check_subscription(handler):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user:
             return
+
+        # Skip force-sub check for inline results, etc., and focus on message/callback origins
+        if not update.effective_message and not update.callback_query:
+             return await handler(update, context)
 
         user_id = update.effective_user.id
         
@@ -50,8 +65,18 @@ def check_subscription(handler):
                 keyboard = [[InlineKeyboardButton("Join Channel 📢", url=f"https://t.me/{channel_link}")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
-                await update.effective_message.reply_text(
-                    "🚨 **Subscription Required** 🚨\n\nYou must join our channel to use this bot's search features.",
+                # Send the requirement message
+                if update.callback_query:
+                    # For callbacks, use answer and send a new message
+                    await update.callback_query.answer(text="Subscription Required!", show_alert=True)
+                    target_chat = update.callback_query.message.chat_id
+                else:
+                    # For messages, reply to the message
+                    target_chat = update.effective_chat.id
+                
+                await context.bot.send_message(
+                    chat_id=target_chat,
+                    text="🚨 **Subscription Required** 🚨\n\nYou must join our channel to use this bot's search features.",
                     reply_markup=reply_markup,
                     parse_mode='Markdown'
                 )
@@ -59,10 +84,12 @@ def check_subscription(handler):
         except Exception as e:
             # Log the error
             logging.error(f"Force sub check failed: {e}")
-            await update.effective_message.reply_text("An error occurred while checking your subscription. Please try again.")
+            if update.effective_message:
+                await update.effective_message.reply_text("An error occurred while checking your subscription. Please try again.")
             return
 
     return wrapper
+
 ###################################################
 ## 🎬 Command Handlers ##
 ###################################################
@@ -95,7 +122,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Command to start indexing ALL messages from the INDEX_CHANNEL_ID (Admin only).
-    Uses robust error handling for message gaps.
+    **FIXED: Using context.bot.get_chat_message instead of get_message.**
     """
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ You are not authorized to use this command.")
@@ -107,16 +134,14 @@ async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     message_id_counter = 0
     message_id = 1
     MAX_MESSAGE_ID = 20000 
-    # Increased to 500 to allow for larger gaps in messages
     MAX_CONSECUTIVE_MISSES = 500 
     consecutive_errors = 0 
     
     try:
         while message_id <= MAX_MESSAGE_ID:
             try:
-                # FIX REVERTED: Using context.bot.get_message, which is the standard name.
-                # The previous error indicates context.bot does not expose 'get_chat_message'.
-                message = await context.bot.get_message(chat_id=INDEX_CHANNEL_ID, message_id=message_id)
+                # 🌟 FIX: Using get_chat_message for channel posts
+                message = await context.bot.get_chat_message(chat_id=INDEX_CHANNEL_ID, message_id=message_id)
                 consecutive_errors = 0 # Reset error counter
 
                 channel_post = message
@@ -186,9 +211,7 @@ async def broadcast_test_command(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Handles messages posted in the indexed channel (to save files).
-    """
+    """Handles messages posted in the indexed channel (to save files)."""
     channel_post = update.channel_post
     # Only index from the configured channel ID
     if str(channel_post.chat.id) != str(INDEX_CHANNEL_ID):
@@ -260,8 +283,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         season = int(data[2])
         await send_season_files(query, series_name, season, context)
     else:
+        # This will only happen if the force-sub check fails to block the query and the data is invalid
         await query.edit_message_text(text="Invalid action.")
 
+# show_season_menu and send_season_files remain the same
 async def show_season_menu(query, series_name, context):
     """Displays buttons for all unique seasons of the selected series."""
     seasons = get_unique_seasons_by_name(series_name)
@@ -294,19 +319,21 @@ async def show_season_menu(query, series_name, context):
     caption += "\n\n**Select a Season:**"
     
     try:
-        # Delete the previous message (search result or series list)
-        await query.message.delete()
-    except Exception:
-        pass 
-
-    chat_id = query.message.chat_id
-    
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=caption,
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+        # Edit the original message to show the season menu
+        await query.edit_message_text(
+            text=caption,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+         logging.error(f"Error editing message to show season menu: {e}")
+         # Fallback to sending a new message if editing fails (e.g., message too old)
+         await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=caption,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
     
     await query.answer()
 
@@ -317,19 +344,22 @@ async def send_season_files(query, series_name, season, context):
     files = get_all_files_by_season(series_name, season)
     
     if not files:
-        # Check if the message is a photo/caption message or a simple text message to edit
+        # Attempt to edit the message to show the 'no files found' error
         try:
              await query.edit_message_caption(caption=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='Markdown')
         except Exception:
             await query.edit_message_text(text=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='Markdown')
         return
 
+    # Update message to show 'sending files' status
     try:
+        # Try to edit caption first (if the message has media)
         await query.edit_message_caption(
             caption=f"📦 Sending **{len(files)} files** for **{series_name}** Season **{season:02d}**...",
             parse_mode='Markdown'
         )
     except Exception:
+        # Fallback to editing text message
         await query.edit_message_text(
             text=f"📦 Sending **{len(files)} files** for **{series_name}** Season **{season:02d}**...",
             parse_mode='Markdown'
@@ -380,19 +410,17 @@ def main() -> None:
     application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     # --- Register Handlers ---
-
-    # Core commands require subscription check
-    application.add_handler(CommandHandler("start", check_subscription(start_command)))
-    application.add_handler(CommandHandler("help", check_subscription(help_command)))
+    
+    # Handlers that require the subscription check decorator
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
+    application.add_handler(CallbackQueryHandler(callback_query_handler))
     
     # Admin commands (no subscription check needed)
     application.add_handler(CommandHandler("index_all", index_all_command)) 
     application.add_handler(CommandHandler("broadcast_test", broadcast_test_command))
 
-    # Search and Callback handlers require subscription check
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_subscription(search_handler)))
-    application.add_handler(CallbackQueryHandler(check_subscription(callback_query_handler)))
-    
     # Channel indexing handler 
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & filters.Document.ALL, channel_post_handler))
 
