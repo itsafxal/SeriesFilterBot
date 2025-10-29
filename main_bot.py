@@ -118,7 +118,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "2. **/start**: Get a welcome message and register for broadcasts."
         "3. **Indexing (Admins Only):** Forward a file/message link to the bot to request indexing."
         "\n\n**Admin Commands:**\n"
-        "4. **/setskip \<number\>**: Sets the starting message ID for full chat indexing."
+        "4. **/setskip <number>**: Sets the starting message ID for full chat indexing."
     )
     await update.message.reply_text(message, parse_mode='Markdown')
 
@@ -174,7 +174,7 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             if aynav:
                 logging.info(f"Indexed Generic File: {file_data.get('file_name', 'NoName')}")
             # elif vnay == 0: # Duplicate file unique ID
-                # logging.debug(f"Duplicate Generic File: {file_data.get('file_name', 'NoName')}")
+            # logging.debug(f"Duplicate Generic File: {file_data.get('file_name', 'NoName')}")
 
 ###################################################
 ## 🔎 Autofilter Logic Handlers (No change) ##
@@ -520,7 +520,7 @@ async def index_files_to_db(bot, chat_id, last_msg_id, msg: Message):
                     except (BadRequest, TimedOut):
                         # Ignore edit message errors, just continue indexing
                         pass
-                
+                    
                 try:
                     message = await bot.get_message(chat_id, message_id)
                 except BadRequest as e:
@@ -578,8 +578,8 @@ async def index_files_to_db(bot, chat_id, last_msg_id, msg: Message):
                             "indexed_at": datetime.utcnow()
                         }
                         
-                        aynav, vnay = save_generic_file(file_data)
-                        if aynav:
+                        aynäv, vnay = save_generic_file(file_data)
+                        if aynäv:
                             total_files += 1
                         elif vnay == 0:
                             duplicate += 1
@@ -631,18 +631,21 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(check_subscription(callback_query_handler)))
     
     # Channel indexing handler (does NOT need subscription check)
-    # FIX: Replacing filters.ALL_MEDIA with an explicit combination of media filters.
     media_filter = (
-    filters.ATTACHMENT
-    | filters.VIDEO
-    | filters.AUDIO
-    | filters.PHOTO
-    | filters.ANIMATION
-    | filters.VOICE
-    | filters.VIDEO_NOTE
+        filters.ATTACHMENT
+        | filters.VIDEO
+        | filters.AUDIO
+        | filters.PHOTO
+        | filters.ANIMATION
+        | filters.VOICE
+        | filters.VIDEO_NOTE
     )
-    
-    application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & media_filter, channel_post_handler))
+    # FIX 2: Ensure channel post handler only fires for channel posts with media
+    application.add_handler(MessageHandler(
+        filters.UpdateType.CHANNEL_POST 
+        & filters.ChatType.CHANNEL
+        & media_filter, 
+        channel_post_handler))
 
     # --- New Indexing Handlers (Admin Logic) ---
     admin_filter = filters.User(ADMINS)
@@ -651,12 +654,12 @@ def main() -> None:
     application.add_handler(CommandHandler('setskip', set_skip_number, filters=admin_filter))
     
     # Handle index submission (Forwarded message or Link in private chat)
-    index_filter = filters.PRIVATE & (filters.FORWARDED | filters.Regex(r"(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$"))
+    # FIX 1: Change filters.PRIVATE to filters.ChatType.PRIVATE
+    index_filter = filters.ChatType.PRIVATE & (filters.FORWARDED | filters.Regex(r"(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$"))
     application.add_handler(MessageHandler(index_filter, send_for_index))
 
 
     print("Bot is running...")
-    # It is recommended to use the latest `telegram.constants.UpdateType` for allowed updates
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
