@@ -1,31 +1,8 @@
-
-API_ID = 20860011 # Replace with your actual API ID
-API_HASH = "8523438cd39e124dfe7038a1eb5b5873" # Replace with your actual API Hash
-BOT_TOKEN = "8163888122:AAEuGzXZDxKlcehE2b5Yj4kpayBUo1VaZWs" # Replace with your bot token
-MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-DATABASE_NAME = "Series-Bot"
-ADMINS = "5483128891"
-# config.ini
-
-[TELEGRAM]
-# ⚠️ REQUIRED: Replace [YOUR_TELEGRAM_BOT_TOKEN] with the token from BotFather
-BOT_TOKEN = [YOUR_TELEGRAM_BOT_TOKEN]
-
-# ⚠️ REQUIRED: Replace 123456789 with your actual Telegram User ID (integer only, no quotes)
-ADMIN_USER_ID = 123456789 
-
-# 🆕 NEW: The ID of the channel where the bot watches for new file posts (starts with -100)
-INDEXING_CHANNEL_ID = -1001234567890 
-
-# 🆕 NEW: Set the logging level (INFO, WARNING, ERROR, DEBUG)
+BOT_TOKEN = "8163888122:AAEuGzXZDxKlcehE2b5Yj4kpayBUo1VaZWs"
+ADMIN_USER_ID = 5483128891 
+INDEXING_CHANNEL_ID = -1003110605300 
 LOG_LEVEL = INFO
-
-[DATABASE]
-# ⚠️ REQUIRED: Replace [YOUR_MONGODB_CONNECTION_URI] with your actual MongoDB connection string
-MONGO_URI = [YOUR_MONGODB_CONNECTION_URI]
+MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 DATABASE_NAME = SeriesAutofilterBot
 BROADCAST_USERS_FILE = broadcast_users.json
-
-[LIMITS]
-# Set the maximum number of search results to display to a user
 MAX_SEARCH_RESULTS = 10
