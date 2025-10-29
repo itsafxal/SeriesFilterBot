@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # Note: It's better practice to load secrets from environment variables
 API_ID = 21352077
 API_HASH = "e4ba74d3f410dffbe848402989e61a04"
-BOT_TOKEN = "7661197159:AAHwppy1JjmEBXucY1gxdbfGKVpuqjl_gFg"
+BOT_TOKEN = "8163888122:AAEuGzXZDxKlcehE2b5Yj4kpayBUo1VaZWs"
 MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 DUMP_CHANNEL_ID = int(os.environ.get("DUMP_CHANNEL_ID", -1001996538290))
 OWNER_ID = int(os.environ.get("OWNER_ID", 5483128891))
