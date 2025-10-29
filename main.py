@@ -1,3 +1,5 @@
+# bot_main.py (The full code for your Series Filter Bot)
+
 import re
 import os
 import asyncio
@@ -7,20 +9,17 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
 from pymongo import MongoClient, TEXT
 
+# --- Import Configuration ---
+from config import (
+    API_ID, API_HASH, BOT_TOKEN, MONGO_URI, DUMP_CHANNEL_ID, OWNER_ID, INDEXER_SESSION_NAME
+)
+
 # --- Setup Logging ---
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-
-# --- CONFIGURATION ---
-API_ID = 21352077
-API_HASH = "e4ba74d3f410dffbe848402989e61a04"
-BOT_TOKEN = "8163888122:AAEuGzXZDxKlcehE2b5Yj4kpayBUo1VaZWs"
-MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-DUMP_CHANNEL_ID = int(os.environ.get("DUMP_CHANNEL_ID", -1001996538290))
-OWNER_ID = int(os.environ.get("OWNER_ID", 5483128891))
 
 # --- Database Setup (Synchronous PyMongo) ---
 mongo_client = MongoClient(MONGO_URI)
@@ -48,6 +47,7 @@ app = Client(
 async def search_series(query: str):
     """Searches MongoDB for unique series names matching the query."""
     def sync_search():
+        # Escaping and then replacing spaces with '.*' allows flexible searching
         regex_query = re.escape(query).replace(" ", ".*")
         pipeline = [
             {"$match": {"normalized_name": {"$regex": regex_query, "$options": "i"}}},
@@ -62,6 +62,7 @@ async def get_unique_seasons_by_name(series_name: str):
     """Gets unique season numbers for a given series."""
     def sync_get_seasons():
         seasons = files_collection.distinct("season", {"normalized_name": series_name})
+        # Filter out season 0 (which is often used for non-series files) and sort
         seasons = sorted([s for s in seasons if s > 0])
         return seasons
         
@@ -106,21 +107,27 @@ def parse_series_info(file_name: str):
     if not file_name:
         return "", 0, 0
         
+    # Regex to find SXXEXX pattern
     match = re.search(r"[sS](\d+)[eE](\d+)", file_name)
     
     if match:
         season = int(match.group(1))
         episode = int(match.group(2))
         
+        # Remove the SXXEXX part and surrounding separators
         normalized_name = re.sub(r"([. _-]+)?[sS]\d+[eE]\d+([. _-]+)?", " ", file_name).strip()
         
+        # Clean common garbage terms (case-insensitive)
         for term in ["4K", "1080P", "720P", "HDRIP", "WEB-DL", "AMZN", "NETFLIX", "DDP5.1", "X265", "x264", "MULTISUB", "AAC"]:
+            # Use \b for word boundaries to avoid matching parts of longer words
             normalized_name = re.sub(r"\b" + re.escape(term) + r"\b", "", normalized_name, flags=re.IGNORECASE).strip()
 
+        # Replace multiple spaces/dots/underscores with a single space, then Title case it
         normalized_name = re.sub(r"[. _]+", " ", normalized_name).title().strip()
         
         return normalized_name, season, episode
     
+    # If SXXEXX is not found, treat it as a potential standalone file, with Season/Episode 0
     return file_name.title().strip(), 0, 0 
 
 
@@ -166,6 +173,7 @@ async def search_handler(_, message):
         keyboard = []
         for name in sorted(unique_names):
             callback_data = f'series_select|{name}'
+            # Truncate long names for button text
             button_text = name[:50] + '...' if len(name) > 50 else name
             keyboard.append([InlineKeyboardButton(button_text, callback_data)])
         
@@ -216,7 +224,7 @@ async def show_season_menu(query, series_name: str):
         button_text = f"S{season:02d}"
         row.append(InlineKeyboardButton(button_text, callback_data))
         
-        if len(row) >= 5: 
+        if len(row) >= 5: # 5 buttons per row for better layout
             keyboard.append(row)
             row = []
     
@@ -253,18 +261,20 @@ async def send_season_files(query, series_name: str, season: int):
         
         if channel_id and message_id:
             try:
+                # Use copy_message to forward the file without the 'via @botname' tag
                 await app.copy_message(
                     chat_id=user_chat_id,
                     from_chat_id=channel_id,
                     message_id=message_id
                 )
                 success_count += 1
-                await asyncio.sleep(0.5) 
+                await asyncio.sleep(0.5) # Throttle to avoid flooding Telegram
             except Exception as e:
                 logger.error(f"Failed to copy message {message_id} from {channel_id}: {e}")
 
     final_message = f"✅ Sent <b>{success_count}</b> files for <b>{series_name}</b> Season {season:02d}."
     
+    # Try to edit the status message, fall back to a new message if it fails
     try:
         await status_message.edit_text(final_message, parse_mode=enums.ParseMode.HTML) 
     except Exception:
@@ -282,18 +292,18 @@ async def index_channel_files_command(client, message):
         return
     
     status_message = await message.reply_text(
-        f"⏳ Attempting to start indexer. This requires a <b>user session</b> to read channel history. Channel: <code>{DUMP_CHANNEL_ID}</code>"
+        f"⏳ Attempting to start indexer. This requires a <b>user session</b> to read channel history. Session name: <code>{INDEXER_SESSION_NAME}</code>"
     )
     
-    # NOTE: The session name MUST match the pre-created session file (IndexerUser.session)
-    indexer_app = Client("IndexerUser", api_id=API_ID, api_hash=API_HASH)
+    # Initialize the user client with the defined session name
+    indexer_app = Client(INDEXER_SESSION_NAME, api_id=API_ID, api_hash=API_HASH)
 
     try:
-        # This will now succeed if IndexerUser.session is present
+        # This requires IndexerUser.session to be present and valid
         await indexer_app.start() 
         logger.info("Pyrogram User Client started for indexing.")
     except Exception as e:
-        error_msg = f"❌ Failed to start Indexer Client for login. You need a valid user session. Error: <code>{e}</code>"
+        error_msg = f"❌ Failed to start Indexer Client. Ensure 'IndexerUser.session' is present and valid. Error: <code>{e}</code>"
         await status_message.edit_text(error_msg, parse_mode=enums.ParseMode.HTML) 
         logger.error(error_msg)
         return
@@ -303,7 +313,7 @@ async def index_channel_files_command(client, message):
 
     total_indexed = await index_channel_files(indexer_app, status_message)
     
-    await indexer_app.stop() 
+    await indexer_app.stop() # Stop the user client after indexing is done
     
     final_message = f"🎉 <b>Indexing Complete!</b>\n\nTotal files indexed: <b>{total_indexed}</b>."
     await status_message.edit_text(final_message, parse_mode=enums.ParseMode.HTML) 
@@ -313,9 +323,10 @@ async def index_channel_files(indexer_client, status_message):
     """Iterates through a channel using Pyrogram and stores file metadata in MongoDB."""
     
     indexed_count = 0
-    buffer = [] 
+    buffer = [] # Buffer for bulk inserts
     
     try:
+        # Use the user client to get chat history, which handles private channels better
         async for msg in indexer_client.get_chat_history(DUMP_CHANNEL_ID): 
             
             if msg.document or msg.video:
@@ -323,6 +334,7 @@ async def index_channel_files(indexer_client, status_message):
                 
                 normalized_name, season, episode = parse_series_info(file_name)
                 
+                # Only index files that were successfully parsed as part of a series (Season > 0)
                 if season > 0: 
                     file_doc = {
                         "channel_id": DUMP_CHANNEL_ID,
@@ -336,15 +348,19 @@ async def index_channel_files(indexer_client, status_message):
                     
                     buffer.append(file_doc)
                     
+                    # Bulk insert to reduce database overhead
                     if len(buffer) >= 50:
                         await index_files_in_db(buffer) 
                         indexed_count += len(buffer)
                         buffer = []
                         
+                        # Update status every 50 files
                         await status_message.edit_text(f"Indexing... <b>{indexed_count}</b> files processed so far.")
                 
+                # Small sleep to prevent flood waits from Telegram API
                 await asyncio.sleep(0.05)
                 
+        # Insert any remaining files in the buffer
         if buffer:
             await index_files_in_db(buffer) 
             indexed_count += len(buffer)
@@ -357,7 +373,7 @@ async def index_channel_files(indexer_client, status_message):
 
 
 # ###################################################
-# ## MAIN EXECUTION (Robust Fix) ##
+# ## MAIN EXECUTION ##
 # ###################################################
 
 async def startup_task():
@@ -368,8 +384,14 @@ if __name__ == "__main__":
     logger.info("Starting Pyrogram bot...")
     
     # Set the startup function to run once the client is connected
-    app.add_handler(lambda _, client: asyncio.create_task(startup_task()))
-    
+    # We use a handler since it's the standard Pyrogram way to run async code after startup
+    @app.on_raw_update()
+    async def run_startup_task(client, update, users, chats):
+        # This check prevents running the task multiple times
+        if not hasattr(client, '_startup_done'):
+            client._startup_done = True
+            await startup_task()
+
     try:
         # The robust way to run a Pyrogram client
         app.run()
