@@ -13,6 +13,7 @@ MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&
 DUMP_CHANNEL_ID = int(os.environ.get("DUMP_CHANNEL_ID", -1001996538290))
 OWNER_ID = int(os.environ.get("OWNER_ID", 5483128891)) 
 
+
 # --- Database Setup ---
 mongo_client = AsyncIOMotorClient(MONGO_URI)
 db = mongo_client["SeriesBotDB"]
@@ -124,9 +125,11 @@ async def search_handler(_, message):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         response = f"**🔎 Found {len(unique_names)} matching series.** Please select one:"
-        await message.reply_text(response, reply_markup=reply_markup, parse_mode='Markdown')
+        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+        await message.reply_text(response, reply_markup=reply_markup, parse_mode='MarkdownV2')
     else:
-        await message.reply_text(f"❌ No series files found matching '**{query}**'.")
+        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+        await message.reply_text(f"❌ No series files found matching '**{query}**'.", parse_mode='MarkdownV2')
 
 
 @app.on_callback_query(filters.regex(r"series_select|season_send"))
@@ -156,7 +159,8 @@ async def show_season_menu(query, series_name):
     
     if not seasons:
         try:
-            await query.message.edit_text(text=f"❌ No seasons found for **{series_name}**.", parse_mode='Markdown')
+            # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+            await query.message.edit_text(text=f"❌ No seasons found for **{series_name}**.", parse_mode='MarkdownV2')
         except MessageNotModified:
             pass
         return
@@ -180,10 +184,11 @@ async def show_season_menu(query, series_name):
     caption = f"📺 **{series_name}**\n\n**Select a Season:**"
     
     try:
+        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
         await query.message.edit_text(
             text=caption,
             reply_markup=reply_markup,
-            parse_mode='Markdown'
+            parse_mode='MarkdownV2'
         )
     except MessageNotModified:
         pass
@@ -195,12 +200,14 @@ async def send_season_files(query, series_name, season):
     files = await get_all_files_by_season(series_name, season)
     
     if not files:
-        await query.message.reply_text(text=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='Markdown')
+        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+        await query.message.reply_text(text=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='MarkdownV2')
         return
 
     status_message = await query.message.reply_text(
         f"📦 Sending **{len(files)} files** for **{series_name}** Season **{season:02d}**...",
-        parse_mode='Markdown'
+        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+        parse_mode='MarkdownV2'
     )
 
     success_count = 0
@@ -223,9 +230,11 @@ async def send_season_files(query, series_name, season):
     final_message = f"✅ Sent **{success_count}** files for **{series_name}** Season **{season:02d}**."
     
     try:
-        await status_message.edit_text(final_message, parse_mode='Markdown')
+        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+        await status_message.edit_text(final_message, parse_mode='MarkdownV2')
     except Exception:
-        await query.message.reply_text(final_message, parse_mode='Markdown')
+        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+        await query.message.reply_text(final_message, parse_mode='MarkdownV2')
 
 # ###################################################
 # ## 💾 Indexing Command ##
@@ -235,22 +244,26 @@ async def send_season_files(query, series_name, season):
 async def index_channel_files_command(_, message):
     """Command to start indexing files from the DUMP_CHANNEL_ID (Owner Only)."""
     if message.from_user.id != OWNER_ID:
-        await message.reply_text("⛔️ You are not authorized to run this command.")
+        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+        await message.reply_text("⛔️ You are not authorized to run this command.", parse_mode='MarkdownV2')
         return
         
-    status_message = await message.reply_text(f"⏳ **Starting index of files** from channel `{DUMP_CHANNEL_ID}`. This may take a while...")
+    # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+    status_message = await message.reply_text(f"⏳ **Starting index of files** from channel `{DUMP_CHANNEL_ID}`. This may take a while...", parse_mode='MarkdownV2')
     
     # Confirm clearing the old index
     await files_collection.delete_many({}) 
     try:
-        await status_message.edit_text(f"Indexing... **Cleared old index**. Starting file processing.")
+        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+        await status_message.edit_text(f"Indexing... **Cleared old index**. Starting file processing.", parse_mode='MarkdownV2')
     except MessageNotModified:
         pass
 
     total_indexed = await index_channel_files(status_message)
     
     final_message = f"🎉 **Indexing Complete!**\n\n**Total files indexed:** `{total_indexed}`."
-    await status_message.edit_text(final_message, parse_mode='Markdown')
+    # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+    await status_message.edit_text(final_message, parse_mode='MarkdownV2')
 
 
 async def index_channel_files(status_message):
@@ -287,7 +300,8 @@ async def index_channel_files(status_message):
                     # Update status message every 50 files
                     if indexed_count % 50 == 0:
                         try:
-                            await status_message.edit_text(f"Indexing... **{indexed_count} files** processed so far.")
+                            # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+                            await status_message.edit_text(f"Indexing... **{indexed_count} files** processed so far.", parse_mode='MarkdownV2')
                         except MessageNotModified:
                             pass
                         
@@ -301,12 +315,14 @@ async def index_channel_files(status_message):
             f"**Action Required:** The bot must be made an **Administrator** in channel `{DUMP_CHANNEL_ID}` "
             f"with the permission to **Read Channel History**."
         )
-        await status_message.edit_text(error_msg, parse_mode='Markdown')
+        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+        await status_message.edit_text(error_msg, parse_mode='MarkdownV2')
         print(f"Indexing Error: {e}")
         return 0
     except Exception as e:
         # General error handler
-        await status_message.edit_text(f"❌ **An unknown error occurred during indexing:** `{e}`", parse_mode='Markdown')
+        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+        await status_message.edit_text(f"❌ **An unknown error occurred during indexing:** `{e}`", parse_mode='MarkdownV2')
         print(f"Indexing Error: {e}")
         return 0
             
@@ -316,3 +332,4 @@ async def index_channel_files(status_message):
 if __name__ == "__main__":
     print("Bot started...")
     app.run()
+
