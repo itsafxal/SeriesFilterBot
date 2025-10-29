@@ -7,7 +7,7 @@ from telegram.constants import ChatType, ParseMode
 from telegram.error import BadRequest, TimedOut
 from database import save_user_for_broadcast, add_series_file, get_all_broadcast_users, init_db, search_series, get_unique_seasons_by_name, get_all_files_by_season, save_generic_file
 from utils import is_series_file, parse_series_info
-from config import BOT_TOKEN, LOG_LEVEL, REQUIRED_CHANNEL, INDEX_CHANNEL_ID # Assume ADMINS is added to config.py
+from config import BOT_TOKEN, LOG_LEVEL, REQUIRED_CHANNEL, INDEX_CHANNEL_ID, ADMINS, LOG_CHANNEL
 
 # --- Configuration (Add this to your config or define here) ---
 ADMINS = [12345678] # Replace with actual admin user IDs (list of ints)
