@@ -9,11 +9,6 @@ from database import save_user_for_broadcast, add_series_file, get_all_broadcast
 from utils import is_series_file, parse_series_info
 from config import BOT_TOKEN, LOG_LEVEL, REQUIRED_CHANNEL, INDEX_CHANNEL_ID, ADMINS, LOG_CHANNEL
 
-# --- Configuration (Add this to your config or define here) ---
-ADMINS = [12345678] # Replace with actual admin user IDs (list of ints)
-LOG_CHANNEL = -1001234567890 # Replace with your logging channel ID (int)
-# --- Configuration End ---
-
 
 # --- Global State Management (Replacing pyrogram's `utils.temp`) ---
 class BotState:
