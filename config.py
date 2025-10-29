@@ -4,8 +4,8 @@ import os
 
 # --- Telegram API Credentials ---
 # NOTE: Replace these with your actual values from my.telegram.org
-API_ID = 21352077 # Placeholder, replace with your actual API ID
-API_HASH = "e4ba74d3f410dffbe848402989e61a04" # Placeholder, replace with your actual API Hash
+API_ID = 28643132 # Placeholder, replace with your actual API ID
+API_HASH = "510c3009ea589830a89e045bf8aae656" # Placeholder, replace with your actual API Hash
 
 # --- Bot Credentials ---
 # NOTE: Replace this with your actual bot token from BotFather
