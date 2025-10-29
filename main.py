@@ -361,20 +361,22 @@ async def index_channel_files(indexer_client, status_message):
     return indexed_count
 
 
-# ... (Code above remains the same)
+# ... (All code above this block remains the same)
+# ... (The 'app' Client object is defined)
 
 # ###################################################
-# ## MAIN EXECUTION (Corrected) ##
+# ## MAIN EXECUTION (Fixed) ##
 # ###################################################
 
 if __name__ == "__main__":
     logger.info("Starting Pyrogram bot...")
     
-    # 1. Define the startup function as an ASYNC COROUTINE that accepts the client
-    #    (The existing definition is correct, but let's ensure the full context)
-    async def startup_tasks(client): # <<< MUST BE ASYNC AND ACCEPT 'client'
+    # Define the startup function as an ASYNC COROUTINE that ACCEPTS the client argument.
+    # Pyrogram's app.run() will pass the client instance to this function.
+    async def startup_tasks(client): 
+        # Now, use the client instance passed to this function.
         await send_restart_message(client)
 
-    # 2. Use the app.run() entry point, passing the async function directly
-    #    app.run() will ensure it is scheduled correctly on the event loop.
+    # Use the app.run() entry point, passing the async function directly.
+    # This correctly schedules the coroutine.
     app.run(startup_tasks)
