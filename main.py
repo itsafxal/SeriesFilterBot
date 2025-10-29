@@ -148,23 +148,20 @@ def parse_series_info(file_name: str):
         normalized_name = re.sub(r"([. _-]+)?[sS]\d+[eE]\d+([. _-]+)?", " ", file_name).strip()
         
         # 2. Aggressively clean common garbage terms, quality, and language tags.
-        # This list is expanded to remove nearly anything that isn't the core title.
         common_terms = [
             "4K", "1080P", "720P", "HDRIP", "WEB-DL", "AMZN", "NETFLIX", "DDP5.1", "X265", "x264", 
             "MULTISUB", "AAC", "10BIT", "MKV", "WEBRIP", "PSA", "DUB", "SUB", "MULTI", "REPACK", 
-            "COMPLETE", "BLURAY", "HDTV", "HULU", "AMZN", "S01", "S02", "S03", "S04", "S05", # Including SXX if it somehow survives regex
-            "ENG", "SPA", "ITA", "FRE", "GER", "DUAL", "AUDIO" # Language and Audio tags
+            "COMPLETE", "BLURAY", "HDTV", "HULU", "AMZN", "S01", "S02", "S03", "S04", "S05", 
+            "ENG", "SPA", "ITA", "FRE", "GER", "DUAL", "AUDIO"
         ]
         
         for term in common_terms:
-            # Use \b to ensure whole word match and ignore case
             normalized_name = re.sub(r"\b" + re.escape(term) + r"\b", "", normalized_name, flags=re.IGNORECASE).strip()
 
         # 3. Aggressively remove bracketed/parenthesized tags AND @channel tags
-        # This handles [@T4TVseries]
         normalized_name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", normalized_name).strip()
         
-        # 4. Replace multiple spaces/dots/underscores with a single space, then Title case it
+        # 4. Final cleaning and title case
         normalized_name = re.sub(r"[. _]+", " ", normalized_name).title().strip()
         
         return normalized_name, season, episode
@@ -242,7 +239,6 @@ async def search_handler(_, message):
         keyboard = []
         for name in sorted(unique_names):
             callback_data = f'series_select|{name}'
-            # Limit button text length for clean display
             button_text = name[:50] + '...' if len(name) > 50 else name 
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
@@ -291,9 +287,13 @@ async def show_season_menu(query, series_name: str):
     
     keyboard = []
     row = []
+    
+    # --- FIX APPLIED HERE: Format button text as SXX ---
     for season in seasons:
         callback_data = f'season_send|{series_name}|{season}'
-        button_text = f"Season {season}"
+        # Format the season number with leading zero (e.g., 1 -> 01, 10 -> 10)
+        button_text = f"S{season:02d}" 
+        # --- END FIX ---
         
         row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
         
@@ -303,18 +303,34 @@ async def show_season_menu(query, series_name: str):
     
     if row:
         keyboard.append(row)
+    
+    # Add Back and Close buttons as a final row
+    final_row = []
+    final_row.append(InlineKeyboardButton("⬅️ BACK", callback_data=f'series_select|{series_name}')) # Use the same callback to re-show the series menu if needed, or update if a list of series was provided before
+    final_row.append(InlineKeyboardButton("❌ CLOSE", callback_data='close'))
+    keyboard.append(final_row)
+
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     caption = (
         f"📺 <b>{series_name}</b>\n"
         f"<i>Total Files Indexed: {total_files} in {len(seasons)} seasons.</i>\n\n"
-        "Select a Season to get the files:"
+        "Select a Season:"
     )
     
     try:
         await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
     except MessageNotModified:
         pass
+
+# Add a handler for the 'close' button
+@app.on_callback_query(filters.regex(r"close"))
+async def close_menu_handler(_, query):
+    try:
+        await query.message.delete()
+        await query.answer("Menu closed.")
+    except Exception:
+        await query.answer("Could not close the menu.")
 
 
 async def send_season_files(query, series_name: str, season: int):
