@@ -89,7 +89,6 @@ def get_all_broadcast_users() -> List[int]:
     """Returns a list of all registered user IDs for broadcast."""
     return list(broadcast_users_set)
 
-# --- NEW/RE-ADDED FILE INSERTION METHOD ---
 def add_series_file(series_name: str, season: int, episode: int, channel_id: str, message_id: int) -> bool:
     """
     Saves a series episode file reference to the database.
@@ -115,7 +114,6 @@ def add_series_file(series_name: str, season: int, episode: int, channel_id: str
     except Exception as e:
         logger.error(f"Error saving series file: {e}")
         return False
-# ------------------------------------------
 
 def search_series(query: str) -> List[Tuple[str, int, int]]:
     """
