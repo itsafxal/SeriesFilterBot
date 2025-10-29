@@ -6,15 +6,13 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
 from motor.motor_asyncio import AsyncIOMotorClient # Recommended for async MongoDB
 
-# --- Configuration (Replace with your actual values) ---
-# Load configuration from environment variables (recommended) or replace directly
+
 API_ID = 21352077 # Your API ID
 API_HASH = "e4ba74d3f410dffbe848402989e61a04" # Your API Hash
 BOT_TOKEN = "7661197159:AAHwppy1JjmEBXucY1gxdbfGKVpuqjl_gFg" # Your Bot Token
 MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" # Your MongoDB connection string
 DUMP_CHANNEL_ID = int(os.environ.get("DUMP_CHANNEL_ID", -1001996538290))
 OWNER_ID = int(os.environ.get("OWNER_ID", 5483128891)) 
-
 
 # --- Database Setup ---
 mongo_client = AsyncIOMotorClient(MONGO_URI)
@@ -107,11 +105,12 @@ async def get_all_files_by_season(series_name: str, season: int):
 # ## 🔎 Autofilter Logic Handlers (Pyrogram) ##
 # ###################################################
 
-@app.on_message(filters.text & filters.private & ~filters.command())
+# FIXED: filters.command must be called with an argument to prevent TypeError.
+# We explicitly negate known commands like "start" and "index".
+@app.on_message(filters.text & filters.private & ~filters.command(["start", "index"]))
 async def search_handler(_, message):
     """
     Handles user text search queries and initiates the series selection menu.
-    FIXED: Used ~filters.command() to resolve the TypeError.
     """
     query = message.text.strip()
     
@@ -149,7 +148,7 @@ async def callback_query_handler(_, query):
             await send_season_files(query, series_name, season)
     except Exception as e:
         print(f"Error in callback: {e}")
-        await query.answer("An error occurred. Try again.", show_alert=True)
+        await query.answer("An internal error occurred. Try again.", show_alert=True)
     
     await query.answer()
 
@@ -267,7 +266,7 @@ async def index_channel_files(status_message):
             
             normalized_name, season, episode = parse_series_info(file_name)
             
-            # Only index if parsing found a season/episode number
+            # Only index if parsing found a season number greater than 0
             if season > 0: 
                 file_doc = {
                     "channel_id": DUMP_CHANNEL_ID,
