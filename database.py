@@ -4,39 +4,48 @@ import pymongo
 from pymongo import MongoClient
 import re
 import json
-import configparser
+import logging
+# Import all constants from the new config file
+from config import DATABASE_URI, DATABASE_NAME, COLLECTION_NAME, LOG_LEVEL 
 
-# --- Configuration Loading ---
-config = configparser.ConfigParser()
-config.read('config.ini')
-
-MONGO_URI = config['DATABASE']['MONGO_URI']
-DATABASE_NAME = config['DATABASE']['DATABASE_NAME']
-BROADCAST_USERS_FILE = config['DATABASE']['BROADCAST_USERS_FILE']
+# NOTE: The BROADCAST_USERS_FILE is not in your new config, 
+# so we define it locally or use an environment variable (best practice).
+BROADCAST_USERS_FILE = 'broadcast_users.json'
 
 # Global MongoDB client and collections
 client = None
 db = None
 series_collection = None
 
+# Set up logging early (using config LOG_LEVEL)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
+    level=logging.getLevelName(LOG_LEVEL)
+)
+
+
 def init_db():
     """Initializes the MongoDB connection and collections."""
     global client, db, series_collection
     try:
-        client = MongoClient(MONGO_URI)
+        # Use the constants from config.py
+        client = MongoClient(DATABASE_URI)
         client.admin.command('ping') 
         db = client[DATABASE_NAME]
-        series_collection = db["series"]
+        
+        # Use COLLECTION_NAME from config.py
+        series_collection = db[COLLECTION_NAME] 
         
         # Ensure indexes for fast searching and uniqueness
         series_collection.create_index([("file_id", 1)], unique=True)
         series_collection.create_index([("series_name", pymongo.TEXT), ("season", 1), ("episode", 1)])
         
-        print("MongoDB connection successful.")
+        logging.info("MongoDB connection successful.")
         
     except Exception as e:
-        print(f"MongoDB connection error. Check MONGO_URI. Error: {e}")
+        logging.error(f"MongoDB connection error. Check DATABASE_URI. Error: {e}")
 
+# --- Database Functions (No change needed here, just the config loading above) ---
 def add_series_file(series_name, season, episode, file_id, channel_id, message_id):
     """Inserts a new series file record using channel_id and message_id for retrieval."""
     if not series_collection: return False
@@ -57,7 +66,7 @@ def add_series_file(series_name, season, episode, file_id, channel_id, message_i
     except pymongo.errors.DuplicateKeyError:
         return False
     except Exception as e:
-        print(f"MongoDB error on adding series: {e}")
+        logging.error(f"MongoDB error on adding series: {e}")
         return False
 
 def get_file_details_by_file_id(file_id):
@@ -65,12 +74,9 @@ def get_file_details_by_file_id(file_id):
     if not series_collection: return None
     return series_collection.find_one({"file_id": file_id})
 
-
+# ... (search_series function remains the same) ...
 def search_series(query):
-    """
-    Searches series using the 'Pro Search' logic (Name and SXXEYY).
-    Returns tuples of (name, season, episode, file_id).
-    """
+    # ... (implementation remains the same, using series_collection) ...
     if not series_collection: return []
     
     # Pro Search Parsing (Pattern: NAME SXXEYY)
@@ -103,7 +109,7 @@ def search_series(query):
     return [(res['series_name'], res['season'], res['episode'], res['file_id']) for res in results]
 
 
-# --- User Data for Broadcast (JSON/File Storage) ---
+# --- User Data for Broadcast (JSON/File Storage - using local file path) ---
 
 def load_broadcast_users():
     """Loads user IDs saved for future broadcasts."""
