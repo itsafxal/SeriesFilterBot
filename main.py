@@ -1,4 +1,4 @@
-# bot_main.py (Simplified - Real-time Indexing Only)
+# bot_main.py (Complete Code for Real-time Series Indexing Bot)
 
 import re
 import os
@@ -9,15 +9,14 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
 from pymongo import MongoClient, TEXT
 
-# --- Configuration Placeholders (Replace these with your actual values) ---
-# NOTE: You MUST replace these placeholders with your actual Bot/DB credentials.
-API_ID = 28643132 # <--- REPLACE ME
-API_HASH = "510c3009ea589830a89e045bf8aae656" # <--- REPLACE ME
-BOT_TOKEN = "7661197159:AAHwppy1JjmEBXucY1gxdbfGKVpuqjl_gFg" # <--- REPLACE ME
-MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" # <--- REPLACE ME
+# --- Configuration Placeholders (Your actual values) ---
+API_ID = 28643132
+API_HASH = "510c3009ea589830a89e045bf8aae656"
+BOT_TOKEN = "7661197159:AAHwppy1JjmEBXucY1gxdbfGKVpuqjl_gFg"
+MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
 # List of channel IDs (integers or strings) where files are posted and should be indexed.
-CHANNELS = [-1001996538290] # <--- REPLACE ME: Example private channel ID
+CHANNELS = [-1001996538290] 
 
 # --- Setup Logging ---
 logging.basicConfig(
@@ -45,9 +44,9 @@ app = Client(
 )
 
 
-# ###################################################
-# ## DATABASE WRAPPER FUNCTIONS (PyMongo via asyncio.to_thread) ##
-# ###################################################
+###################################################
+## DATABASE WRAPPER FUNCTIONS (PyMongo via asyncio.to_thread) ##
+###################################################
 
 async def search_series(query: str):
     """Searches MongoDB for unique series names matching the query."""
@@ -101,8 +100,6 @@ async def save_file_to_db(file_doc: dict):
             
     return await asyncio.to_thread(sync_insert_one)
 
-# --- Removed: index_files_in_db and clear_index ---
-
 # ###################################################
 # ## UTILITY & PARSING ##
 # ###################################################
@@ -139,7 +136,7 @@ def parse_series_info(file_name: str):
 
 
 # ###################################################
-# ## REAL-TIME FILE HANDLER ##
+# ## REAL-TIME FILE HANDLER (INDEXING LOGIC) ##
 # ###################################################
 
 # Filter for document, video, or audio messages
@@ -149,6 +146,7 @@ media_filter = filters.document | filters.video | filters.audio
 async def media_handler(_, message):
     """
     Handles new media messages in the configured channels and indexes them if they are a series file.
+    (This is the logic for adding new files you asked for).
     """
     
     file_name = ""
@@ -319,8 +317,6 @@ async def send_season_files(query, series_name: str, season: int):
         await status_message.edit_text(final_message, parse_mode=enums.ParseMode.HTML) 
     except Exception:
         await query.message.reply_text(final_message, parse_mode=enums.ParseMode.HTML) 
-
-# --- Removed: Indexing Command Logic ---
 
 
 # ###################################################
