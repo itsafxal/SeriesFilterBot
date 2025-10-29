@@ -23,11 +23,20 @@ def get_series_overview(series_name):
 
 # --- Force Subscribe Middleware ---
 
-async def check_subscription(handler):
+# main_bot.py
+
+# ... (imports)
+# ... (get_series_overview function)
+
+# --- Force Subscribe Middleware (FIXED) ---
+
+# REMOVE the 'async' keyword from the outer function definition
+def check_subscription(handler):
     """
     Decorator-like function to check if the user is a member of REQUIRED_CHANNEL.
     If not, it prompts them to join.
     """
+    # Keep the 'async' keyword on the inner wrapper function
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user:
             return
@@ -61,7 +70,9 @@ async def check_subscription(handler):
             await update.effective_message.reply_text("An error occurred while checking your subscription. Please try again.")
             return
 
-    return wrapper
+    return wrapper # This is returned synchronously
+
+# ... (All other handlers and the main() function remain the same)
 
 # --- Command Handlers ---
 
