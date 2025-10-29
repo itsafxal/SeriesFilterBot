@@ -1,5 +1,4 @@
-
-# bot_main.py (The full code for your Series Filter Bot)
+# bot_main.py (Simplified - Real-time Indexing Only)
 
 import re
 import os
@@ -10,10 +9,15 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
 from pymongo import MongoClient, TEXT
 
-# --- Import Configuration ---
-from config import (
-    API_ID, API_HASH, BOT_TOKEN, MONGO_URI, DUMP_CHANNEL_ID, OWNER_ID, INDEXER_SESSION_NAME
-)
+# --- Configuration Placeholders (Replace these with your actual values) ---
+# NOTE: You MUST replace these placeholders with your actual Bot/DB credentials.
+API_ID = 28643132 # <--- REPLACE ME
+API_HASH = "510c3009ea589830a89e045bf8aae656" # <--- REPLACE ME
+BOT_TOKEN = "7661197159:AAHwppy1JjmEBXucY1gxdbfGKVpuqjl_gFg" # <--- REPLACE ME
+MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" # <--- REPLACE ME
+
+# List of channel IDs (integers or strings) where files are posted and should be indexed.
+CHANNELS = [-1001996538290] # <--- REPLACE ME: Example private channel ID
 
 # --- Setup Logging ---
 logging.basicConfig(
@@ -80,22 +84,24 @@ async def get_all_files_by_season(series_name: str, season: int):
         
     return await asyncio.to_thread(sync_get_files)
     
-async def index_files_in_db(file_docs):
-    """Inserts multiple file documents into MongoDB."""
-    def sync_insert_many():
-        if file_docs:
-            files_collection.insert_many(file_docs)
-            return len(file_docs)
-        return 0
-        
-    return await asyncio.to_thread(sync_insert_many)
+async def save_file_to_db(file_doc: dict):
+    """Inserts a single file document into MongoDB."""
+    def sync_insert_one():
+        try:
+            # Check for existing document to prevent duplicates (optional, but good)
+            files_collection.update_one(
+                {"channel_id": file_doc["channel_id"], "message_id": file_doc["message_id"]},
+                {"$set": file_doc},
+                upsert=True
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to insert file doc: {e}")
+            return False
+            
+    return await asyncio.to_thread(sync_insert_one)
 
-async def clear_index():
-    """Clears all documents from the collection."""
-    def sync_delete():
-        files_collection.delete_many({})
-        
-    await asyncio.to_thread(sync_delete)
+# --- Removed: index_files_in_db and clear_index ---
 
 # ###################################################
 # ## UTILITY & PARSING ##
@@ -133,21 +139,54 @@ def parse_series_info(file_name: str):
 
 
 # ###################################################
-# ## PYROGRAM HANDLERS ##
+# ## REAL-TIME FILE HANDLER ##
 # ###################################################
 
-# --- Startup Logic (Runs once after client connects) ---
+# Filter for document, video, or audio messages
+media_filter = filters.document | filters.video | filters.audio
+
+@app.on_message(filters.chat(CHANNELS) & media_filter)
+async def media_handler(_, message):
+    """
+    Handles new media messages in the configured channels and indexes them if they are a series file.
+    """
+    
+    file_name = ""
+    # Prioritize file name from document/video
+    if message.document:
+        file_name = message.document.file_name or ""
+    elif message.video:
+        file_name = message.video.file_name or ""
+    else: # Fallback for audio
+        file_name = getattr(message.audio, "file_name", "")
+
+    normalized_name, season, episode = parse_series_info(file_name)
+    
+    # Only index files that were successfully parsed as part of a series (Season > 0)
+    if season > 0:
+        file_doc = {
+            "channel_id": message.chat.id,
+            "message_id": message.id,
+            "file_name": file_name,
+            "normalized_name": normalized_name,
+            "season": season,
+            "episode": episode,
+            "timestamp": message.date
+        }
+        
+        saved = await save_file_to_db(file_doc)
+        if saved:
+            logger.info(f"Indexed new file: {normalized_name} S{season:02d}E{episode:02d} from message {message.id}")
+
+# ###################################################
+# ## PYROGRAM HANDLERS (User Interaction) ##
+# ###################################################
+
+# --- Startup Logic (Now simplified) ---
 async def send_startup_notification(client):
-    """Sends a notification to the owner when the bot starts successfully."""
-    try:
-        await client.send_message(
-            chat_id=OWNER_ID,
-            text="✨ <b>Bot Restarted!</b>\n\nFile filter service is online and ready.",
-            parse_mode=enums.ParseMode.HTML
-        )
-        logger.info("Sent restart message to owner.")
-    except Exception as e:
-        logger.error(f"Failed to send restart message to owner: {e}")
+    """A minimal placeholder, as OWNER_ID is removed."""
+    logger.info("Bot restarted successfully.")
+
 
 # Handler for the /start command
 @app.on_message(filters.command("start") & filters.private)
@@ -155,15 +194,15 @@ async def start_command(_, message):
     """Handles the /start command."""
     welcome_text = (
         "👋 <b>Welcome! I'm your Series File Filter Bot.</b>\n\n"
+        "I automatically index new files posted in the archive channels.\n\n"
         "Just send me the <b>name of a series</b> you are looking for, "
         "and I'll show you the available seasons and episodes from the index.\n\n"
-        "<b>Example:</b> <code>The Last of Us</code>\n\n"
-        f"<b>Admin:</b> Use <code>/index</code> to update the file database."
+        "<b>Example:</b> <code>The Last of Us</code>"
     )
     await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
 # Handler for plain text messages in private chat
-@app.on_message(filters.text & filters.private & ~filters.command(["start", "index"]))
+@app.on_message(filters.text & filters.private & ~filters.command("start"))
 async def search_handler(_, message):
     """Handles user text search queries."""
     query = message.text.strip()
@@ -281,96 +320,7 @@ async def send_season_files(query, series_name: str, season: int):
     except Exception:
         await query.message.reply_text(final_message, parse_mode=enums.ParseMode.HTML) 
 
-# ###################################################
-# ## INDEXING COMMAND (Pyrogram Client) ##
-# ###################################################
-
-@app.on_message(filters.command("index") & filters.private)
-async def index_channel_files_command(client, message):
-    """Command to start indexing files from the DUMP_CHANNEL_ID (Owner Only)."""
-    if message.from_user.id != OWNER_ID:
-        await message.reply_text("⛔️ You are <b>not authorized</b> to run this command.", parse_mode=enums.ParseMode.HTML) 
-        return
-    
-    status_message = await message.reply_text(
-        f"⏳ Attempting to start indexer. This requires a <b>user session</b> to read channel history. Session name: <code>{INDEXER_SESSION_NAME}</code>"
-    )
-    
-    # Initialize the user client with the defined session name
-    indexer_app = Client(INDEXER_SESSION_NAME, api_id=API_ID, api_hash=API_HASH)
-
-    try:
-        # This requires IndexerUser.session to be present and valid
-        await indexer_app.start() 
-        logger.info("Pyrogram User Client started for indexing.")
-    except Exception as e:
-        error_msg = f"❌ Failed to start Indexer Client. Ensure 'IndexerUser.session' is present and valid. Error: <code>{e}</code>"
-        await status_message.edit_text(error_msg, parse_mode=enums.ParseMode.HTML) 
-        logger.error(error_msg)
-        return
-
-    await clear_index() 
-    await status_message.edit_text(f"Indexing... <b>Cleared old index</b>. Starting file processing.")
-
-    total_indexed = await index_channel_files(indexer_app, status_message)
-    
-    await indexer_app.stop() # Stop the user client after indexing is done
-    
-    final_message = f"🎉 <b>Indexing Complete!</b>\n\nTotal files indexed: <b>{total_indexed}</b>."
-    await status_message.edit_text(final_message, parse_mode=enums.ParseMode.HTML) 
-
-
-async def index_channel_files(indexer_client, status_message):
-    """Iterates through a channel using Pyrogram and stores file metadata in MongoDB."""
-    
-    indexed_count = 0
-    buffer = [] # Buffer for bulk inserts
-    
-    try:
-        # Use the user client to get chat history, which handles private channels better
-        async for msg in indexer_client.get_chat_history(DUMP_CHANNEL_ID): 
-            
-            if msg.document or msg.video:
-                file_name = msg.document.file_name if msg.document else (msg.video.file_name or "")
-                
-                normalized_name, season, episode = parse_series_info(file_name)
-                
-                # Only index files that were successfully parsed as part of a series (Season > 0)
-                if season > 0: 
-                    file_doc = {
-                        "channel_id": DUMP_CHANNEL_ID,
-                        "message_id": msg.id,
-                        "file_name": file_name,
-                        "normalized_name": normalized_name,
-                        "season": season,
-                        "episode": episode,
-                        "timestamp": msg.date
-                    }
-                    
-                    buffer.append(file_doc)
-                    
-                    # Bulk insert to reduce database overhead
-                    if len(buffer) >= 50:
-                        await index_files_in_db(buffer) 
-                        indexed_count += len(buffer)
-                        buffer = []
-                        
-                        # Update status every 50 files
-                        await status_message.edit_text(f"Indexing... <b>{indexed_count}</b> files processed so far.")
-                
-                # Small sleep to prevent flood waits from Telegram API
-                await asyncio.sleep(0.05)
-                
-        # Insert any remaining files in the buffer
-        if buffer:
-            await index_files_in_db(buffer) 
-            indexed_count += len(buffer)
-            
-    except Exception as e:
-        await status_message.edit_text(f"❌ An unknown error occurred during indexing: <code>{e}</code>", parse_mode=enums.ParseMode.HTML) 
-        logger.error(f"Indexing Error: {e}")
-            
-    return indexed_count
+# --- Removed: Indexing Command Logic ---
 
 
 # ###################################################
@@ -385,7 +335,6 @@ if __name__ == "__main__":
     logger.info("Starting Pyrogram bot...")
     
     # Set the startup function to run once the client is connected
-    # We use a handler since it's the standard Pyrogram way to run async code after startup
     @app.on_raw_update()
     async def run_startup_task(client, update, users, chats):
         # This check prevents running the task multiple times
