@@ -1,4 +1,4 @@
-# database.py
+# database.py (Rewritten)
 
 import pymongo
 from pymongo import MongoClient
@@ -6,7 +6,8 @@ import re
 import json
 import logging
 from datetime import datetime
-from config import DATABASE_URI, DATABASE_NAME, COLLECTION_NAME, LOG_LEVEL 
+# Ensure you import INDEX_CHANNEL_ID from config later for the indexer
+from config import DATABASE_URI, DATABASE_NAME, COLLECTION_NAME, LOG_LEVEL # Added INDEX_CHANNEL_ID
 
 # NOTE: Since BROADCAST_USERS_FILE is not in config.py, we define it here as a local file path.
 BROADCAST_USERS_FILE = 'broadcast_users.json'
@@ -32,7 +33,6 @@ def init_db():
         series_collection = db[COLLECTION_NAME] 
         
         # Ensure index for fast searching and uniqueness on episode info
-        # NOTE: Unique index on 'file_id' removed to allow re-indexing of files.
         series_collection.create_index([("series_name", pymongo.TEXT), ("season", 1), ("episode", 1)])
         
         logging.info("MongoDB connection successful.")
@@ -41,7 +41,8 @@ def init_db():
         logging.error(f"MongoDB connection failed: {e}")
 
 # --- Duplicate Fix Implemented Here ---
-def add_series_file(series_name, season, episode, file_id, channel_id, message_id):
+# REMOVED file_id argument as it's no longer stored
+def add_series_file(series_name, season, episode, channel_id, message_id):
     """Inserts a new series file record after checking for exact episode duplicates."""
     if series_collection is None: 
         return False 
@@ -61,7 +62,6 @@ def add_series_file(series_name, season, episode, file_id, channel_id, message_i
         "series_name": series_name,
         "season": int(season),
         "episode": int(episode),
-        "file_id": file_id,  
         "channel_id": channel_id,
         "message_id": int(message_id),
         "indexed_at": datetime.utcnow()
@@ -75,6 +75,7 @@ def add_series_file(series_name, season, episode, file_id, channel_id, message_i
         return False
 
 # --- New Functions for Autofilter Menu ---
+# (Modified to remove file_id)
 def search_series(query: str):
     """
     Performs a MongoDB text search for series files.
@@ -127,17 +128,18 @@ def get_all_files_by_season(series_name, season):
     return list(files_cursor)
 
 def get_file_details_by_file_id(file_id):
-    """Retrieves full document (including channel_id and message_id) using file_id."""
-    # ✅ CORRECTED CHECK: use 'is None'
+    """(Kept for compatibility, but the document no longer stores file_id if indexed via channel_post_handler)"""
     if series_collection is None: return None
+    # NOTE: This function's usage is discouraged as we remove the storage of file_id
+    # We will search by file_id if it's there from old data.
     return series_collection.find_one({"file_id": file_id})
 
+# (Modified to remove file_id from return tuple)
 def search_series(query):
     """
     Searches series using the 'Pro Search' logic (Name and SXXEYY).
-    Returns tuples of (name, season, episode, file_id).
+    Returns tuples of (name, season, episode).
     """
-    # ✅ CORRECTED CHECK: use 'is None'
     if series_collection is None: return []
     
     # Pro Search Parsing (Pattern: NAME SXXEYY)
@@ -154,20 +156,20 @@ def search_series(query):
                 'season': season,
                 'episode': episode
             }},
-            {'$project': {'_id': 0, 'series_name': 1, 'season': 1, 'episode': 1, 'file_id': 1}},
+            {'$project': {'_id': 0, 'series_name': 1, 'season': 1, 'episode': 1}},
             {'$sort': {'series_name': 1}}
         ]
     else:
         # Simple name search (fall back)
         pipeline = [
             {'$match': {'series_name': {'$regex': f'.*{re.escape(query)}.*', '$options': 'i'}}},
-            {'$project': {'_id': 0, 'series_name': 1, 'season': 1, 'episode': 1, 'file_id': 1}},
+            {'$project': {'_id': 0, 'series_name': 1, 'season': 1, 'episode': 1}},
             {'$sort': {'series_name': 1, 'season': 1, 'episode': 1}}
         ]
         
     results = list(series_collection.aggregate(pipeline))
     
-    return [(res['series_name'], res['season'], res['episode'], res['file_id']) for res in results]
+    return [(res['series_name'], res['season'], res['episode']) for res in results]
 
 
 # --- User Data for Broadcast (JSON/File Storage - No MongoDB checks needed here) ---
@@ -183,13 +185,16 @@ def load_broadcast_users():
 def save_user_for_broadcast(user_id):
     """Adds a user ID to the broadcast list."""
     users = load_broadcast_users()
-    users.add(user_id)
-    with open(BROADCAST_USERS_FILE, 'w') as f:
-        json.dump(list(users), f)
+    if user_id not in users:
+        users.add(user_id)
+        with open(BROADCAST_USERS_FILE, 'w') as f:
+            json.dump(list(users), f)
+        return True
+    return False # User already exists
     
 def get_all_broadcast_users():
     """Returns a list of all user IDs for broadcast."""
     return list(load_broadcast_users())
 
 # Initialize the database connection when the module is imported
-init_db()
+# init_db() # Moved to main() for controlled startup
