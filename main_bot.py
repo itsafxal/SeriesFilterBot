@@ -120,7 +120,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Command to start indexing ALL messages from the INDEX_CHANNEL_ID (Admin only).
-    **REVERTED FIX: Using context.bot.get_message to fix the get_chat_message error.**
     """
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ You are not authorized to use this command.")
@@ -138,7 +137,7 @@ async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     try:
         while message_id <= MAX_MESSAGE_ID:
             try:
-                # 🌟 REVERTED FIX: Using get_message, which is the standard name in many versions
+                # 🌟 REVERTED TO STANDARD: Using get_message
                 message = await context.bot.get_message(chat_id=INDEX_CHANNEL_ID, message_id=message_id)
                 consecutive_errors = 0 # Reset error counter
 
@@ -163,7 +162,8 @@ async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             except Exception as e:
                 # Catch "message not found" (the expected failure for gaps)
                 error_msg = str(e)
-                if 'message not found' in error_msg.lower() or 'bad request' in error_msg.lower():
+                # Including the attribute error in the log for clarity, though it should ideally be caught by the general exception
+                if 'message not found' in error_msg.lower() or 'bad request' in error_msg.lower() or 'has no attribute' in error_msg.lower():
                     consecutive_errors += 1
                     if consecutive_errors >= MAX_CONSECUTIVE_MISSES:
                         logging.warning(f"Stopped indexing after {MAX_CONSECUTIVE_MISSES} consecutive failures or critical error.")
