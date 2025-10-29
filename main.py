@@ -12,7 +12,7 @@ from pymongo import MongoClient, TEXT, DESCENDING
 # --- Configuration Placeholders (Your actual values) ---
 API_ID = 28643132
 API_HASH = "510c3009ea589830a89e045bf8aae656"
-BOT_TOKEN = "8163888122:AAEuGzXZDxKlcehE2b5Yj4kpayBUo1VaZWs"
+BOT_TOKEN = "7661197159:AAHwppy1JjmEBXucY1gxdbfGKVpuqjl_gFg"
 MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
 # List of channel IDs (integers or strings) where files are posted and should be indexed.
@@ -49,12 +49,9 @@ app = Client(
 ###################################################
 
 async def search_series(query: str):
-    """
-    Searches MongoDB for unique series names matching the query. 
-    Prioritizes text index for better fuzzy matching.
-    """
+    """Searches MongoDB for unique series names matching the query."""
     def sync_search():
-        # 1. First, attempt a fuzzy search using the $text index for high tolerance
+        # Use Text Search for fuzzy matching
         pipeline_text_search = [
             {"$match": {"$text": {"$search": query}}},
             {"$project": {
@@ -70,7 +67,7 @@ async def search_series(query: str):
         if results:
             return results
         
-        # 2. Fallback to the original regex search
+        # Fallback to regex
         logger.info(f"Text search failed for '{query}'. Falling back to Regex.")
         regex_query = re.escape(query).replace(" ", ".*") 
         pipeline_regex_search = [
@@ -134,7 +131,7 @@ async def save_file_to_db(file_doc: dict):
 def parse_series_info(file_name: str):
     """
     Attempts to extract Series Name, Season (SXX), and Episode (EXX) from a filename.
-    Includes aggressive cleanup to ensure all files for the same series share the exact same normalized name.
+    FIX: Aggressively removes years and common source/quality/language tags to unify the series name.
     """
     if not file_name:
         return "", 0, 0
@@ -145,24 +142,48 @@ def parse_series_info(file_name: str):
         season = int(match.group(1))
         episode = int(match.group(2))
         
+        # 1. Remove the SXXEXX part and surrounding separators
         normalized_name = re.sub(r"([. _-]+)?[sS]\d+[eE]\d+([. _-]+)?", " ", file_name).strip()
         
-        # 2. Aggressively clean common garbage terms, quality, and language tags.
+        # 2. Aggressively clean common garbage terms, quality, language, AND YEAR tags.
         common_terms = [
-            "4K", "1080P", "720P", "HDRIP", "WEB-DL", "AMZN", "NETFLIX", "DDP5.1", "X265", "x264", 
-            "MULTISUB", "AAC", "10BIT", "MKV", "WEBRIP", "PSA", "DUB", "SUB", "MULTI", "REPACK", 
-            "COMPLETE", "BLURAY", "HDTV", "HULU", "AMZN", "S01", "S02", "S03", "S04", "S05", 
-            "ENG", "SPA", "ITA", "FRE", "GER", "DUAL", "AUDIO"
+            # Quality/Source
+            "4K", "1080P", "720P", "HDRIP", "WEB-DL", "WEBRIP", "BLURAY", "HDTV", 
+            "AMZN", "NETFLIX", "HULU", "DDP5.1", "X265", "x264", "10BIT", "MKV", 
+            # Language/Tags
+            "MULTISUB", "AAC", "PSA", "DUB", "SUB", "MULTI", "REPACK", "COMPLETE", 
+            "ENG", "SPA", "ITA", "FRE", "GER", "DUAL", "AUDIO", 
+            # Years (Crucial fix for "The Flash 2014")
+            r"(19|20)\d{2}", # Matches 19xx or 20xx
+            # Redundant Season tags
+            "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10" 
         ]
         
         for term in common_terms:
-            normalized_name = re.sub(r"\b" + re.escape(term) + r"\b", "", normalized_name, flags=re.IGNORECASE).strip()
+            # Use \b for word boundary and regex=True for year pattern
+            flags = re.IGNORECASE
+            if r"(19|20)\d{2}" not in term: # Don't add \b around the year regex
+                 term = r"\b" + term + r"\b"
+            
+            normalized_name = re.sub(term, " ", normalized_name, flags=flags).strip()
+
 
         # 3. Aggressively remove bracketed/parenthesized tags AND @channel tags
         normalized_name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", normalized_name).strip()
         
-        # 4. Final cleaning and title case
+        # 4. Final cleaning: collapse multiple separators, then title case it
         normalized_name = re.sub(r"[. _]+", " ", normalized_name).title().strip()
+        
+        # 5. LAST STEP: Truncate after the first strong separator (like a stray hyphen)
+        # This handles remaining noise like "2CH Hevc-"
+        if ' - ' in normalized_name:
+             normalized_name = normalized_name.split(' - ')[0].strip()
+        elif '-' in normalized_name and ' ' not in normalized_name: 
+             # If a hyphen is the main separator, don't split unless necessary
+             pass # Skip splitting if it looks like a hyphenated title (e.g. Spider-Man)
+        
+        # Re-title case after final truncation
+        normalized_name = normalized_name.title().strip()
         
         return normalized_name, season, episode
     
@@ -240,6 +261,7 @@ async def search_handler(_, message):
         for name in sorted(unique_names):
             callback_data = f'series_select|{name}'
             button_text = name[:50] + '...' if len(name) > 50 else name 
+            # This is the single button for the unified series name
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -288,12 +310,9 @@ async def show_season_menu(query, series_name: str):
     keyboard = []
     row = []
     
-    # --- FIX APPLIED HERE: Format button text as SXX ---
     for season in seasons:
         callback_data = f'season_send|{series_name}|{season}'
-        # Format the season number with leading zero (e.g., 1 -> 01, 10 -> 10)
         button_text = f"S{season:02d}" 
-        # --- END FIX ---
         
         row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
         
@@ -306,7 +325,7 @@ async def show_season_menu(query, series_name: str):
     
     # Add Back and Close buttons as a final row
     final_row = []
-    final_row.append(InlineKeyboardButton("⬅️ BACK", callback_data=f'series_select|{series_name}')) # Use the same callback to re-show the series menu if needed, or update if a list of series was provided before
+    final_row.append(InlineKeyboardButton("⬅️ BACK", callback_data='go_back_to_search')) # Generic back button 
     final_row.append(InlineKeyboardButton("❌ CLOSE", callback_data='close'))
     keyboard.append(final_row)
 
@@ -322,6 +341,17 @@ async def show_season_menu(query, series_name: str):
         await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
     except MessageNotModified:
         pass
+
+# Add handler for the generic back button (to mimic going back to the search result state)
+@app.on_callback_query(filters.regex(r"go_back_to_search"))
+async def go_back_to_search_handler(_, query):
+     try:
+        await query.message.edit_text(
+             "Send a new series name to search for files."
+         )
+        await query.answer()
+     except Exception:
+        await query.answer("Cannot go back to search results.", show_alert=True)
 
 # Add a handler for the 'close' button
 @app.on_callback_query(filters.regex(r"close"))
