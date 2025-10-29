@@ -12,7 +12,7 @@ from pymongo import MongoClient, TEXT, DESCENDING
 # --- Configuration Placeholders (Your actual values) ---
 API_ID = 28643132
 API_HASH = "510c3009ea589830a89e045bf8aae656"
-BOT_TOKEN = "7661197159:AAHwppy1JjmEBucY1gxdbfGKVpuqjl_gFg"
+BOT_TOKEN = "7661197159:AAFfQ-d7k89NYDK3N64yoYzh_HJzQ0P52UU"
 MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
 # List of channel IDs (integers or strings) where files are posted and should be indexed.
