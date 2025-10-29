@@ -123,12 +123,12 @@ async def search_handler(_, message):
         
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # FIX: Removed parse_mode and HTML tags for plain text compatibility
+        # Switched to plain text
         response = f"🔎 Found {len(unique_names)} matching series. Please select one:"
-        await message.reply_text(response, reply_markup=reply_markup)
+        await message.reply_text(response, reply_markup=reply_markup, parse_mode=None)
     else:
-        # FIX: Removed parse_mode and HTML tags for plain text compatibility
-        await message.reply_text(f"❌ No series files found matching '{query}'.")
+        # Switched to plain text
+        await message.reply_text(f"❌ No series files found matching '{query}'.", parse_mode=None)
 
 
 @app.on_callback_query(filters.regex(r"series_select|season_send"))
@@ -158,7 +158,7 @@ async def show_season_menu(query, series_name):
     
     if not seasons:
         try:
-            # FIX: Removed parse_mode and HTML tags for plain text compatibility
+            # Switched to plain text
             await query.message.edit_text(text=f"❌ No seasons found for {series_name}.", parse_mode=None)
         except MessageNotModified:
             pass
@@ -183,7 +183,7 @@ async def show_season_menu(query, series_name):
     caption = f"📺 {series_name}\n\nSelect a Season:"
     
     try:
-        # FIX: Removed parse_mode and HTML tags for plain text compatibility
+        # Switched to plain text
         await query.message.edit_text(
             text=caption,
             reply_markup=reply_markup,
@@ -199,13 +199,13 @@ async def send_season_files(query, series_name, season):
     files = await get_all_files_by_season(series_name, season)
     
     if not files:
-        # FIX: Removed parse_mode and HTML tags for plain text compatibility
+        # Switched to plain text
         await query.message.reply_text(text=f"❌ No files found for {series_name} Season {season:02d}.", parse_mode=None)
         return
 
     status_message = await query.message.reply_text(
         f"📦 Sending {len(files)} files for {series_name} Season {season:02d}...",
-        # FIX: Removed parse_mode and HTML tags for plain text compatibility
+        # Switched to plain text
         parse_mode=None
     )
 
@@ -229,10 +229,10 @@ async def send_season_files(query, series_name, season):
     final_message = f"✅ Sent {success_count} files for {series_name} Season {season:02d}."
     
     try:
-        # FIX: Removed parse_mode and HTML tags for plain text compatibility
+        # Switched to plain text
         await status_message.edit_text(final_message, parse_mode=None)
     except Exception:
-        # FIX: Removed parse_mode and HTML tags for plain text compatibility
+        # Switched to plain text
         await query.message.reply_text(final_message, parse_mode=None)
 
 # ###################################################
@@ -243,17 +243,17 @@ async def send_season_files(query, series_name, season):
 async def index_channel_files_command(_, message):
     """Command to start indexing files from the DUMP_CHANNEL_ID (Owner Only)."""
     if message.from_user.id != OWNER_ID:
-        # FIX: Removed parse_mode and HTML tags for plain text compatibility
+        # Switched to plain text
         await message.reply_text("⛔️ You are not authorized to run this command.", parse_mode=None)
         return
         
-    # FIX: Removed parse_mode and HTML tags for plain text compatibility
+    # Switched to plain text
     status_message = await message.reply_text(f"⏳ Starting index of files from channel {DUMP_CHANNEL_ID}. This may take a while...", parse_mode=None)
     
     # Confirm clearing the old index
     await files_collection.delete_many({}) 
     try:
-        # FIX: Removed parse_mode and HTML tags for plain text compatibility
+        # Switched to plain text
         await status_message.edit_text(f"Indexing... Cleared old index. Starting file processing.", parse_mode=None)
     except MessageNotModified:
         pass
@@ -261,7 +261,7 @@ async def index_channel_files_command(_, message):
     total_indexed = await index_channel_files(status_message)
     
     final_message = f"🎉 Indexing Complete!\n\nTotal files indexed: {total_indexed}."
-    # FIX: Removed parse_mode and HTML tags for plain text compatibility
+    # Switched to plain text
     await status_message.edit_text(final_message, parse_mode=None)
 
 
@@ -280,6 +280,10 @@ async def index_channel_files(status_message):
                 
                 normalized_name, season, episode = parse_series_info(file_name)
                 
+                # --- DEBUGGING OUTPUT ---
+                print(f"DEBUG: Processing file: '{file_name}' -> Normalized: '{normalized_name}', Season: {season}, Episode: {episode}")
+                # ------------------------
+
                 # Only index if parsing found a season number greater than 0
                 if season > 0: 
                     file_doc = {
@@ -299,10 +303,15 @@ async def index_channel_files(status_message):
                     # Update status message every 50 files
                     if indexed_count % 50 == 0:
                         try:
-                            # FIX: Removed parse_mode and HTML tags for plain text compatibility
+                            # Switched to plain text
                             await status_message.edit_text(f"Indexing... {indexed_count} files processed so far.", parse_mode=None)
                         except MessageNotModified:
                             pass
+                else:
+                    # --- DEBUGGING OUTPUT ---
+                    if file_name:
+                        print(f"DEBUG: Skipping file '{file_name}': Did not match SXXEXX series pattern (season=0).")
+                    # ------------------------
                         
                 await asyncio.sleep(0.1) # Small delay to avoid flooding Telegram API
                 
@@ -314,13 +323,13 @@ async def index_channel_files(status_message):
             f"Action Required: The bot must be made an Administrator in channel {DUMP_CHANNEL_ID} "
             f"with the permission to Read Channel History."
         )
-        # FIX: Removed parse_mode and HTML tags for plain text compatibility
+        # Switched to plain text
         await status_message.edit_text(error_msg, parse_mode=None)
         print(f"Indexing Error: {e}")
         return 0
     except Exception as e:
         # General error handler
-        # FIX: Removed parse_mode and HTML tags for plain text compatibility
+        # Switched to plain text
         await status_message.edit_text(f"❌ An unknown error occurred during indexing: {e}", parse_mode=None)
         print(f"Indexing Error: {e}")
         return 0
