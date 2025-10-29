@@ -7,7 +7,8 @@ import logging
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
-from pymongo import MongoClient, TEXT, DESCENDING
+# Import DESCENDING for proper sorting in the search aggregation
+from pymongo import MongoClient, TEXT, DESCENDING 
 
 # --- Configuration Placeholders (Your actual values) ---
 API_ID = 28643132
@@ -22,6 +23,7 @@ CHANNELS = [-1001996538290]
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+# Set logging level to DEBUG for the duplicate skip message to appear only if level is DEBUG
 logger = logging.getLogger(__name__)
 
 
@@ -52,30 +54,38 @@ async def search_series(query: str):
     """
     Searches MongoDB for unique series names matching the query. 
     Prioritizes text index for better fuzzy matching.
+    FIXED: MongoDB aggregation error by projecting textScore explicitly.
     """
     def sync_search():
         # 1. First, attempt a fuzzy search using the $text index for high tolerance
-        text_results = files_collection.aggregate([
+        pipeline_text_search = [
             {"$match": {"$text": {"$search": query}}},
-            # Sort by text score to prioritize best matches
-            {"$sort": {"score": {"$meta": "textScore"}, "_id": DESCENDING}}, 
+            # --- FIX FOR PYMONGO.ERRORS.OPERATIONFAILURE START ---
+            # Project the score explicitly to avoid the '$computed0' error
+            {"$project": {
+                "normalized_name": 1,
+                "search_score": {"$meta": "textScore"} 
+            }},
+            # Sort using the explicitly named field
+            {"$sort": {"search_score": DESCENDING}}, 
+            # --- FIX FOR PYMONGO.ERRORS.OPERATIONFAILURE END ---
             {"$group": {"_id": "$normalized_name"}},
             {"$project": {"_id": 0, "name": "$_id"}}
-        ])
+        ]
         
-        results = list(text_results)
+        results = list(files_collection.aggregate(pipeline_text_search))
         if results:
             return results
         
         # 2. Fallback to the original regex search
         logger.info(f"Text search failed for '{query}'. Falling back to Regex.")
         regex_query = re.escape(query).replace(" ", ".*") 
-        pipeline = [
+        pipeline_regex_search = [
             {"$match": {"normalized_name": {"$regex": regex_query, "$options": "i"}}},
             {"$group": {"_id": "$normalized_name"}},
             {"$project": {"_id": 0, "name": "$_id"}}
         ]
-        return list(files_collection.aggregate(pipeline))
+        return list(files_collection.aggregate(pipeline_regex_search))
         
     results = await asyncio.to_thread(sync_search)
     return [doc["name"] for doc in results]
@@ -104,22 +114,19 @@ async def save_file_to_db(file_doc: dict):
     """Inserts a single file document into MongoDB."""
     def sync_insert_one():
         try:
-            # Use update_one with upsert=True to handle both new insertions and potential updates/duplicates
             result = files_collection.update_one(
                 {"channel_id": file_doc["channel_id"], "message_id": file_doc["message_id"]},
                 {"$set": file_doc},
                 upsert=True
             )
             
-            # --- NEW LOGGING ---
+            # Logging for indexing status
             if result.upserted_id:
                 logger.info(f"DB: INSERTED new file. ID: {file_doc['message_id']}")
             elif result.matched_count > 0 and result.modified_count == 0:
-                # Matched but not modified means it was a duplicate and the data hasn't changed.
                 logger.debug(f"DB: SKIPPED (Duplicate found and data is unchanged) for ID: {file_doc['message_id']}")
             elif result.matched_count > 0 and result.modified_count > 0:
                 logger.info(f"DB: UPDATED existing file (Metadata changed) for ID: {file_doc['message_id']}")
-            # -------------------
                 
             return True
         except Exception as e:
@@ -198,10 +205,8 @@ async def media_handler(_, message):
         if saved:
             logger.info(f"INDEXING: {normalized_name} S{season:02d}E{episode:02d} (Msg ID: {message.id})")
     else:
-        # --- NEW LOGGING ---
-        # Log when a file is skipped because it doesn't match the SXXEXX format
         logger.info(f"SKIP: Non-series file skipped ('{file_name}' from Msg ID: {message.id})")
-        # -------------------
+
 
 ###################################################
 ## PYROGRAM HANDLERS (User Interaction) ##
@@ -275,6 +280,7 @@ async def show_season_menu(query, series_name: str):
             pass
         return
 
+    # Use asyncio.gather to concurrently fetch file counts (resolves previous async_generator error)
     tasks = [get_all_files_by_season(series_name, s) for s in seasons]
     all_season_files = await asyncio.gather(*tasks)
     total_files = sum(len(files_list) for files_list in all_season_files)
