@@ -61,6 +61,32 @@ def add_series_file(series_name, season, episode, file_id, channel_id, message_i
         logging.error(f"MongoDB error on adding series: {e}")
         return False
 
+def get_unique_seasons_by_name(series_name):
+    """Retrieves a list of unique season numbers for a given series name."""
+    if series_collection is None: return []
+
+    # Use aggregation to find distinct season numbers, sorted numerically
+    pipeline = [
+        {'$match': {'series_name': series_name}},
+        {'$group': {'_id': '$season'}},
+        {'$sort': {'_id': 1}}
+    ]
+    
+    results = series_collection.aggregate(pipeline)
+    return [res['_id'] for res in results]
+
+
+def get_all_files_by_season(series_name, season):
+    """Retrieves all file details (channel_id, message_id) for a specific season."""
+    if series_collection is None: return []
+
+    files_cursor = series_collection.find(
+        {'series_name': series_name, 'season': int(season)},
+        {'channel_id': 1, 'message_id': 1, '_id': 0}
+    ).sort('episode', 1)
+
+    return list(files_cursor)
+
 def get_file_details_by_file_id(file_id):
     """Retrieves full document (including channel_id and message_id) using file_id."""
     # ✅ CORRECTED CHECK: use 'is None'
