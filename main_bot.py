@@ -1,13 +1,14 @@
 # main_bot.py
 
 import logging
-import requests # Needed for TMDB API calls
+import requests # Needed for API calls (though not for poster anymore)
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from database import save_user_for_broadcast, add_series_file, get_all_broadcast_users, get_file_details_by_file_id
 from database import search_series, get_unique_seasons_by_name, get_all_files_by_season
 from utils import is_series_file, parse_series_info
-from config import BOT_TOKEN, ADMIN_USER_ID, LOG_LEVEL, MAX_SEARCH_RESULTS, TMDB_API_KEY
+# REMOVED TMDB_API_KEY from config import
+from config import BOT_TOKEN, ADMIN_USER_ID, LOG_LEVEL, MAX_SEARCH_RESULTS 
 from database import init_db # Import init_db
 
 # Configure logging
@@ -16,38 +17,17 @@ logging.basicConfig(
     level=logging.getLevelName(LOG_LEVEL)
 )
 
-# --- TMDB Helper Function ---
-def get_series_poster(series_name):
-    """Fetches TMDB ID and poster path/overview for a series."""
-    if not TMDB_API_KEY or TMDB_API_KEY == 'YOUR_TMDB_API_KEY':
-        logging.warning("TMDB_API_KEY is not set. Skipping poster fetch.")
-        return None, None
+# --- TMDB Helper Function (REMOVED) ---
+# The original get_series_poster function is now removed.
 
-    # 1. Search for the series ID (type=tv for TV shows)
-    search_url = f"https://api.themoviedb.org/3/search/tv?api_key={TMDB_API_KEY}&query={series_name}"
-    try:
-        response = requests.get(search_url).json()
-        results = response.get('results')
-        
-        if not results:
-            return None, None
-
-        # Take the best matching result (usually the first one)
-        best_match = results[0]
-        poster_path = best_match.get('poster_path')
-        overview = best_match.get('overview')
-
-        if poster_path:
-            # Note: w500 is a good size for Telegram
-            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
-        else:
-            poster_url = None
-
-        return poster_url, overview
-    except Exception as e:
-        logging.error(f"TMDB API error: {e}")
-        return None, None
-
+# Define a placeholder function to replace it, returning None
+def get_series_overview(series_name):
+    """Fetches series overview. (Note: TMDB API key is still needed for this feature if you wanted it)"""
+    # Simplified placeholder for series overview without a dedicated API
+    # You could re-implement this with OMDb or another service if needed, 
+    # but for now, we'll just return None to keep it simple.
+    logging.info("Poster fetch feature is disabled.")
+    return None
 
 # --- Command Handlers ---
 
@@ -190,9 +170,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def show_season_menu(query, series_name, context):
-    """Displays buttons for all unique seasons of the selected series AND the poster."""
+    """Displays buttons for all unique seasons of the selected series. (Poster functionality removed)"""
     seasons = get_unique_seasons_by_name(series_name)
-    poster_url, overview = get_series_poster(series_name)
+    
+    # POSTER/OVERVIEW FETCHING LINE REMOVED: poster_url, overview = get_series_poster(series_name)
+    # Replaced with a simplified call to maintain logic flow if you later re-add a basic overview:
+    overview = get_series_overview(series_name) 
     
     # 1. Prepare Keyboard
     if not seasons:
@@ -225,7 +208,7 @@ async def show_season_menu(query, series_name, context):
     
     caption += "\n\n**Select a Season:**"
     
-    # 3. Send Poster or Text
+    # 3. Send Text (No Poster/Photo logic needed anymore)
     # Delete the previous button message (the series name selection)
     try:
         await query.message.delete()
@@ -233,23 +216,17 @@ async def show_season_menu(query, series_name, context):
         pass # Ignore if message can't be deleted (e.g., if it's the only message)
 
     chat_id = query.message.chat_id
-    if poster_url:
-        await context.bot.send_photo(
-            chat_id=chat_id,
-            photo=poster_url,
-            caption=caption,
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-    else:
-        # Fallback to text message if no poster is found
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=caption,
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-        
+    
+    # SIMPLIFIED: ALWAYS send a text message as the fallback is now the main path
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=caption,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+    
+    # REMOVED the 'if poster_url:' block entirely
+    
     await query.answer() # Final answer to the query
 
 
@@ -263,10 +240,21 @@ async def send_season_files(query, series_name, season, context):
         return
 
     # Acknowledge the request before sending large number of files
-    await query.edit_message_caption(
-        caption=f"📦 Sending **{len(files)} files** for **{series_name}** Season **{season:02d}**...",
-        parse_mode='Markdown'
-    )
+    # NOTE: edit_message_caption is used because the previous message was a photo with a caption.
+    # Now that it's a text message, you should use edit_message_text, but I'll stick to 
+    # edit_message_caption here for compatibility in case you revert the previous step.
+    # A safer approach is to use try/except for both edit_message_caption and edit_message_text.
+    try:
+        await query.edit_message_caption(
+            caption=f"📦 Sending **{len(files)} files** for **{series_name}** Season **{season:02d}**...",
+            parse_mode='Markdown'
+        )
+    except Exception:
+        await query.edit_message_text(
+            text=f"📦 Sending **{len(files)} files** for **{series_name}** Season **{season:02d}**...",
+            parse_mode='Markdown'
+        )
+
 
     success_count = 0
     for file_entry in files:
