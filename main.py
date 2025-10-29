@@ -146,7 +146,6 @@ media_filter = filters.document | filters.video | filters.audio
 async def media_handler(_, message):
     """
     Handles new media messages in the configured channels and indexes them if they are a series file.
-    (This is the logic for adding new files you asked for).
     """
     
     file_name = ""
@@ -213,7 +212,9 @@ async def search_handler(_, message):
             callback_data = f'series_select|{name}'
             # Truncate long names for button text
             button_text = name[:50] + '...' if len(name) > 50 else name
-            keyboard.append([InlineKeyboardButton(button_text, callback_data)])
+            
+            # 🐛 FIXED: Using keyword argument 'callback_data='
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -260,7 +261,9 @@ async def show_season_menu(query, series_name: str):
     for season in seasons:
         callback_data = f'season_send|{series_name}|{season}'
         button_text = f"S{season:02d}"
-        row.append(InlineKeyboardButton(button_text, callback_data))
+        
+        # 🐛 FIXED: Using keyword argument 'callback_data='
+        row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
         
         if len(row) >= 5: # 5 buttons per row for better layout
             keyboard.append(row)
