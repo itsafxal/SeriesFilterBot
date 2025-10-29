@@ -12,7 +12,7 @@ from pymongo import MongoClient, TEXT, DESCENDING
 # --- Configuration Placeholders (Your actual values) ---
 API_ID = 28643132
 API_HASH = "510c3009ea589830a89e045bf8aae656"
-BOT_TOKEN = "7661197159:AAFfQ-d7k89NYDK3N64yoYzh_HJzQ0P52UU"
+BOT_TOKEN = "8163888122:AAEuGzXZDxKlcehE2b5Yj4kpayBUo1VaZWs"
 MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
 # List of channel IDs (integers or strings) where files are posted and should be indexed.
@@ -24,7 +24,7 @@ ADMINS = [123456789]  # <-- REPLACE WITH YOUR ADMIN USER ID(s)
 # 
 # FIX APPLIED HERE: LOG_CHANNEL must be a single integer, not a list.
 # 
-LOG_CHANNEL = -1001234567890 # <-- REPLACE WITH YOUR LOG CHANNEL ID (REMOVED BRACKETS [])
+LOG_CHANNEL = -1001234567890 # <-- REPLACE WITH YOUR LOG CHANNEL ID (NO BRACKETS [])
 lock = asyncio.Lock()
 class Temp:
     CURRENT = 1
@@ -521,6 +521,7 @@ async def send_for_index(bot, message):
     else:
         return
     try:
+        # This is the line that causes the CHANNEL_INVALID error if the bot doesn't have access.
         await bot.get_chat(chat_id)
     except ChannelInvalid:
         return await message.reply('This may be a private channel / group. Make me an admin over there to index the files.')
