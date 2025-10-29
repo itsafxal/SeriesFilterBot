@@ -5,18 +5,11 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from database import save_user_for_broadcast, search_series, add_series_file, get_all_broadcast_users, get_file_details_by_file_id
 from utils import is_series_file, parse_series_info
-import configparser
 
-# --- Configuration Loading ---
-config = configparser.ConfigParser()
-config.read('config.ini')
+# --- Configuration Loading from config.py ---
+from config import BOT_TOKEN, ADMIN_USER_ID, LOG_LEVEL, MAX_SEARCH_RESULTS
 
-BOT_TOKEN = config['TELEGRAM']['BOT_TOKEN']
-ADMIN_USER_ID = int(config['TELEGRAM']['ADMIN_USER_ID'])
-LOG_LEVEL = config['TELEGRAM']['LOG_LEVEL'] 
-MAX_RESULTS = int(config['LIMITS']['MAX_SEARCH_RESULTS'])
-
-# Set up logging using the variable
+# Set up logging using the variable (ensuring it matches the config in database.py)
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
     level=logging.getLevelName(LOG_LEVEL)
@@ -99,10 +92,10 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         name, season, episode, file_id = results[0] 
         
         # 1. Send text response first
-        response = f"**🔎 Found {len(results)} matches.** Showing top {min(len(results), MAX_RESULTS)}:\n"
+        response = f"**🔎 Found {len(results)} matches.** Showing top {min(len(results), MAX_SEARCH_RESULTS)}:\n"
         
-        # List the results based on the MAX_RESULTS limit
-        for i, (res_name, res_season, res_episode, _) in enumerate(results[:MAX_RESULTS]):
+        # List the results based on the MAX_SEARCH_RESULTS limit
+        for i, (res_name, res_season, res_episode, _) in enumerate(results[:MAX_SEARCH_RESULTS]):
              response += f'🔸 {res_name} - S{res_season:02d}E{res_episode:02d}\n'
 
         response += "\nSending the best result now..."
@@ -162,6 +155,7 @@ async def broadcast_test_command(update: Update, context: ContextTypes.DEFAULT_T
 
 def main() -> None:
     """Start the bot."""
+    # Use the BOT_TOKEN imported from config.py
     application = Application.builder().token(BOT_TOKEN).build()
 
     # Register Handlers
