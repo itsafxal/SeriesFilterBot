@@ -16,11 +16,14 @@ BOT_TOKEN = "7661197159:AAFfQ-d7k89NYDK3N64yoYzh_HJzQ0P52UU"
 MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
 # List of channel IDs (integers or strings) where files are posted and should be indexed.
+# ENSURE all IDs are correctly formatted as integers or strings, not mixed.
 CHANNELS = [-1001996538290] 
 
 # --- Bulk Indexing Placeholders (REPLACE THESE) ---
-ADMINS = [123456789]  # Your Admin User ID(s)
-LOG_CHANNEL = [-1001996538290] # Your Log Channel ID
+# Ensure all ADMINS IDs are valid integers.
+ADMINS = [123456789]  # <-- REPLACE WITH YOUR ADMIN USER ID(s)
+# Ensure LOG_CHANNEL is a valid integer Channel/Supergroup ID.
+LOG_CHANNEL = -1001234567890 # <-- REPLACE WITH YOUR LOG CHANNEL ID
 lock = asyncio.Lock()
 class Temp:
     CURRENT = 1
@@ -240,12 +243,13 @@ async def save_series_file_for_bulk_index(message):
             "timestamp": message.date
         }
         
+        # This calls the MongoDB upsert function
         saved = await save_file_to_db(file_doc)
         
         if saved:
             return True, 1  # New file indexed
         else:
-            # Assumes False from save_file_to_db means duplicate/no change, not an actual error
+            # False from save_file_to_db means duplicate/no change
             return False, 0 
     else:
         # File is media, but not a series (no SXXEXX pattern)
@@ -508,6 +512,7 @@ async def send_for_index(bot, message):
         chat_id = match.group(4)
         last_msg_id = int(match.group(5))
         if chat_id.isnumeric():
+            # Convert numeric group ID (e.g., 12345) to Pyrogram chat ID format (-10012345)
             chat_id  = int(("-100" + chat_id))
     elif message.forward_from_chat.type == enums.ChatType.CHANNEL:
         last_msg_id = message.forward_from_message_id
