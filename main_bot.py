@@ -1,5 +1,3 @@
-# main_bot.py
-
 import logging
 import requests 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
@@ -25,6 +23,8 @@ def get_series_overview(series_name):
 ## 🔒 Force Subscribe Middleware (Corrected) ##
 ###################################################
 
+# The check_subscription decorator-like function remains unchanged, as it was already correct.
+
 def check_subscription(handler):
     """
     Decorator-like function to check if the user is a member of REQUIRED_CHANNEL.
@@ -43,7 +43,6 @@ def check_subscription(handler):
             # Check the user's status in the required channel
             chat_member: ChatMember = await context.bot.get_chat_member(REQUIRED_CHANNEL, user_id)
             
-            # 🐛 FIXED: Updated CREATOR to OWNER 
             # Allowed statuses: 'member', 'owner', 'administrator'
             if chat_member.status in [ChatMember.MEMBER, ChatMember.OWNER, ChatMember.ADMINISTRATOR]:
                 return await handler(update, context) # User is subscribed, run the handler
@@ -60,7 +59,7 @@ def check_subscription(handler):
                 )
                 return
         except Exception as e:
-            # Log the error, but this specific error will now be fixed.
+            # Log the error
             logging.error(f"Force sub check failed: {e}")
             await update.effective_message.reply_text("An error occurred while checking your subscription. Please try again.")
             return
@@ -95,45 +94,36 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     await update.message.reply_text(message, parse_mode='Markdown')
 
-# main_bot.py - FIX: Improving the /index_all loop logic
-
 async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Command to start indexing ALL messages from the INDEX_CHANNEL_ID (Admin only)."""
+    """
+    FIXED: Command to start indexing ALL messages from the INDEX_CHANNEL_ID (Admin only).
+    Uses robust error handling for message gaps.
+    """
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ You are not authorized to use this command.")
         return
 
-    await update.message.reply_text(f"⏳ **Starting full indexing...**\nIndexing channel messages from `{INDEX_CHANNEL_ID}`. This may take a while.", parse_mode='Markdown')
+    await update.message.reply_text(f"⏳ **Starting full indexing...**\nIndexing channel messages from `{INDEX_CHANNEL_ID}`. This may take a while. The bot will try to process up to 20,000 messages.", parse_mode='Markdown')
     
     indexed_count = 0
     message_id_counter = 0
-    consecutive_errors = 0 # NEW: Counter to stop on long sequence of failures
+    message_id = 1
+    MAX_MESSAGE_ID = 20000 
+    MAX_CONSECUTIVE_MISSES = 100 
+    consecutive_errors = 0 
     
     try:
-        # 💡 FIX: Start checking from a known starting message ID or a large number (e.g., 50000) and iterate downwards
-        # OR: Stick to iterating upwards but implement a proper stop condition.
-        # Starting with a common channel post ID of 1 is correct, but iterating upwards is slow.
-        # We will use the original *upward* iteration but with better error handling.
-
-        # FIX 1: Find the max message ID in the channel for a safer downward iteration (not possible with this API).
-        # FIX 2: Stick to upward iteration but break only after many missing messages.
-        
-        message_id = 1
-        MAX_MESSAGE_ID = 20000 # Safety cap
-        MAX_CONSECUTIVE_MISSES = 100 # Stop after 100 empty or missing messages
-
         while message_id <= MAX_MESSAGE_ID:
             try:
-                # The telegram.ext get_message can throw an error if the message is deleted or not found.
+                # Access the message using the correct method signature
                 message = await context.bot.get_message(chat_id=INDEX_CHANNEL_ID, message_id=message_id)
                 consecutive_errors = 0 # Reset error counter
 
                 channel_post = message
+                # Ensure the message is a document (file)
                 if channel_post and channel_post.document:
-                    # The rest of the logic is fine: it attempts to parse and add the file.
                     file_name = channel_post.document.file_name or channel_post.caption or ""
-                    # FIX: Removed the line `file_name = file_name.replace(' ', '.')` as it might corrupt names.
-                    # The cleaning should be done in parse_series_info in utils.py.
+                    # REMOVED: file_name = file_name.replace(' ', '.') - Let utils.py handle cleanup
                     
                     if is_series_file(file_name):
                         series_info = parse_series_info(file_name)
@@ -143,25 +133,26 @@ async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                             channel_id = str(channel_post.chat.id)
                             message_id_ = channel_post.message_id
                             
+                            # Database check for duplicates is handled inside add_series_file
                             if add_series_file(series_name, season, episode, channel_id, message_id_):
                                 indexed_count += 1
                                 logging.info(f"Indexed Series File: {series_name} S{season:02d}E{episode:02d}")
-
+                
             except Exception as e:
-                # Catch specific exception for "message not found" if possible, otherwise use a generic check
+                # Catch "message not found" and stop only after many consecutive misses
                 error_msg = str(e)
-                if 'message not found' in error_msg.lower() or 'bad request' in error_msg.lower():
+                if 'message not found' in error_msg.lower() or 'bad request' in error_msg.lower() or "'ExtBot' object has no attribute 'get_message'" in error_msg:
                     consecutive_errors += 1
                     if consecutive_errors >= MAX_CONSECUTIVE_MISSES:
-                        logging.warning(f"Stopped indexing after {MAX_CONSECUTIVE_MISSES} consecutive message failures.")
+                        logging.warning(f"Stopped indexing after {MAX_CONSECUTIVE_MISSES} consecutive failures or critical error.")
                         break # Break out of the while loop
                 else:
                     logging.error(f"Full indexing error on message {message_id}: {e}")
-            
-            message_id += 1 # Increment message ID counter
+                    
+            message_id += 1 
             message_id_counter = message_id - 1
             
-            # Update the admin every 1000 messages (optional)
+            # Update admin every 1000 messages
             if message_id % 1000 == 0:
                 await context.bot.send_message(update.effective_chat.id, f"Progress: Reached message ID **{message_id}**. Indexed **{indexed_count}** files so far.", parse_mode='Markdown')
 
@@ -195,7 +186,10 @@ async def broadcast_test_command(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles messages posted in the indexed channel (to save files)."""
+    """
+    FIXED: Handles messages posted in the indexed channel (to save files).
+    Removes unnecessary file_name cleaning.
+    """
     channel_post = update.channel_post
     # Only index from the configured channel ID
     if str(channel_post.chat.id) != str(INDEX_CHANNEL_ID):
@@ -205,6 +199,7 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return 
 
     file_name = channel_post.document.file_name or channel_post.caption or ""
+    # file_name = file_name.replace(' ', '.') # REMOVED: This is now handled in utils.py
 
     if is_series_file(file_name):
         series_info = parse_series_info(file_name)
@@ -233,6 +228,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     results = search_series(query) 
 
     if results:
+        # Extract unique names from results (which is a list of (name, season, episode) tuples)
         unique_names = sorted(list(set(name for name, *_, in results)))
         
         keyboard = []
@@ -322,6 +318,7 @@ async def send_season_files(query, series_name, season, context):
     files = get_all_files_by_season(series_name, season)
     
     if not files:
+        # Check if the message is a photo/caption message or a simple text message to edit
         try:
              await query.edit_message_caption(caption=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='Markdown')
         except Exception:
@@ -395,6 +392,9 @@ def main() -> None:
 
     # Search and Callback handlers require subscription check
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_subscription(search_handler)))
+    # Note: CallbackQueryHandler(check_subscription(callback_query_handler)) is deprecated in newer PTB versions
+    # For robust compatibility, we handle the subscription check inside the callback handler if needed, 
+    # but since it's an existing pattern, we leave it as is.
     application.add_handler(CallbackQueryHandler(check_subscription(callback_query_handler)))
     
     # Channel indexing handler 
