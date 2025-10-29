@@ -2,7 +2,7 @@ import re
 import os
 import asyncio
 import logging
-from pyrogram import Client, filters, enums # <<< ADDED enums
+from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
 from pymongo import MongoClient, TEXT
@@ -128,14 +128,14 @@ def parse_series_info(file_name: str):
 # ## PYROGRAM HANDLERS ##
 # ###################################################
 
-# --- Startup Logic (Now correctly async/await) ---
+# --- Startup Logic (Runs once after client connects) ---
 async def send_startup_notification(client):
     """Sends a notification to the owner when the bot starts successfully."""
     try:
         await client.send_message(
             chat_id=OWNER_ID,
             text="✨ <b>Bot Restarted!</b>\n\nFile filter service is online and ready.",
-            parse_mode=enums.ParseMode.HTML # <<< FIXED
+            parse_mode=enums.ParseMode.HTML
         )
         logger.info("Sent restart message to owner.")
     except Exception as e:
@@ -152,7 +152,7 @@ async def start_command(_, message):
         "<b>Example:</b> <code>The Last of Us</code>\n\n"
         f"<b>Admin:</b> Use <code>/index</code> to update the file database."
     )
-    await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML) # <<< FIXED
+    await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
 # Handler for plain text messages in private chat
 @app.on_message(filters.text & filters.private & ~filters.command(["start", "index"]))
@@ -174,8 +174,7 @@ async def search_handler(_, message):
         response = f"🔎 Found {len(unique_names)} matching series. Please select one:"
         await message.reply_text(response, reply_markup=reply_markup)
     else:
-        # Changed formatting to HTML <code> tag
-        await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML) # <<< FIXED
+        await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
 
 # Handler for inline button presses
 @app.on_callback_query(filters.regex(r"series_select|season_send"))
@@ -205,7 +204,6 @@ async def show_season_menu(query, series_name: str):
     
     if not seasons:
         try:
-            # Changed formatting to HTML <b> tag
             await query.message.edit_text(text=f"❌ No seasons found for <b>{series_name}</b>.", parse_mode=enums.ParseMode.HTML) 
         except MessageNotModified:
             pass
@@ -226,7 +224,6 @@ async def show_season_menu(query, series_name: str):
         keyboard.append(row)
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    # Changed formatting to HTML <b> tag
     caption = f"📺 <b>{series_name}</b>\n\nSelect a Season:"
     
     try:
@@ -241,11 +238,9 @@ async def send_season_files(query, series_name: str, season: int):
     files = await get_all_files_by_season(series_name, season) 
     
     if not files:
-        # Changed formatting to HTML <b> tag
-        await query.message.reply_text(text=f"❌ No files found for <b>{series_name}</b> Season {season:02d}.", parse_mode=enums.ParseMode.HTML) # <<< FIXED
+        await query.message.reply_text(text=f"❌ No files found for <b>{series_name}</b> Season {season:02d}.", parse_mode=enums.ParseMode.HTML) 
         return
 
-    # Changed formatting to HTML <b> tag
     status_message = await query.message.reply_text(
         f"📦 Sending {len(files)} files for <b>{series_name}</b> Season {season:02d}..."
     )
@@ -268,13 +263,12 @@ async def send_season_files(query, series_name: str, season: int):
             except Exception as e:
                 logger.error(f"Failed to copy message {message_id} from {channel_id}: {e}")
 
-    # Changed formatting to HTML <b> tag
     final_message = f"✅ Sent <b>{success_count}</b> files for <b>{series_name}</b> Season {season:02d}."
     
     try:
-        await status_message.edit_text(final_message, parse_mode=enums.ParseMode.HTML) # <<< FIXED
+        await status_message.edit_text(final_message, parse_mode=enums.ParseMode.HTML) 
     except Exception:
-        await query.message.reply_text(final_message, parse_mode=enums.ParseMode.HTML) # <<< FIXED
+        await query.message.reply_text(final_message, parse_mode=enums.ParseMode.HTML) 
 
 # ###################################################
 # ## INDEXING COMMAND (Pyrogram Client) ##
@@ -284,38 +278,35 @@ async def send_season_files(query, series_name: str, season: int):
 async def index_channel_files_command(client, message):
     """Command to start indexing files from the DUMP_CHANNEL_ID (Owner Only)."""
     if message.from_user.id != OWNER_ID:
-        # Changed formatting to HTML <b> tag
-        await message.reply_text("⛔️ You are <b>not authorized</b> to run this command.", parse_mode=enums.ParseMode.HTML) # <<< FIXED
+        await message.reply_text("⛔️ You are <b>not authorized</b> to run this command.", parse_mode=enums.ParseMode.HTML) 
         return
     
-    # Changed formatting to HTML <b> tag and <code> tag
     status_message = await message.reply_text(
         f"⏳ Attempting to start indexer. This requires a <b>user session</b> to read channel history. Channel: <code>{DUMP_CHANNEL_ID}</code>"
     )
     
+    # NOTE: The session name MUST match the pre-created session file (IndexerUser.session)
     indexer_app = Client("IndexerUser", api_id=API_ID, api_hash=API_HASH)
 
     try:
-        await indexer_app.start()
+        # This will now succeed if IndexerUser.session is present
+        await indexer_app.start() 
         logger.info("Pyrogram User Client started for indexing.")
     except Exception as e:
-        # Changed formatting to HTML <b> tag and <code> tag
         error_msg = f"❌ Failed to start Indexer Client for login. You need a valid user session. Error: <code>{e}</code>"
-        await status_message.edit_text(error_msg, parse_mode=enums.ParseMode.HTML) # <<< FIXED
+        await status_message.edit_text(error_msg, parse_mode=enums.ParseMode.HTML) 
         logger.error(error_msg)
         return
 
     await clear_index() 
-    # Changed formatting to HTML <b> tag
     await status_message.edit_text(f"Indexing... <b>Cleared old index</b>. Starting file processing.")
 
     total_indexed = await index_channel_files(indexer_app, status_message)
     
     await indexer_app.stop() 
     
-    # Changed formatting to HTML <b> tag
     final_message = f"🎉 <b>Indexing Complete!</b>\n\nTotal files indexed: <b>{total_indexed}</b>."
-    await status_message.edit_text(final_message, parse_mode=enums.ParseMode.HTML) # <<< FIXED
+    await status_message.edit_text(final_message, parse_mode=enums.ParseMode.HTML) 
 
 
 async def index_channel_files(indexer_client, status_message):
@@ -350,7 +341,6 @@ async def index_channel_files(indexer_client, status_message):
                         indexed_count += len(buffer)
                         buffer = []
                         
-                        # Changed formatting to HTML <b> tag
                         await status_message.edit_text(f"Indexing... <b>{indexed_count}</b> files processed so far.")
                 
                 await asyncio.sleep(0.05)
@@ -360,8 +350,7 @@ async def index_channel_files(indexer_client, status_message):
             indexed_count += len(buffer)
             
     except Exception as e:
-        # Changed formatting to HTML <b> tag and <code> tag
-        await status_message.edit_text(f"❌ An unknown error occurred during indexing: <code>{e}</code>", parse_mode=enums.ParseMode.HTML) # <<< FIXED
+        await status_message.edit_text(f"❌ An unknown error occurred during indexing: <code>{e}</code>", parse_mode=enums.ParseMode.HTML) 
         logger.error(f"Indexing Error: {e}")
             
     return indexed_count
@@ -379,11 +368,10 @@ if __name__ == "__main__":
     logger.info("Starting Pyrogram bot...")
     
     # Set the startup function to run once the client is connected
-    # This replaces the need for the custom main_bot_loop()
     app.add_handler(lambda _, client: asyncio.create_task(startup_task()))
     
     try:
-        # The robust way to run a Pyrogram client, fixing the loop conflict
+        # The robust way to run a Pyrogram client
         app.run()
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot shutting down...")
