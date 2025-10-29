@@ -399,10 +399,16 @@ async def send_for_index(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Public username/link
             chat_id = chat_id_part
             
-    elif message.forward_from_chat and message.forward_from_chat.type == ChatType.CHANNEL:
+    # --- FIX APPLIED HERE: Use hasattr() to check for 'forward_from_chat' existence ---
+    elif (hasattr(message, 'forward_from_chat') and 
+          message.forward_from_chat and 
+          message.forward_from_chat.type == ChatType.CHANNEL):
+        
         last_msg_id = message.forward_from_message_id
         chat_id = message.forward_from_chat.username or message.forward_from_chat.id
+    # --- END FIX ---
     else:
+        # Returns if it's not a link, and not a forwarded message from a channel
         return
 
     try:
@@ -593,7 +599,8 @@ async def index_files_to_db(bot, chat_id, last_msg_id, msg: Message):
                 return
 
         except Exception as e:
-            logger.exception(e)
+            # Assuming `logger` should be `logging` here based on your imports
+            logging.exception(e)
             await msg.edit_text(f'Error: {e}')
         else:
             await msg.edit_text(f'Succesfully saved <code>{total_files}</code> to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>', parse_mode=ParseMode.HTML)
@@ -653,7 +660,7 @@ def main() -> None:
     application.add_handler(CommandHandler('setskip', set_skip_number, filters=admin_filter))
     
     # Handle index submission (Forwarded message or Link in private chat)
-    # FIX 1: Change filters.PRIVATE to filters.ChatType.PRIVATE
+    # FIX 1: Change filters.PRIVATE to filters.ChatType.PRIVATE (already done in original)
     index_filter = filters.ChatType.PRIVATE & (filters.FORWARDED | filters.Regex(r"(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$"))
     application.add_handler(MessageHandler(index_filter, send_for_index))
 
