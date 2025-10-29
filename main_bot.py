@@ -632,7 +632,15 @@ def main() -> None:
     
     # Channel indexing handler (does NOT need subscription check)
     # FIX: Replacing filters.ALL_MEDIA with an explicit combination of media filters.
-    media_filter = filters.Media
+    media_filter = (
+    filters.ATTACHMENT
+    | filters.VIDEO
+    | filters.AUDIO
+    | filters.PHOTO
+    | filters.ANIMATION
+    | filters.VOICE
+    | filters.VIDEONOTE
+    )
     
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & media_filter, channel_post_handler))
 
