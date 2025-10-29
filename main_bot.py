@@ -636,7 +636,8 @@ def main() -> None:
     
     # Channel indexing handler (does NOT need subscription check)
     # The filter is updated to include more media types.
-    media_filter = filters.Document.ALL | filters.Video.ALL | filters.Audio.ALL
+    # New/Correct line:
+    media_filter = filters.Document | filters.Video | filters.Audio
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & media_filter, channel_post_handler))
 
     # --- New Indexing Handlers (Admin Logic) ---
