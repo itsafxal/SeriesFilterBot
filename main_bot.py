@@ -1,9 +1,9 @@
-# main_bot.py (Rewritten)
+# main_bot.py
 
 import logging
 import requests 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, ExtBot
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from database import save_user_for_broadcast, add_series_file, get_all_broadcast_users
 from database import search_series, get_unique_seasons_by_name, get_all_files_by_season, init_db
 from utils import is_series_file, parse_series_info
@@ -17,26 +17,19 @@ logging.basicConfig(
 
 # Define a placeholder function
 def get_series_overview(series_name):
-    """Fetches series overview. (Note: TMDB API key is still needed for this feature if you wanted it)"""
+    """Fetches series overview."""
     logging.info("Poster fetch feature is disabled.")
     return None
 
-# --- Force Subscribe Middleware ---
+---
 
-# main_bot.py
+## 🔒 Force Subscribe Middleware (Corrected Synchronous Decorator)
 
-# ... (imports)
-# ... (get_series_overview function)
-
-# --- Force Subscribe Middleware (FIXED) ---
-
-# REMOVE the 'async' keyword from the outer function definition
 def check_subscription(handler):
     """
     Decorator-like function to check if the user is a member of REQUIRED_CHANNEL.
-    If not, it prompts them to join.
+    If not, it prompts them to join. (Synchronous outer function is correct here)
     """
-    # Keep the 'async' keyword on the inner wrapper function
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user:
             return
@@ -56,7 +49,9 @@ def check_subscription(handler):
                 return await handler(update, context) # User is subscribed, run the handler
             else:
                 # User is not subscribed or status is 'left', 'kicked', 'restricted'
-                keyboard = [[InlineKeyboardButton("Join Channel 📢", url=f"https://t.me/{REQUIRED_CHANNEL.replace('@', '')}")]]
+                # Ensure REQUIRED_CHANNEL is correctly formatted (e.g., '@mychannel')
+                channel_link = REQUIRED_CHANNEL.replace('@', '')
+                keyboard = [[InlineKeyboardButton("Join Channel 📢", url=f"https://t.me/{channel_link}")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
                 await update.effective_message.reply_text(
@@ -70,11 +65,11 @@ def check_subscription(handler):
             await update.effective_message.reply_text("An error occurred while checking your subscription. Please try again.")
             return
 
-    return wrapper # This is returned synchronously
+    return wrapper
 
-# ... (All other handlers and the main() function remain the same)
+---
 
-# --- Command Handlers ---
+## 🎬 Command Handlers
 
 @check_subscription
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -101,7 +96,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     await update.message.reply_text(message, parse_mode='Markdown')
 
-# Renamed index_command to index_all_command to be more explicit
 async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Command to start indexing ALL messages from the INDEX_CHANNEL_ID (Admin only)."""
     if update.effective_user.id != ADMIN_USER_ID:
@@ -111,17 +105,17 @@ async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text(f"⏳ **Starting full indexing...**\nIndexing channel messages from `{INDEX_CHANNEL_ID}`. This may take a while.", parse_mode='Markdown')
     
     indexed_count = 0
-    message_id_counter = 0 # To iterate backwards from latest to oldest
+    message_id_counter = 0 
     
     try:
-        # NOTE: Telethon/Pyrogram would be better for bulk indexing, but using get_chat_history for the sake of completeness with python-telegram-bot
+        # NOTE: This uses context.bot.get_message(..., message_id) which is very inefficient and slow.
+        # It's intended as a placeholder; for real-world indexing, use a dedicated Telegram library like Telethon or Pyrogram.
         # Iterating up to 10,000 messages. You might need to adjust based on Telegram API limits.
-        for message_id in range(1, 10001): # Arbitrary limit for example
+        for message_id in range(1, 10001): 
             try:
-                # Assuming the channel post handler logic is the same, just calling it manually
                 message = await context.bot.get_message(chat_id=INDEX_CHANNEL_ID, message_id=message_id)
             except Exception:
-                # Message not found or limit reached/rate limited
+                # Message not found (e.g., deleted or end of history)
                 break
 
             channel_post = message
@@ -137,15 +131,13 @@ async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     series_name, season, episode = series_info
                     
                     channel_id = str(channel_post.chat.id)
-                    message_id = channel_post.message_id
+                    message_id_ = channel_post.message_id
                     
-                    # NOTE: add_series_file no longer expects file_id
-                    if add_series_file(series_name, season, episode, channel_id, message_id):
+                    if add_series_file(series_name, season, episode, channel_id, message_id_):
                         indexed_count += 1
                         logging.info(f"Indexed Series File: {series_name} S{season:02d}E{episode:02d}")
-                    # else: duplicate file warning handled inside add_series_file
             
-            message_id_counter = message_id # Keep track of last checked message
+            message_id_counter = message_id 
 
     except Exception as e:
         await update.message.reply_text(f"⚠️ Indexing stopped due to an error: `{e}`", parse_mode='Markdown')
@@ -187,49 +179,40 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not channel_post or not channel_post.document:
         return 
 
-    # Use the Telegram document's file_name or caption for parsing
     file_name = channel_post.document.file_name or channel_post.caption or ""
-    file_name = file_name.replace(' ', '.') # Normalize spacing for better regex match
+    file_name = file_name.replace(' ', '.') 
 
     if is_series_file(file_name):
         series_info = parse_series_info(file_name)
         if series_info:
             series_name, season, episode = series_info
             
-            # No file_id is stored anymore, only message pointers
             channel_id = str(channel_post.chat.id)
             message_id = channel_post.message_id
             
-            # NOTE: add_series_file no longer expects file_id
             if add_series_file(series_name, season, episode, channel_id, message_id):
                 logging.info(f"Indexed Series File: {series_name} S{season:02d}E{episode:02d}")
-            else:
-                logging.warning(f"Duplicate file ignored: {series_name} S{season:02d}E{episode:02d}")
         else:
             logging.info(f"Ignored Movie/Non-Series File (Post): {file_name}")
     else:
         logging.info(f"Ignored Movie/Non-Series File (Post): {file_name}")
 
-# ----------------------------------------------------
-# 📌 AUTOFILTER LOGIC: Search -> Series Menu -> Season Menu -> Send Files
-# ----------------------------------------------------
+---
+
+## 🔎 Autofilter Logic Handlers
 
 @check_subscription
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles user text search queries and initiates the series selection menu."""
     query = update.message.text.strip()
     
-    # Use search_series to find matches, but we only care about unique names for the menu
     results = search_series(query) 
 
     if results:
-        # Get unique series names from the results, preserving title case
         unique_names = sorted(list(set(name for name, *_, in results)))
         
-        # Build the inline keyboard for Series Selection
         keyboard = []
         for name in unique_names:
-            # Callback data format: type|series_name
             callback_data = f'series_select|{name}' 
             keyboard.append([InlineKeyboardButton(name, callback_data=callback_data)])
         
@@ -246,17 +229,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await query.answer()
     
-    # Data is split into: [type, value1, value2]
     data = query.data.split('|')
     action_type = data[0]
     
     if action_type == 'series_select':
-        # --- STEP 2: Show Season Menu ---
         series_name = data[1]
         await show_season_menu(query, series_name, context)
         
     elif action_type == 'season_send':
-        # --- STEP 3: Send All Files for Season ---
         series_name = data[1]
         season = int(data[2])
         await send_season_files(query, series_name, season, context)
@@ -264,43 +244,36 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(text="Invalid action.")
 
 async def show_season_menu(query, series_name, context):
-    # ... (No functional changes here, only cleaning up old comments)
     """Displays buttons for all unique seasons of the selected series."""
     seasons = get_unique_seasons_by_name(series_name)
     overview = get_series_overview(series_name) 
     
-    # 1. Prepare Keyboard
     if not seasons:
         await query.edit_message_text(text=f"❌ No seasons found for **{series_name}**.", parse_mode='Markdown')
         return
 
     keyboard = []
-    # Create buttons in rows of 5
     row = []
     for season in seasons:
-        # Callback data format: type|series_name|season_number
         callback_data = f'season_send|{series_name}|{season}'
         button_text = f"S{season:02d}"
         row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
         
-        if len(row) >= 5: # Arrange in max 5 buttons per row
+        if len(row) >= 5: 
             keyboard.append(row)
             row = []
     
-    if row: # Add the last row if not empty
+    if row: 
         keyboard.append(row)
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # 2. Prepare Message Text
     caption = f"📺 **{series_name}**\n\n"
     if overview:
-        # Add plot summary if available
-        caption += f"**Plot:** {overview[:250]}..." # Truncate plot summary for caption
+        caption += f"**Plot:** {overview[:250]}..." 
     
     caption += "\n\n**Select a Season:**"
     
-    # 3. Send Text
     try:
         await query.message.delete()
     except Exception:
@@ -324,14 +297,12 @@ async def send_season_files(query, series_name, season, context):
     files = get_all_files_by_season(series_name, season)
     
     if not files:
-        # Using try/except block to handle both edit_message_caption and edit_message_text from the previous state
         try:
              await query.edit_message_caption(caption=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='Markdown')
         except Exception:
             await query.edit_message_text(text=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='Markdown')
         return
 
-    # Acknowledge the request before sending large number of files
     try:
         await query.edit_message_caption(
             caption=f"📦 Sending **{len(files)} files** for **{series_name}** Season **{season:02d}**...",
@@ -343,7 +314,6 @@ async def send_season_files(query, series_name, season, context):
             parse_mode='Markdown'
         )
 
-
     success_count = 0
     for file_entry in files:
         channel_id = file_entry.get('channel_id')
@@ -351,7 +321,7 @@ async def send_season_files(query, series_name, season, context):
         
         if channel_id and message_id:
             try:
-                # 📌 CRITICAL CHANGE: Use copy_message instead of forward_message
+                # Use copy_message to avoid the "Forwarded from..." tag
                 await context.bot.copy_message(
                     chat_id=user_chat_id,
                     from_chat_id=channel_id,
@@ -365,9 +335,9 @@ async def send_season_files(query, series_name, season, context):
     await context.bot.send_message(user_chat_id, final_message, parse_mode='Markdown')
     
 
-# ----------------------------------------------------
-# 📌 Main Bot Setup
-# ----------------------------------------------------
+---
+
+## ⚙️ Main Bot Setup
 
 async def post_init(application: Application) -> None:
     """Send a restart message to the admin."""
@@ -386,28 +356,30 @@ def main() -> None:
     """Start the bot."""
     init_db() # Initialize the database connection
     
+    # post_init is used to send the restart message
     application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
-    # --- Register Handlers (CORRECTED USAGE) ---
+    # --- Register Handlers (Using the Synchronous Decorator) ---
 
-    # Command Handlers must be explicitly decorated and called
+    # Core commands require subscription check
     application.add_handler(CommandHandler("start", check_subscription(start_command)))
     application.add_handler(CommandHandler("help", check_subscription(help_command)))
     
-    # These admin commands don't need force subscribe but use the original function
+    # Admin commands (no subscription check needed)
     application.add_handler(CommandHandler("index_all", index_all_command)) 
     application.add_handler(CommandHandler("broadcast_test", broadcast_test_command))
 
-    # 1. Search Handler (Message Handler) - Must be explicitly decorated and called
+    # Search and Callback handlers require subscription check
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_subscription(search_handler)))
-    
-    # 2. Callback Query Handler (Callback Query Handler) - Must be explicitly decorated and called
     application.add_handler(CallbackQueryHandler(check_subscription(callback_query_handler)))
     
-    # Channel indexing handler (does not need subscription check)
+    # Channel indexing handler 
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & filters.Document.ALL, channel_post_handler))
 
     print("Bot is running...")
+    # This call is blocking and keeps the bot running
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-# ... (Rest of main_bot.py)
+
+if __name__ == '__main__':
+    main()
