@@ -12,11 +12,10 @@ from database import (
     search_series, 
     get_unique_seasons_by_name, 
     get_all_files_by_season, 
-    add_series_file # <--- RE-IMPORTED
+    add_series_file
 )
 from utils import parse_series_info
 from config import BOT_TOKEN, LOG_LEVEL, REQUIRED_CHANNEL, ADMINS
-# Removed: INDEX_CHANNEL_ID, LOG_CHANNEL
 
 # Configure logging
 logging.basicConfig(
@@ -32,11 +31,7 @@ def get_series_overview(series_name):
 ###################################################
 ## 🔒 Force Subscribe Middleware (UNCHANGED) ##
 ###################################################
-
 def check_subscription(handler):
-    """
-    Decorator-like function to check if the user is a member of REQUIRED_CHANNEL.
-    """
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user:
             return
@@ -83,10 +78,8 @@ def check_subscription(handler):
 ###################################################
 ## 🎬 Command Handlers ##
 ###################################################
-
 @check_subscription
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends a welcome message and registers user for broadcast."""
     user_id = update.effective_user.id
     save_user_for_broadcast(user_id)
     
@@ -99,25 +92,44 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 @check_subscription
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends a help message."""
     message = (
         "**📚 Bot Commands & Usage:**\n"
         "1. **Search:** Just type the series name (e.g., `Aarya`).\n"
         "2. **/start**: Get a welcome message and register for broadcasts.\n"
+        "\n**Admin Commands (Private Chat):**\n"
+        "3. **/addfile**: Add a single file entry (Series Name SXX EXX Link).\n"
+        "4. **/addbatch**: Add multiple files, one per line (Series Name | SXX | EXX | Link)."
     )
     await update.message.reply_text(message, parse_mode='Markdown')
 
-# Removed: channel_post_handler
+###################################################
+## ✍️ ADMIN FILE ADDING COMMANDS ##
+###################################################
 
-###################################################
-## ✍️ ADMIN FILE ADDING COMMAND (NEW) ##
-###################################################
+# Helper function to parse a link and extract channel_id/message_id
+def parse_telegram_link(link: str) -> Optional[Tuple[str, int]]:
+    regex = re.compile(r"(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$")
+    match = regex.match(link)
+    
+    if not match:
+        return None
+
+    chat_id_part = match.group(4)
+    message_id = int(match.group(5))
+    
+    if chat_id_part.isnumeric():
+        # Private channel link uses 'c/' which maps to -100 + channel_id
+        channel_id = str(int("-100" + chat_id_part))
+    else:
+        # Public username/link
+        channel_id = '@' + chat_id_part
+        
+    return channel_id, message_id
 
 async def addfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Admin command to manually add a single file entry to the database.
     Usage: /addfile <Series Name> S<Season> E<Episode> <tg_link>
-    Example: /addfile Peacemaker S01 E01 https://t.me/c/123456/789
     """
     if update.message.from_user.id not in ADMINS:
         return await update.message.reply_text("Permission Denied.")
@@ -129,10 +141,8 @@ async def addfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode=ParseMode.MARKDOWN
         )
 
-    # Simple attempt to extract parts
     link = context.args[-1]
     
-    # Try to find SXX and EXX parts
     s_match = re.search(r'[Ss](\d+)', ' '.join(context.args), re.IGNORECASE)
     e_match = re.search(r'[Ee](\d+)', ' '.join(context.args), re.IGNORECASE)
 
@@ -145,8 +155,6 @@ async def addfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except ValueError:
         return await update.message.reply_text("Season and Episode must be integers.")
 
-    # Determine Series Name (everything before S/E)
-    # This is a crude but functional way for a manual command
     name_parts = []
     found_se = False
     for arg in context.args[:-1]:
@@ -161,47 +169,125 @@ async def addfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not series_name:
          return await update.message.reply_text("Series name is missing.")
     
-    series_name = series_name.title() # Title case for consistency
+    series_name = series_name.title()
 
-
-    # Parse the Telegram link
-    regex = re.compile(r"(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$")
-    match = regex.match(link)
-
-    if not match:
+    link_info = parse_telegram_link(link)
+    if not link_info:
         return await update.message.reply_text('Invalid Telegram link format.')
-
-    chat_id_part = match.group(4)
-    message_id = int(match.group(5))
-    
-    if chat_id_part.isnumeric():
-        channel_id = str(int("-100" + chat_id_part))
-    else:
-        channel_id = '@' + chat_id_part # Use username for public channels
+        
+    channel_id, message_id = link_info
 
     # Final Database Insertion
     if add_series_file(series_name, season, episode, channel_id, message_id):
         await update.message.reply_text(
-            f"✅ Successfully added file:\n"
-            f"**Series:** {series_name}\n"
-            f"**Season:** S{season:02d} E{episode:02d}\n"
-            f"**Location:** `{channel_id}/{message_id}`",
+            f"✅ Successfully added file:\n**Series:** {series_name} S{season:02d} E{episode:02d}",
             parse_mode=ParseMode.MARKDOWN
         )
     else:
         await update.message.reply_text(
-            f"❌ Failed to add file. It might be a **duplicate** entry:\n"
-            f"**Series:** {series_name} S{season:02d} E{episode:02d}",
+            f"❌ Failed to add file. It might be a **duplicate** entry:\n**Series:** {series_name} S{season:02d} E{episode:02d}",
             parse_mode=ParseMode.MARKDOWN
         )
 
-###################################################
-## 🔎 Autofilter Logic Handlers (UNCHANGED) ##
-###################################################
+
+async def addbatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to manually add a batch of file entries to the database.
+    Input should be one file entry per line.
+    Format: Series Name | SXX | EXX | tg_link
+    """
+    if update.message.from_user.id not in ADMINS:
+        return await update.message.reply_text("Permission Denied.")
+
+    if not update.message.text or not context.args:
+        return await update.message.reply_text(
+            "Usage: `/addbatch` followed by a batch of file entries, one per line. \n"
+            "Format: `Series Name | SXX | EXX | tg_link` (Must use pipe `|` as separator).\n\n"
+            "Example:\n`/addbatch\n"
+            "Aarya | S03 | E01 | https://t.me/c/123/100\n"
+            "Aarya | S03 | E02 | https://t.me/c/123/101`", 
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    # Combine all arguments and split by newline to get individual lines
+    input_text = update.message.text.strip().split(maxsplit=1)[1].strip()
+    lines = [line.strip() for line in input_text.split('\n') if line.strip()]
+
+    total = len(lines)
+    success = 0
+    duplicate = 0
+    fail = 0
+    results = []
+
+    for i, line in enumerate(lines):
+        parts = [p.strip() for p in line.split('|')]
+        
+        if len(parts) < 4:
+            fail += 1
+            results.append(f"Line {i+1}: ❌ Invalid format (needs 4 parts: Name | SXX | EXX | Link)")
+            continue
+        
+        series_name_raw, season_raw, episode_raw, link = parts[:4]
+        
+        # Parse Season and Episode
+        s_match = re.search(r'[Ss](\d+)', season_raw, re.IGNORECASE)
+        e_match = re.search(r'[Ee](\d+)', episode_raw, re.IGNORECASE)
+
+        if not s_match or not e_match:
+            fail += 1
+            results.append(f"Line {i+1}: ❌ Invalid SXX/EXX format.")
+            continue
+        
+        try:
+            season = int(s_match.group(1))
+            episode = int(e_match.group(1))
+        except ValueError:
+            fail += 1
+            results.append(f"Line {i+1}: ❌ S/E must be integers.")
+            continue
+
+        series_name = series_name_raw.title()
+        
+        # Parse Link
+        link_info = parse_telegram_link(link)
+        if not link_info:
+            fail += 1
+            results.append(f"Line {i+1}: ❌ Invalid Telegram link.")
+            continue
+            
+        channel_id, message_id = link_info
+
+        # Database Insertion
+        if add_series_file(series_name, season, episode, channel_id, message_id):
+            success += 1
+            results.append(f"Line {i+1}: ✅ Added: {series_name} S{season:02d} E{episode:02d}")
+        else:
+            duplicate += 1
+            results.append(f"Line {i+1}: ⚠️ Duplicate/DB Error: {series_name} S{season:02d} E{episode:02d}")
+            
+    # Send Final Summary
+    summary = (
+        f"**Batch Addition Results:**\n"
+        f"Total entries processed: **{total}**\n"
+        f"✅ Success: **{success}**\n"
+        f"⚠️ Duplicates/DB Errors: **{duplicate}**\n"
+        f"❌ Format/Parsing Errors: **{fail}**\n\n"
+        f"--- Details ---\n"
+    )
+    
+    # Add details, truncated if too long
+    details = "\n".join(results)
+    if len(details) > 3500:
+        details = details[:3500] + "\n... (output truncated)"
+
+    await update.message.reply_text(summary + f"```\n{details}\n```", parse_mode=ParseMode.MARKDOWN)
+
+
+# --- Handlers (The rest of main.py is unchanged except for registering the new handler) ---
 
 @check_subscription
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles user text search queries and initiates the series selection menu."""
+    # ... (body unchanged)
     query = update.message.text.strip()
     
     results = search_series(query)  
@@ -223,7 +309,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 @check_subscription
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles button clicks for series and season selection."""
+    # ... (body unchanged)
     query = update.callback_query
     await query.answer()
     
@@ -243,8 +329,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(text="Invalid action.")
 
 async def show_season_menu(query, series_name, context):
-    """Displays buttons for all unique seasons of the selected series."""
-    # ... (function body unchanged)
+    # ... (body unchanged)
     seasons = get_unique_seasons_by_name(series_name)
     overview = get_series_overview(series_name) 
     
@@ -295,8 +380,7 @@ async def show_season_menu(query, series_name, context):
 
 
 async def send_season_files(query, series_name, season, context):
-    """Sends all files belonging to the selected season using copy_message (no sender name)."""
-    # ... (function body unchanged)
+    # ... (body unchanged)
     user_chat_id = query.message.chat_id
     files = get_all_files_by_season(series_name, season)
     
@@ -339,24 +423,22 @@ async def send_season_files(query, series_name, season, context):
 
 def main() -> None:
     """Start the bot."""
-    init_db() # Initialize the database connection
+    init_db()
     
     application = Application.builder().token(BOT_TOKEN).build()
 
     # --- Register Handlers ---
 
-    # Core commands require subscription check
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     
-    # Search and Callback handlers require subscription check
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, search_handler))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     
-    # --- New Admin Handler for manual file adding ---
+    # --- Admin Handlers for file adding ---
     admin_filter = filters.User(ADMINS) & filters.ChatType.PRIVATE
     application.add_handler(CommandHandler('addfile', addfile_command, filters=admin_filter))
-
+    application.add_handler(CommandHandler('addbatch', addbatch_command, filters=admin_filter)) # <--- NEW HANDLER
 
     print("Bot is running...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
