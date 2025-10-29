@@ -101,7 +101,7 @@ async def send_restart_message():
         await app.send_message(
             chat_id=OWNER_ID,
             text="✨ **Bot Restarted!**\n\nFile filter service is online and ready.",
-            parse_mode="markdown"
+            parse_mode="markdownv2" # <<<< CORRECTED PARSE MODE
         )
         print(f"Sent restart message to owner {OWNER_ID}.")
     except Exception as e:
@@ -109,6 +109,7 @@ async def send_restart_message():
 
 # This async function will be executed immediately after the client starts
 async def startup_tasks(_):
+    # This handler must accept one argument (the client instance)
     await send_restart_message()
 
 
@@ -122,7 +123,7 @@ async def start_command(_, message):
         "**Example:** `The Last of Us`\n\n"
         f"**Admin:** Use `/index` to update the file database."
     )
-    await message.reply_text(welcome_text, parse_mode="markdown")
+    await message.reply_text(welcome_text, parse_mode="markdownv2") # <<<< CORRECTED PARSE MODE
 
 @app.on_message(filters.text & filters.private & ~filters.command(["start", "index"]))
 async def search_handler(_, message):
@@ -332,9 +333,8 @@ if __name__ == "__main__":
     
     # 1. Add the startup function as a handler immediately before running.
     # The signature must match: async def handler(client: Client, *args)
-    # Since we don't need the client arg, we use _ for the placeholder.
-    app.add_handler(startup_tasks, group=-1) # Group -1 ensures it runs first
+    app.add_handler(startup_tasks, group=-1) 
     
-    # 2. FIX: Use app.run() to let Pyrogram manage the asyncio loop, 
-    # which resolves the "attached to a different loop" RuntimeError.
+    # 2. Use app.run() to let Pyrogram manage the asyncio loop, 
+    # which is the most stable way to run the client.
     app.run()
