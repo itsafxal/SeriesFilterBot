@@ -2,6 +2,7 @@ import logging
 import requests 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+# Corrected database imports (Assuming config is set up correctly for imports)
 from database import save_user_for_broadcast, add_series_file, get_all_broadcast_users, init_db, search_series, get_unique_seasons_by_name, get_all_files_by_season
 from utils import is_series_file, parse_series_info
 from config import BOT_TOKEN, ADMIN_USER_ID, LOG_LEVEL, MAX_SEARCH_RESULTS, REQUIRED_CHANNEL, INDEX_CHANNEL_ID 
@@ -38,7 +39,6 @@ def check_subscription(handler):
 
         try:
             # Check the user's status in the required channel
-            # NOTE: Use context.bot.get_chat_member instead of application.bot.get_chat_member
             chat_member: ChatMember = await context.bot.get_chat_member(REQUIRED_CHANNEL, user_id)
             
             # Allowed statuses: 'member', 'owner', 'administrator'
@@ -114,8 +114,9 @@ async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     try:
         while message_id <= MAX_MESSAGE_ID:
             try:
-                # FIX: Replaced context.bot.get_message with the more specific and reliable context.bot.get_chat_message
-                message = await context.bot.get_chat_message(chat_id=INDEX_CHANNEL_ID, message_id=message_id)
+                # FIX REVERTED: Using context.bot.get_message, which is the standard name.
+                # The previous error indicates context.bot does not expose 'get_chat_message'.
+                message = await context.bot.get_message(chat_id=INDEX_CHANNEL_ID, message_id=message_id)
                 consecutive_errors = 0 # Reset error counter
 
                 channel_post = message
@@ -145,6 +146,7 @@ async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                         logging.warning(f"Stopped indexing after {MAX_CONSECUTIVE_MISSES} consecutive failures or critical error.")
                         break # Break out of the while loop
                 else:
+                    # Logging unhandled errors
                     logging.error(f"Full indexing unhandled error on message {message_id}: {e}")
                     
             message_id += 1 
@@ -222,7 +224,6 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Handles user text search queries and initiates the series selection menu."""
     query = update.message.text.strip()
     
-    # search_series is imported from database
     results = search_series(query) 
 
     if results:
@@ -263,7 +264,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 async def show_season_menu(query, series_name, context):
     """Displays buttons for all unique seasons of the selected series."""
-    # get_unique_seasons_by_name is imported from database
     seasons = get_unique_seasons_by_name(series_name)
     overview = get_series_overview(series_name) 
     
@@ -314,7 +314,6 @@ async def show_season_menu(query, series_name, context):
 async def send_season_files(query, series_name, season, context):
     """Sends all files belonging to the selected season using copy_message (no sender name)."""
     user_chat_id = query.message.chat_id
-    # get_all_files_by_season is imported from database
     files = get_all_files_by_season(series_name, season)
     
     if not files:
@@ -403,4 +402,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-        
