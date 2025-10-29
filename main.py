@@ -150,7 +150,7 @@ async def save_file_to_db(file_doc: dict):
 def parse_series_info(file_name: str):
     """
     Attempts to extract Series Name, Season (SXX), and Episode (EXX) from a filename.
-    FIX: Updated regex to properly match SXX_EXX patterns.
+    Includes enhanced cleaning logic to ensure a pure series name.
     """
     if not file_name:
         return "", 0, 0
@@ -173,7 +173,7 @@ def parse_series_info(file_name: str):
             "AMZN", "NETFLIX", "HULU", "DDP5.1", "X265", "x264", "10BIT", "MKV", 
             "MULTISUB", "AAC", "PSA", "DUB", "SUB", "MULTI", "REPACK", "COMPLETE", 
             "ENG", "SPA", "ITA", "FRE", "GER", "DUAL", "AUDIO", 
-            r"(19|20)\d{2}", 
+            r"(19|20)\d{2}", # Year tags
             "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10" 
         ]
         
@@ -188,10 +188,19 @@ def parse_series_info(file_name: str):
         # 3. Aggressively remove bracketed/parenthesized tags AND @channel tags
         normalized_name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", normalized_name).strip()
         
-        # 4. Final cleaning: collapse multiple separators, then title case it
+        # 4. ENHANCED CLEANING: Remove common channel/group tags that might remain as prefixes/suffixes (e.g., "CK The Flash")
+        # Add other common tags you want to strip here
+        channel_tags = ["CK", "UB", "TG", "MOVIE HUB", "FILM"] 
+        for tag in channel_tags:
+            # Match the tag at the start (^) or the end ($) of the string, followed/preceded by a space or separator
+            # This handles patterns like "CK The Flash" or "The Flash - UB"
+            tag_regex = rf"^\s*{re.escape(tag)}[\s._-]*|[\s._-]*{re.escape(tag)}\s*$"
+            normalized_name = re.sub(tag_regex, " ", normalized_name, flags=re.IGNORECASE).strip()
+            
+        # 5. Final cleaning: collapse multiple separators, then title case it
         normalized_name = re.sub(r"[. _]+", " ", normalized_name).title().strip()
         
-        # 5. LAST STEP: Truncate after the first strong separator (like a stray hyphen)
+        # 6. LAST STEP: Truncate after the first strong separator (like a stray hyphen)
         if ' - ' in normalized_name:
              normalized_name = normalized_name.split(' - ')[0].strip()
         
@@ -271,7 +280,9 @@ async def search_handler(_, message):
     if unique_names:
         keyboard = []
         for name in sorted(unique_names):
+            # This name is the cleaned 'normalized_name' from the database
             callback_data = f'series_select|{name}'
+            # Display name is capped at 50 chars for button space
             button_text = name[:50] + '...' if len(name) > 50 else name 
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
