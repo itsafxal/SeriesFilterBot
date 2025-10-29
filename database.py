@@ -1,11 +1,9 @@
-# database.py
-
 import pymongo
 from pymongo import MongoClient
 import re
 import json
 import logging
-from datetime import datetime
+from datetime import datetime # ⬅️ Imported for MongoDB timestamp fix
 from config import DATABASE_URI, DATABASE_NAME, COLLECTION_NAME, LOG_LEVEL 
 
 # NOTE: Since BROADCAST_USERS_FILE is not in config.py, we define it here as a local file path.
@@ -21,7 +19,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
     level=logging.getLevelName(LOG_LEVEL)
 )
-
 
 def init_db():
     """Initializes the MongoDB connection and collections."""
@@ -52,9 +49,7 @@ def add_series_file(series_name, season, episode, file_id, channel_id, message_i
         "file_id": file_id,  
         "channel_id": channel_id,
         "message_id": int(message_id),
-        # ❌ WAS: "indexed_at": MongoClient.server_info 
-        # ✅ FIX: Use a BSON-compatible timestamp (datetime object)
-        "indexed_at": datetime.utcnow() 
+        "indexed_at": datetime.utcnow() # ⬅️ FIXED: Use BSON-compatible datetime object
     }
     
     try:
