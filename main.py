@@ -107,11 +107,8 @@ async def send_restart_message():
     except Exception as e:
         print(f"Failed to send restart message to owner {OWNER_ID}: {e}")
 
-# FIX: Use @app.on_ready() to call the restart message after the client starts
-@app.on_ready()
-async def on_client_ready(_):
-    """Called once the bot client is fully connected and running."""
-    await send_restart_message()
+# The problematic @app.on_ready() is REMOVED. The logic is moved to the main() function.
+
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(_, message):
@@ -331,6 +328,18 @@ async def index_channel_files(status_message):
 if __name__ == "__main__":
     print("Bot started...")
     
-    # FIX: Use app.run() which is Pyrogram's own blocking runner.
-    # It manages the asyncio loop internally, which avoids the RuntimeError.
-    app.run()
+    async def main():
+        # Start the Bot Client
+        await app.start()
+        
+        # Send the restart notification to the admin immediately after starting
+        await send_restart_message()
+        
+        # Keep the bot running and listening for updates
+        await app.idle()
+        
+        # Stop the client when idle is exited (e.g., Ctrl+C)
+        await app.stop()
+
+    # We use asyncio.run() to manage the async entry point
+    asyncio.run(main())
