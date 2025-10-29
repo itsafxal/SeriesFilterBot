@@ -95,6 +95,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     await update.message.reply_text(message, parse_mode='Markdown')
 
+# main_bot.py - FIX: Improving the /index_all loop logic
+
 async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Command to start indexing ALL messages from the INDEX_CHANNEL_ID (Admin only)."""
     if update.effective_user.id != ADMIN_USER_ID:
@@ -104,41 +106,68 @@ async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text(f"⏳ **Starting full indexing...**\nIndexing channel messages from `{INDEX_CHANNEL_ID}`. This may take a while.", parse_mode='Markdown')
     
     indexed_count = 0
-    message_id_counter = 0 
+    message_id_counter = 0
+    consecutive_errors = 0 # NEW: Counter to stop on long sequence of failures
     
     try:
-        # NOTE: This is inefficient but uses python-telegram-bot's methods.
-        for message_id in range(1, 10001): 
+        # 💡 FIX: Start checking from a known starting message ID or a large number (e.g., 50000) and iterate downwards
+        # OR: Stick to iterating upwards but implement a proper stop condition.
+        # Starting with a common channel post ID of 1 is correct, but iterating upwards is slow.
+        # We will use the original *upward* iteration but with better error handling.
+
+        # FIX 1: Find the max message ID in the channel for a safer downward iteration (not possible with this API).
+        # FIX 2: Stick to upward iteration but break only after many missing messages.
+        
+        message_id = 1
+        MAX_MESSAGE_ID = 20000 # Safety cap
+        MAX_CONSECUTIVE_MISSES = 100 # Stop after 100 empty or missing messages
+
+        while message_id <= MAX_MESSAGE_ID:
             try:
+                # The telegram.ext get_message can throw an error if the message is deleted or not found.
                 message = await context.bot.get_message(chat_id=INDEX_CHANNEL_ID, message_id=message_id)
-            except Exception:
-                break
+                consecutive_errors = 0 # Reset error counter
 
-            channel_post = message
-            if not channel_post or not channel_post.document:
-                continue 
-
-            file_name = channel_post.document.file_name or channel_post.caption or ""
-            file_name = file_name.replace(' ', '.') 
-
-            if is_series_file(file_name):
-                series_info = parse_series_info(file_name)
-                if series_info:
-                    series_name, season, episode = series_info
+                channel_post = message
+                if channel_post and channel_post.document:
+                    # The rest of the logic is fine: it attempts to parse and add the file.
+                    file_name = channel_post.document.file_name or channel_post.caption or ""
+                    # FIX: Removed the line `file_name = file_name.replace(' ', '.')` as it might corrupt names.
+                    # The cleaning should be done in parse_series_info in utils.py.
                     
-                    channel_id = str(channel_post.chat.id)
-                    message_id_ = channel_post.message_id
-                    
-                    if add_series_file(series_name, season, episode, channel_id, message_id_):
-                        indexed_count += 1
-                        logging.info(f"Indexed Series File: {series_name} S{season:02d}E{episode:02d}")
+                    if is_series_file(file_name):
+                        series_info = parse_series_info(file_name)
+                        if series_info:
+                            series_name, season, episode = series_info
+                            
+                            channel_id = str(channel_post.chat.id)
+                            message_id_ = channel_post.message_id
+                            
+                            if add_series_file(series_name, season, episode, channel_id, message_id_):
+                                indexed_count += 1
+                                logging.info(f"Indexed Series File: {series_name} S{season:02d}E{episode:02d}")
+
+            except Exception as e:
+                # Catch specific exception for "message not found" if possible, otherwise use a generic check
+                error_msg = str(e)
+                if 'message not found' in error_msg.lower() or 'bad request' in error_msg.lower():
+                    consecutive_errors += 1
+                    if consecutive_errors >= MAX_CONSECUTIVE_MISSES:
+                        logging.warning(f"Stopped indexing after {MAX_CONSECUTIVE_MISSES} consecutive message failures.")
+                        break # Break out of the while loop
+                else:
+                    logging.error(f"Full indexing error on message {message_id}: {e}")
             
-            message_id_counter = message_id 
+            message_id += 1 # Increment message ID counter
+            message_id_counter = message_id - 1
+            
+            # Update the admin every 1000 messages (optional)
+            if message_id % 1000 == 0:
+                await context.bot.send_message(update.effective_chat.id, f"Progress: Reached message ID **{message_id}**. Indexed **{indexed_count}** files so far.", parse_mode='Markdown')
 
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Indexing stopped due to an error: `{e}`", parse_mode='Markdown')
-        logging.error(f"Full indexing error: {e}")
-
+        await update.message.reply_text(f"⚠️ Indexing stopped due to a critical error: `{e}`", parse_mode='Markdown')
+        logging.error(f"Full indexing critical error: {e}")
 
     await update.message.reply_text(f"✅ **Full Indexing Complete!**\nIndexed **{indexed_count}** new files up to message ID **{message_id_counter}**.", parse_mode='Markdown')
 
@@ -176,7 +205,6 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return 
 
     file_name = channel_post.document.file_name or channel_post.caption or ""
-    file_name = file_name.replace(' ', '.') 
 
     if is_series_file(file_name):
         series_info = parse_series_info(file_name)
