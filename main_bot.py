@@ -5,6 +5,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMem
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.constants import ChatType, ParseMode
 from telegram.error import BadRequest, TimedOut
+from datetime import datetime
 from database import save_user_for_broadcast, add_series_file, get_all_broadcast_users, init_db, search_series, get_unique_seasons_by_name, get_all_files_by_season, save_generic_file
 from utils import is_series_file, parse_series_info
 from config import BOT_TOKEN, LOG_LEVEL, REQUIRED_CHANNEL, INDEX_CHANNEL_ID, ADMINS, LOG_CHANNEL
@@ -613,11 +614,6 @@ async def set_skip_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     temp.CURRENT = skip
     await update.message.reply_text(f"Successfully set **SKIP** number as `{skip}`. The next full index will start from message ID {skip}.", parse_mode=ParseMode.MARKDOWN)
 
-
-###################################################
-## ⚙️ Main Bot Setup ##
-###################################################
-
 def main() -> None:
     """Start the bot."""
     init_db() # Initialize the database connection
@@ -635,14 +631,9 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(check_subscription(callback_query_handler)))
     
     # Channel indexing handler (does NOT need subscription check)
-    # The filter is updated to include more media types.
-    # New/Correct line:
-    #media_filter = filters.Document | filters.Video | filters.Audio
-    # Assuming this is in your main file with: 
-    # from telegram.ext import ..., filters, ...
+    # FIX: Replacing filters.ALL_MEDIA with an explicit combination of media filters.
+    media_filter = filters.Document | filters.Video | filters.Audio | filters.Photo | filters.Animation | filters.Voice | filters.VideoNote
     
-    # OR use filters.ALL_MEDIA which includes all message media (document, video, photo, audio, etc.)
-    media_filter = filters.ALL_MEDIA
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & media_filter, channel_post_handler))
 
     # --- New Indexing Handlers (Admin Logic) ---
@@ -657,6 +648,7 @@ def main() -> None:
 
 
     print("Bot is running...")
+    # It is recommended to use the latest `telegram.constants.UpdateType` for allowed updates
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
