@@ -10,4 +10,4 @@ WORKDIR /app
 
 COPY . .
 
-CMD ["python3", "main.py"]
+CMD ["python3", "main_bot.py"]
