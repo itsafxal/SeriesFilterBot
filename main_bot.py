@@ -6,7 +6,16 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram.constants import ChatType, ParseMode
 from telegram.error import BadRequest, TimedOut
 from datetime import datetime
-from database import save_user_for_broadcast, add_series_file, get_all_broadcast_users, init_db, search_series, get_unique_seasons_by_name, get_all_files_by_season, save_generic_file
+from database import (
+    save_user_for_broadcast, 
+    add_series_file, 
+    get_all_broadcast_users, 
+    init_db, 
+    search_series, 
+    get_unique_seasons_by_name, 
+    get_all_files_by_season, 
+    save_generic_file
+)
 from utils import is_series_file, parse_series_info
 from config import BOT_TOKEN, LOG_LEVEL, REQUIRED_CHANNEL, INDEX_CHANNEL_ID, LOG_CHANNEL, ADMINS
 
@@ -33,7 +42,7 @@ def get_series_overview(series_name):
     return None
 
 ###################################################
-## 🔒 Force Subscribe Middleware (No change) ##
+## 🔒 Force Subscribe Middleware ##
 ###################################################
 
 def check_subscription(handler):
@@ -93,10 +102,10 @@ def check_subscription(handler):
     return wrapper
 
 ###################################################
-## 🎬 Command Handlers (No change) ##
+## 🎬 Command Handlers ##
 ###################################################
-# ... (start_command, help_command, channel_post_handler - NO CHANGES HERE)
 
+@check_subscription
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a welcome message and registers user for broadcast."""
     user_id = update.effective_user.id
@@ -109,12 +118,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     await update.message.reply_text(message, parse_mode='Markdown')
 
+@check_subscription
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a help message."""
     message = (
         "**📚 Bot Commands & Usage:**\n"
         "1. **Search:** Just type the series name (e.g., `Aarya`).\n"
-        "2. **/start**: Get a welcome message and register for broadcasts."
+        "2. **/start**: Get a welcome message and register for broadcasts.\n"
         "3. **Indexing (Admins Only):** Forward a file/message link to the bot to request indexing."
         "\n\n**Admin Commands:**\n"
         "4. **/setskip <number>**: Sets the starting message ID for full chat indexing."
@@ -168,18 +178,15 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             }
             
             # Save the file (ignoring series logic)
-            # This is where the generic file saving logic is applied.
             aynav, vnay = save_generic_file(file_data)
             if aynav:
                 logging.info(f"Indexed Generic File: {file_data.get('file_name', 'NoName')}")
-            # elif vnay == 0: # Duplicate file unique ID
-            # logging.debug(f"Duplicate Generic File: {file_data.get('file_name', 'NoName')}")
 
 ###################################################
-## 🔎 Autofilter Logic Handlers (No change) ##
+## 🔎 Autofilter Logic Handlers ##
 ###################################################
-# ... (search_handler, callback_query_handler, show_season_menu, send_season_files)
 
+@check_subscription
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles user text search queries and initiates the series selection menu."""
     query = update.message.text.strip()
@@ -202,6 +209,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         await update.message.reply_text(f"❌ No series files found matching '{query}'.")
 
+@check_subscription
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles button clicks for series and season selection."""
     query = update.callback_query
@@ -233,8 +241,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         if action_type == 'index_reject':
             await query.message.delete()
             await context.bot.send_message(from_user,
-                                           f'Your Submission for indexing `{chat_id}` has been declined by our moderators.',
-                                           reply_to_message_id=lst_msg_id, parse_mode=ParseMode.MARKDOWN)
+                                          f'Your Submission for indexing `{chat_id}` has been declined by our moderators.',
+                                          reply_to_message_id=lst_msg_id, parse_mode=ParseMode.MARKDOWN)
             return
 
         # Handle 'index_accept'
@@ -247,8 +255,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Send acceptance message if not an admin
         if from_user not in ADMINS:
             await context.bot.send_message(from_user,
-                                           f'Your Submission for indexing `{chat_id}` has been accepted by our moderators and will be added soon.',
-                                           reply_to_message_id=lst_msg_id, parse_mode=ParseMode.MARKDOWN)
+                                          f'Your Submission for indexing `{chat_id}` has been accepted by our moderators and will be added soon.',
+                                          reply_to_message_id=lst_msg_id, parse_mode=ParseMode.MARKDOWN)
         
         await msg.edit_text(
             "Starting Indexing",
@@ -374,7 +382,7 @@ async def send_season_files(query, series_name, season, context):
 
 
 ###################################################
-## 📝 Indexing Logic Handlers (PyMongo Adaptation) ##
+## 📝 Indexing Logic Handlers ##
 ###################################################
 
 async def send_for_index(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -399,14 +407,12 @@ async def send_for_index(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Public username/link
             chat_id = chat_id_part
             
-    # --- FIX APPLIED HERE: Use hasattr() to check for 'forward_from_chat' existence ---
     elif (hasattr(message, 'forward_from_chat') and 
           message.forward_from_chat and 
           message.forward_from_chat.type == ChatType.CHANNEL):
         
         last_msg_id = message.forward_from_message_id
         chat_id = message.forward_from_chat.username or message.forward_from_chat.id
-    # --- END FIX ---
     else:
         # Returns if it's not a link, and not a forwarded message from a channel
         return
@@ -505,11 +511,6 @@ async def index_files_to_db(bot, chat_id, last_msg_id, msg: Message):
             current = temp.CURRENT
             temp.CANCEL = False
             
-            # Since python-telegram-bot doesn't have an equivalent of pyrogram's iter_messages,
-            # we must implement a loop using get_messages with a reverse offset or a simple loop
-            # starting from the last message ID (which is more challenging in ptb).
-            # The most direct porting approach is to simply loop downwards by message_id.
-            
             message_id = last_msg_id
             
             while message_id >= 1 and not temp.CANCEL:
@@ -583,8 +584,8 @@ async def index_files_to_db(bot, chat_id, last_msg_id, msg: Message):
                             "indexed_at": datetime.utcnow()
                         }
                         
-                        aynäv, vnay = save_generic_file(file_data)
-                        if aynäv:
+                        aynav, vnay = save_generic_file(file_data)
+                        if aynav:
                             total_files += 1
                         elif vnay == 0:
                             duplicate += 1
@@ -608,6 +609,10 @@ async def index_files_to_db(bot, chat_id, last_msg_id, msg: Message):
 
 async def set_skip_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Sets the starting message ID (skip number) for full chat indexing."""
+    # Check if the user is an admin
+    if update.message.from_user.id not in ADMINS:
+        return await update.message.reply_text("Permission Denied. Only admins can use this command.")
+
     if not context.args or len(context.args) != 1:
         return await update.message.reply_text("Usage: /setskip <number>")
     
@@ -629,24 +634,19 @@ def main() -> None:
     # --- Register Handlers ---
 
     # Core commands require subscription check
-    application.add_handler(CommandHandler("start", check_subscription(start_command)))
-    application.add_handler(CommandHandler("help", check_subscription(help_command)))
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
     
     # Search and Callback handlers require subscription check
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_subscription(search_handler)))
-    application.add_handler(CallbackQueryHandler(check_subscription(callback_query_handler)))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, search_handler))
+    application.add_handler(CallbackQueryHandler(callback_query_handler))
     
     # Channel indexing handler (does NOT need subscription check)
     media_filter = (
         filters.ATTACHMENT
         | filters.VIDEO
         | filters.AUDIO
-        | filters.PHOTO
-        | filters.ANIMATION
-        | filters.VOICE
-        | filters.VIDEO_NOTE
     )
-    # FIX 2: Ensure channel post handler only fires for channel posts with media
     application.add_handler(MessageHandler(
         filters.UpdateType.CHANNEL_POST 
         & filters.ChatType.CHANNEL
@@ -657,10 +657,9 @@ def main() -> None:
     admin_filter = filters.User(ADMINS)
     
     # Handle /setskip (Admin only)
-    application.add_handler(CommandHandler('setskip', set_skip_number, filters=admin_filter))
+    application.add_handler(CommandHandler('setskip', set_skip_number, filters=admin_filter & filters.ChatType.PRIVATE))
     
     # Handle index submission (Forwarded message or Link in private chat)
-    # FIX 1: Change filters.PRIVATE to filters.ChatType.PRIVATE (already done in original)
     index_filter = filters.ChatType.PRIVATE & (filters.FORWARDED | filters.Regex(r"(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$"))
     application.add_handler(MessageHandler(index_filter, send_for_index))
 
