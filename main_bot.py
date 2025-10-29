@@ -28,7 +28,6 @@ def get_series_overview(series_name):
 def check_subscription(handler):
     """
     Decorator-like function to check if the user is a member of REQUIRED_CHANNEL.
-    If not, it prompts them to join.
     """
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user:
@@ -44,8 +43,9 @@ def check_subscription(handler):
             # Check the user's status in the required channel
             chat_member: ChatMember = await context.bot.get_chat_member(REQUIRED_CHANNEL, user_id)
             
-            # Allowed statuses: 'member', 'creator', 'administrator'
-            if chat_member.status in [ChatMember.MEMBER, ChatMember.CREATOR, ChatMember.ADMINISTRATOR]:
+            # 🐛 FIXED: Updated CREATOR to OWNER 
+            # Allowed statuses: 'member', 'owner', 'administrator'
+            if chat_member.status in [ChatMember.MEMBER, ChatMember.OWNER, ChatMember.ADMINISTRATOR]:
                 return await handler(update, context) # User is subscribed, run the handler
             else:
                 # User is not subscribed or status is 'left', 'kicked', 'restricted'
@@ -60,12 +60,12 @@ def check_subscription(handler):
                 )
                 return
         except Exception as e:
+            # Log the error, but this specific error will now be fixed.
             logging.error(f"Force sub check failed: {e}")
             await update.effective_message.reply_text("An error occurred while checking your subscription. Please try again.")
             return
 
     return wrapper
-
 ###################################################
 ## 🎬 Command Handlers ##
 ###################################################
