@@ -153,22 +153,28 @@ async def broadcast_test_command(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(f"Broadcast sent successfully to {success_count}/{len(users)} users.")
 
 
+# main_bot.py
+
+# ... (main function body) ...
+
 def main() -> None:
     """Start the bot."""
     # Use the BOT_TOKEN imported from config.py
     application = Application.builder().token(BOT_TOKEN).build()
 
     # Register Handlers
+    # Register Handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("index", index_command))
     application.add_handler(CommandHandler("broadcast_test", broadcast_test_command))
+    # ... (other handlers) ...
 
     # User chat search handler
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
     
-    # Channel indexing handler 
-    application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & filters.Document, channel_post_handler))
+    # Corrected Channel indexing handler: Use filters.Document.ALL
+    application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & filters.Document.ALL, channel_post_handler))
 
     print("Bot is running...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
