@@ -13,5 +13,3 @@ LOG_LEVEL =  'INFO'
 
 MAX_SEARCH_RESULTS =  10
 
-# --- TMDB Information for Posters ---
-TMDB_API_KEY = environ.get('TMDB_API_KEY', 'YOUR_TMDB_API_KEY') # ⚠️ CHANGE THIS
