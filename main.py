@@ -365,18 +365,32 @@ async def index_channel_files(indexer_client, status_message):
 # ... (The 'app' Client object is defined)
 
 # ###################################################
-# ## MAIN EXECUTION (Fixed) ##
+# ## MAIN EXECUTION (Robust Fix) ##
 # ###################################################
+
+async def main_bot_loop():
+    """Starts the client, runs startup tasks, and keeps the client running."""
+    
+    # 1. Start the client
+    await app.start()
+    logger.info("Pyrogram client started.")
+    
+    # 2. Run your startup task directly (since we now have a running client)
+    await send_restart_message(app)
+    
+    # 3. Wait indefinitely for the bot to run until termination (e.g., Ctrl+C or deployment stop)
+    # This prevents the script from exiting immediately after startup.
+    await asyncio.Future() 
 
 if __name__ == "__main__":
     logger.info("Starting Pyrogram bot...")
     
-    # Define the startup function as an ASYNC COROUTINE that ACCEPTS the client argument.
-    # Pyrogram's app.run() will pass the client instance to this function.
-    async def startup_tasks(client): 
-        # Now, use the client instance passed to this function.
-        await send_restart_message(client)
-
-    # Use the app.run() entry point, passing the async function directly.
-    # This correctly schedules the coroutine.
-    app.run(startup_tasks)
+    try:
+        # Get the current event loop and run the main_bot_loop coroutine
+        # This is the standard, reliable way to execute an async Pyrogram client.
+        asyncio.run(main_bot_loop())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot shutting down...")
+        # Ensure the client is stopped gracefully when the loop is interrupted
+        if app.is_running:
+            app.stop()
