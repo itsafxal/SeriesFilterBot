@@ -637,7 +637,12 @@ def main() -> None:
     # Channel indexing handler (does NOT need subscription check)
     # The filter is updated to include more media types.
     # New/Correct line:
-    media_filter = filters.Document | filters.Video | filters.Audio
+    #media_filter = filters.Document | filters.Video | filters.Audio
+    # Assuming this is in your main file with: 
+    # from telegram.ext import ..., filters, ...
+    
+    # OR use filters.ALL_MEDIA which includes all message media (document, video, photo, audio, etc.)
+    media_filter = filters.ALL_MEDIA
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & media_filter, channel_post_handler))
 
     # --- New Indexing Handlers (Admin Logic) ---
