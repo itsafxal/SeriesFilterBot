@@ -126,7 +126,7 @@ def parse_series_info(file_name: str):
         
         # 2. Clean common garbage terms (case-insensitive)
         common_terms = ["4K", "1080P", "720P", "HDRIP", "WEB-DL", "AMZN", "NETFLIX", 
-                        "DDP5.1", "X265", "x264", "MULTISUB", "AAC", "10BIT", "MKV", "WEBRIP"] 
+                         "DDP5.1", "X265", "x264", "MULTISUB", "AAC", "10BIT", "MKV", "WEBRIP"] 
         
         for term in common_terms:
             normalized_name = re.sub(r"\b" + re.escape(term) + r"\b", "", normalized_name, flags=re.IGNORECASE).strip()
@@ -259,7 +259,16 @@ async def show_season_menu(query, series_name: str):
             pass
         return
 
-    total_files = sum(len(await get_all_files_by_season(series_name, s)) for s in seasons)
+    # --- FIX APPLIED HERE: Use asyncio.gather to correctly await multiple async calls ---
+    # 1. Create a list of coroutines (futures)
+    tasks = [get_all_files_by_season(series_name, s) for s in seasons]
+    
+    # 2. Concurrently execute all tasks and await the results (list of file lists)
+    all_season_files = await asyncio.gather(*tasks)
+    
+    # 3. Calculate the total number of files
+    total_files = sum(len(files_list) for files_list in all_season_files)
+    # ----------------------------------------------------------------------------------
     
     keyboard = []
     row = []
