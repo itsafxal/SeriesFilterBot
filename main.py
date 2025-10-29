@@ -22,7 +22,7 @@ CHANNELS = [-1001996538290]
 # Ensure all ADMINS IDs are valid integers.
 ADMINS = [123456789]  # <-- REPLACE WITH YOUR ADMIN USER ID(s)
 # 
-# FIX APPLIED HERE: LOG_CHANNEL must be a single integer, not a list.
+# FIX APPLIED: LOG_CHANNEL is a single integer, not a list.
 # 
 LOG_CHANNEL = -1001234567890 # <-- REPLACE WITH YOUR LOG CHANNEL ID (NO BRACKETS [])
 lock = asyncio.Lock()
@@ -497,45 +497,64 @@ async def index_files(bot, query):
         )
     )
     try:
+        # Ensure chat is treated as an integer if it's numeric
         chat = int(chat)
-    except:
-        chat = chat
+    except ValueError:
+        pass # chat remains a string (username)
+    except Exception:
+        pass # chat remains as is
+
     await index_files_to_db(int(lst_msg_id), chat, msg, bot)
 
 
 @app.on_message((filters.forwarded | (filters.regex("(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$")) & filters.text ) & filters.private & filters.incoming)
 async def send_for_index(bot, message):
+    chat_id = None
+    last_msg_id = None
+    
     if message.text:
         regex = re.compile("(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$")
         match = regex.match(message.text)
         if not match:
             return await message.reply('Invalid link')
-        chat_id = match.group(4)
+        chat_id_str = match.group(4)
         last_msg_id = int(match.group(5))
-        if chat_id.isnumeric():
+        
+        # Consistent Pyrogram channel ID conversion
+        if chat_id_str.isnumeric():
             # Convert numeric group ID (e.g., 12345) to Pyrogram chat ID format (-10012345)
-            chat_id  = int(("-100" + chat_id))
-    elif message.forward_from_chat.type == enums.ChatType.CHANNEL:
+            chat_id = int(("-100" + chat_id_str))
+        else:
+            chat_id = chat_id_str # Keeps username as string
+            
+    elif message.forward_from_chat and message.forward_from_chat.type == enums.ChatType.CHANNEL:
         last_msg_id = message.forward_from_message_id
         chat_id = message.forward_from_chat.username or message.forward_from_chat.id
     else:
-        return
+        return # Not a link or channel forward
+
+    # --- Access Check (Source of CHANNEL_INVALID) ---
     try:
-        # This is the line that causes the CHANNEL_INVALID error if the bot doesn't have access.
+        # This line attempts to resolve the chat_id. It will fail if the bot 
+        # is not an admin/member of a private chat, or if the ID is invalid.
         await bot.get_chat(chat_id)
     except ChannelInvalid:
+        # Specific error for invalid/inaccessible channels
         return await message.reply('This may be a private channel / group. Make me an admin over there to index the files.')
     except (UsernameInvalid, UsernameNotModified):
         return await message.reply('Invalid Link specified.')
     except Exception as e:
         logger.exception(e)
         return await message.reply(f'Errors - {e}')
+        
+    # Second check for message existence/admin status
     try:
         k = await bot.get_messages(chat_id, last_msg_id)
-    except:
-        return await message.reply('Make Sure That Iam An Admin In The Channel, if channel is private')
+    except Exception:
+        # The first check often covers this, but this handles the message ID range check.
+        return await message.reply('Make Sure That Iam An Admin In The Channel, if channel is private, and the message ID exists.')
     if k.empty:
-        return await message.reply('This may be group and iam not a admin of the group.')
+        return await message.reply('This may be group and iam not a admin of the group or the message ID is too high.')
 
     if message.from_user.id in ADMINS:
         buttons = [
