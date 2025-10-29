@@ -7,7 +7,7 @@ import logging
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
-from pymongo import MongoClient, TEXT
+from pymongo import MongoClient, TEXT, DESCENDING
 
 # --- Configuration Placeholders (Your actual values) ---
 API_ID = 28643132
@@ -49,19 +49,34 @@ app = Client(
 ###################################################
 
 async def search_series(query: str):
-    """Searches MongoDB for unique series names matching the query."""
+    """
+    Searches MongoDB for unique series names matching the query. 
+    Prioritizes text index for better fuzzy matching.
+    """
     def sync_search():
-        regex_query = re.escape(query).replace(" ", ".*")
+        # 1. First, attempt a fuzzy search using the $text index for high tolerance
+        text_results = files_collection.aggregate([
+            {"$match": {"$text": {"$search": query}}},
+            # Sort by text score to prioritize best matches
+            {"$sort": {"score": {"$meta": "textScore"}, "_id": DESCENDING}}, 
+            {"$group": {"_id": "$normalized_name"}},
+            {"$project": {"_id": 0, "name": "$_id"}}
+        ])
+        
+        results = list(text_results)
+        if results:
+            return results
+        
+        # 2. Fallback to the original regex search
+        logger.info(f"Text search failed for '{query}'. Falling back to Regex.")
+        regex_query = re.escape(query).replace(" ", ".*") 
         pipeline = [
             {"$match": {"normalized_name": {"$regex": regex_query, "$options": "i"}}},
             {"$group": {"_id": "$normalized_name"}},
             {"$project": {"_id": 0, "name": "$_id"}}
         ]
-        # FIX: Ensure the synchronous cursor is fully converted to a list here.
-        # This prevents the 'async_generator' object is not iterable error.
         return list(files_collection.aggregate(pipeline))
         
-    # Extract names from the list of dictionaries returned by the thread
     results = await asyncio.to_thread(sync_search)
     return [doc["name"] for doc in results]
 
@@ -69,7 +84,6 @@ async def get_unique_seasons_by_name(series_name: str):
     """Gets unique season numbers for a given series."""
     def sync_get_seasons():
         seasons = files_collection.distinct("season", {"normalized_name": series_name})
-        # Filter out season 0 (which is often used for non-series files) and sort
         seasons = sorted([s for s in seasons if s > 0])
         return seasons
         
@@ -81,7 +95,7 @@ async def get_all_files_by_season(series_name: str, season: int):
         files = files_collection.find(
             {"normalized_name": series_name, "season": season},
             {"channel_id": 1, "message_id": 1, "_id": 0}
-        )
+        ).sort("episode", 1)
         return list(files)
         
     return await asyncio.to_thread(sync_get_files)
@@ -90,64 +104,67 @@ async def save_file_to_db(file_doc: dict):
     """Inserts a single file document into MongoDB."""
     def sync_insert_one():
         try:
-            files_collection.update_one(
+            # Use update_one with upsert=True to handle both new insertions and potential updates/duplicates
+            result = files_collection.update_one(
                 {"channel_id": file_doc["channel_id"], "message_id": file_doc["message_id"]},
                 {"$set": file_doc},
                 upsert=True
             )
+            
+            # --- NEW LOGGING ---
+            if result.upserted_id:
+                logger.info(f"DB: INSERTED new file. ID: {file_doc['message_id']}")
+            elif result.matched_count > 0 and result.modified_count == 0:
+                # Matched but not modified means it was a duplicate and the data hasn't changed.
+                logger.debug(f"DB: SKIPPED (Duplicate found and data is unchanged) for ID: {file_doc['message_id']}")
+            elif result.matched_count > 0 and result.modified_count > 0:
+                logger.info(f"DB: UPDATED existing file (Metadata changed) for ID: {file_doc['message_id']}")
+            # -------------------
+                
             return True
         except Exception as e:
-            logger.error(f"Failed to insert file doc: {e}")
+            logger.error(f"Failed to insert/update file doc: {e}")
             return False
             
     return await asyncio.to_thread(sync_insert_one)
 
-# ###################################################
-# ## UTILITY & PARSING (Name Unification Logic) ##
-# ###################################################
+###################################################
+## UTILITY & PARSING (Name Unification Logic) ##
+###################################################
 
 def parse_series_info(file_name: str):
     """
     Attempts to extract Series Name, Season (SXX), and Episode (EXX) from a filename.
-    Includes aggressive cleanup to ensure series names are unified.
     """
     if not file_name:
         return "", 0, 0
         
-    # Regex to find SXXEXX pattern
     match = re.search(r"[sS](\d+)[eE](\d+)", file_name)
     
     if match:
         season = int(match.group(1))
         episode = int(match.group(2))
         
-        # 1. Remove the SXXEXX part and surrounding separators
         normalized_name = re.sub(r"([. _-]+)?[sS]\d+[eE]\d+([. _-]+)?", " ", file_name).strip()
         
-        # 2. Clean common garbage terms (case-insensitive)
         common_terms = ["4K", "1080P", "720P", "HDRIP", "WEB-DL", "AMZN", "NETFLIX", 
                          "DDP5.1", "X265", "x264", "MULTISUB", "AAC", "10BIT", "MKV", "WEBRIP"] 
         
         for term in common_terms:
             normalized_name = re.sub(r"\b" + re.escape(term) + r"\b", "", normalized_name, flags=re.IGNORECASE).strip()
 
-        # 3. Aggressively remove bracketed/parenthesized channel/source tags (e.g., [@Series World Tm])
         normalized_name = re.sub(r"\[.*?\]|\(.*?\)", " ", normalized_name).strip()
-        
-        # 4. Replace multiple spaces/dots/underscores with a single space, then Title case it
         normalized_name = re.sub(r"[. _]+", " ", normalized_name).title().strip()
         
         return normalized_name, season, episode
     
-    # If SXXEXX is not found, treat it as a potential standalone file, with Season/Episode 0
     return file_name.title().strip(), 0, 0 
 
 
-# ###################################################
-# ## REAL-TIME FILE HANDLER (INDEXING LOGIC) ##
-# ###################################################
+###################################################
+## REAL-TIME FILE HANDLER (INDEXING LOGIC) ##
+###################################################
 
-# Filter for document, video, or audio messages
 media_filter = filters.document | filters.video | filters.audio
 
 @app.on_message(filters.chat(CHANNELS) & media_filter)
@@ -179,17 +196,21 @@ async def media_handler(_, message):
         
         saved = await save_file_to_db(file_doc)
         if saved:
-            logger.info(f"Indexed new file: {normalized_name} S{season:02d}E{episode:02d} from message {message.id}")
+            logger.info(f"INDEXING: {normalized_name} S{season:02d}E{episode:02d} (Msg ID: {message.id})")
+    else:
+        # --- NEW LOGGING ---
+        # Log when a file is skipped because it doesn't match the SXXEXX format
+        logger.info(f"SKIP: Non-series file skipped ('{file_name}' from Msg ID: {message.id})")
+        # -------------------
 
-# ###################################################
-# ## PYROGRAM HANDLERS (User Interaction) ##
-# ###################################################
+###################################################
+## PYROGRAM HANDLERS (User Interaction) ##
+###################################################
 
 async def send_startup_notification(client):
     logger.info("Bot restarted successfully.")
 
 
-# Handler for the /start command
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(_, message):
     """Handles the /start command."""
@@ -197,11 +218,10 @@ async def start_command(_, message):
         "👋 <b>Welcome! I'm your Series File Filter Bot.</b>\n\n"
         "Just send me the <b>name of a series</b> you are looking for, "
         "and I'll show you the available seasons and episodes from the index.\n\n"
-        "<b>Example:</b> <code>Loki</code>"
+        "<b>Example:</b> <code>Loki</code> or <code>Money Heist</code>"
     )
     await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
-# Handler for plain text messages in private chat
 @app.on_message(filters.text & filters.private & ~filters.command("start"))
 async def search_handler(_, message):
     """Handles user text search queries."""
@@ -211,12 +231,9 @@ async def search_handler(_, message):
     
     if unique_names:
         keyboard = []
-        # Sort names alphabetically
         for name in sorted(unique_names):
             callback_data = f'series_select|{name}'
             button_text = name[:50] + '...' if len(name) > 50 else name
-            
-            # Show only one series button per result
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -226,7 +243,6 @@ async def search_handler(_, message):
     else:
         await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
 
-# Handler for inline button presses
 @app.on_callback_query(filters.regex(r"series_select|season_send"))
 async def callback_query_handler(_, query):
     """Handles button clicks for series and season selection."""
@@ -259,16 +275,9 @@ async def show_season_menu(query, series_name: str):
             pass
         return
 
-    # --- FIX APPLIED HERE: Use asyncio.gather to correctly await multiple async calls ---
-    # 1. Create a list of coroutines (futures)
     tasks = [get_all_files_by_season(series_name, s) for s in seasons]
-    
-    # 2. Concurrently execute all tasks and await the results (list of file lists)
     all_season_files = await asyncio.gather(*tasks)
-    
-    # 3. Calculate the total number of files
     total_files = sum(len(files_list) for files_list in all_season_files)
-    # ----------------------------------------------------------------------------------
     
     keyboard = []
     row = []
@@ -337,9 +346,9 @@ async def send_season_files(query, series_name: str, season: int):
         await query.message.reply_text(final_message, parse_mode=enums.ParseMode.HTML) 
 
 
-# ###################################################
-# ## MAIN EXECUTION ##
-# ###################################################
+###################################################
+## MAIN EXECUTION ##
+###################################################
 
 async def startup_task():
     await send_startup_notification(app)
