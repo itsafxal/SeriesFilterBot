@@ -639,7 +639,7 @@ def main() -> None:
     | filters.PHOTO
     | filters.ANIMATION
     | filters.VOICE
-    | filters.VIDEONOTE
+    | filters.VIDEO_NOTE
     )
     
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & media_filter, channel_post_handler))
