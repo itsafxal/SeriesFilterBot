@@ -13,7 +13,6 @@ MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&
 DUMP_CHANNEL_ID = int(os.environ.get("DUMP_CHANNEL_ID", -1001996538290))
 OWNER_ID = int(os.environ.get("OWNER_ID", 5483128891)) 
 
-
 # --- Database Setup ---
 mongo_client = AsyncIOMotorClient(MONGO_URI)
 db = mongo_client["SeriesBotDB"]
@@ -124,12 +123,12 @@ async def search_handler(_, message):
         
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        response = f"**🔎 Found {len(unique_names)} matching series.** Please select one:"
-        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
-        await message.reply_text(response, reply_markup=reply_markup, parse_mode='MarkdownV2')
+        # FIX: Switched to HTML formatting and parse_mode='html'
+        response = f"<b>🔎 Found {len(unique_names)} matching series.</b> Please select one:"
+        await message.reply_text(response, reply_markup=reply_markup, parse_mode='html')
     else:
-        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
-        await message.reply_text(f"❌ No series files found matching '**{query}**'.", parse_mode='MarkdownV2')
+        # FIX: Switched to HTML formatting and parse_mode='html'
+        await message.reply_text(f"❌ No series files found matching '<b>{query}</b>'.", parse_mode='html')
 
 
 @app.on_callback_query(filters.regex(r"series_select|season_send"))
@@ -159,8 +158,8 @@ async def show_season_menu(query, series_name):
     
     if not seasons:
         try:
-            # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
-            await query.message.edit_text(text=f"❌ No seasons found for **{series_name}**.", parse_mode='MarkdownV2')
+            # FIX: Switched to HTML formatting and parse_mode='html'
+            await query.message.edit_text(text=f"❌ No seasons found for <b>{series_name}</b>.", parse_mode='html')
         except MessageNotModified:
             pass
         return
@@ -181,14 +180,14 @@ async def show_season_menu(query, series_name):
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    caption = f"📺 **{series_name}**\n\n**Select a Season:**"
+    caption = f"📺 <b>{series_name}</b>\n\n<b>Select a Season:</b>"
     
     try:
-        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
+        # FIX: Switched to HTML formatting and parse_mode='html'
         await query.message.edit_text(
             text=caption,
             reply_markup=reply_markup,
-            parse_mode='MarkdownV2'
+            parse_mode='html'
         )
     except MessageNotModified:
         pass
@@ -200,14 +199,14 @@ async def send_season_files(query, series_name, season):
     files = await get_all_files_by_season(series_name, season)
     
     if not files:
-        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
-        await query.message.reply_text(text=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='MarkdownV2')
+        # FIX: Switched to HTML formatting and parse_mode='html'
+        await query.message.reply_text(text=f"❌ No files found for <b>{series_name}</b> Season <b>{season:02d}</b>.", parse_mode='html')
         return
 
     status_message = await query.message.reply_text(
-        f"📦 Sending **{len(files)} files** for **{series_name}** Season **{season:02d}**...",
-        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
-        parse_mode='MarkdownV2'
+        f"📦 Sending <b>{len(files)} files</b> for <b>{series_name}</b> Season <b>{season:02d}</b>...",
+        # FIX: Switched to HTML formatting and parse_mode='html'
+        parse_mode='html'
     )
 
     success_count = 0
@@ -227,14 +226,14 @@ async def send_season_files(query, series_name, season):
             except Exception as e:
                 print(f"Failed to copy message {message_id} from {channel_id}: {e}")
 
-    final_message = f"✅ Sent **{success_count}** files for **{series_name}** Season **{season:02d}**."
+    final_message = f"✅ Sent <b>{success_count}</b> files for <b>{series_name}</b> Season <b>{season:02d}</b>."
     
     try:
-        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
-        await status_message.edit_text(final_message, parse_mode='MarkdownV2')
+        # FIX: Switched to HTML formatting and parse_mode='html'
+        await status_message.edit_text(final_message, parse_mode='html')
     except Exception:
-        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
-        await query.message.reply_text(final_message, parse_mode='MarkdownV2')
+        # FIX: Switched to HTML formatting and parse_mode='html'
+        await query.message.reply_text(final_message, parse_mode='html')
 
 # ###################################################
 # ## 💾 Indexing Command ##
@@ -244,26 +243,26 @@ async def send_season_files(query, series_name, season):
 async def index_channel_files_command(_, message):
     """Command to start indexing files from the DUMP_CHANNEL_ID (Owner Only)."""
     if message.from_user.id != OWNER_ID:
-        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
-        await message.reply_text("⛔️ You are not authorized to run this command.", parse_mode='MarkdownV2')
+        # FIX: Switched to HTML formatting and parse_mode='html'
+        await message.reply_text("⛔️ <b>You are not authorized to run this command.</b>", parse_mode='html')
         return
         
-    # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
-    status_message = await message.reply_text(f"⏳ **Starting index of files** from channel `{DUMP_CHANNEL_ID}`. This may take a while...", parse_mode='MarkdownV2')
+    # FIX: Switched to HTML formatting and parse_mode='html'
+    status_message = await message.reply_text(f"⏳ <b>Starting index of files</b> from channel <code>{DUMP_CHANNEL_ID}</code>. This may take a while...", parse_mode='html')
     
     # Confirm clearing the old index
     await files_collection.delete_many({}) 
     try:
-        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
-        await status_message.edit_text(f"Indexing... **Cleared old index**. Starting file processing.", parse_mode='MarkdownV2')
+        # FIX: Switched to HTML formatting and parse_mode='html'
+        await status_message.edit_text(f"Indexing... <b>Cleared old index</b>. Starting file processing.", parse_mode='html')
     except MessageNotModified:
         pass
 
     total_indexed = await index_channel_files(status_message)
     
-    final_message = f"🎉 **Indexing Complete!**\n\n**Total files indexed:** `{total_indexed}`."
-    # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
-    await status_message.edit_text(final_message, parse_mode='MarkdownV2')
+    final_message = f"🎉 <b>Indexing Complete!</b>\n\n<b>Total files indexed:</b> <code>{total_indexed}</code>."
+    # FIX: Switched to HTML formatting and parse_mode='html'
+    await status_message.edit_text(final_message, parse_mode='html')
 
 
 async def index_channel_files(status_message):
@@ -300,8 +299,8 @@ async def index_channel_files(status_message):
                     # Update status message every 50 files
                     if indexed_count % 50 == 0:
                         try:
-                            # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
-                            await status_message.edit_text(f"Indexing... **{indexed_count} files** processed so far.", parse_mode='MarkdownV2')
+                            # FIX: Switched to HTML formatting and parse_mode='html'
+                            await status_message.edit_text(f"Indexing... <b>{indexed_count} files</b> processed so far.", parse_mode='html')
                         except MessageNotModified:
                             pass
                         
@@ -310,19 +309,19 @@ async def index_channel_files(status_message):
     except BotMethodInvalid as e:
         # Specific handler for the 400 BOT_METHOD_INVALID error
         error_msg = (
-            f"❌ **Indexing Failed: Permission Error**\n\n"
-            f"Telegram API responded with: `{e.MESSAGE}`\n\n"
-            f"**Action Required:** The bot must be made an **Administrator** in channel `{DUMP_CHANNEL_ID}` "
-            f"with the permission to **Read Channel History**."
+            f"❌ <b>Indexing Failed: Permission Error</b>\n\n"
+            f"Telegram API responded with: <code>{e.MESSAGE}</code>\n\n"
+            f"<b>Action Required:</b> The bot must be made an <b>Administrator</b> in channel <code>{DUMP_CHANNEL_ID}</code> "
+            f"with the permission to <b>Read Channel History</b>."
         )
-        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
-        await status_message.edit_text(error_msg, parse_mode='MarkdownV2')
+        # FIX: Switched to HTML formatting and parse_mode='html'
+        await status_message.edit_text(error_msg, parse_mode='html')
         print(f"Indexing Error: {e}")
         return 0
     except Exception as e:
         # General error handler
-        # FIX: Changed parse_mode='Markdown' to parse_mode='MarkdownV2'
-        await status_message.edit_text(f"❌ **An unknown error occurred during indexing:** `{e}`", parse_mode='MarkdownV2')
+        # FIX: Switched to HTML formatting and parse_mode='html'
+        await status_message.edit_text(f"❌ <b>An unknown error occurred during indexing:</b> <code>{e}</code>", parse_mode='html')
         print(f"Indexing Error: {e}")
         return 0
             
@@ -332,4 +331,3 @@ async def index_channel_files(status_message):
 if __name__ == "__main__":
     print("Bot started...")
     app.run()
-
