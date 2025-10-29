@@ -155,3 +155,55 @@ def get_all_files_by_season(series_name: str, season: int) -> List[Dict[str, Any
     ).sort("episode", pymongo.ASCENDING)
     
     return list(files)
+
+def add_series_file(series_name: str, season: int, episode: int, channel_id: str, message_id: int) -> bool:
+    """Saves a single series episode file reference."""
+    # ... (function body remains the same) ...
+    if series_collection is None:
+        return False
+
+    document = {
+        "series_name": series_name,
+        "season": season,
+        "episode": episode,
+        "channel_id": channel_id,
+        "message_id": message_id,
+        "indexed_at": datetime.utcnow()
+    }
+    
+    try:
+        series_collection.insert_one(document)
+        return True
+    except pymongo.errors.DuplicateKeyError:
+        return False
+    except Exception as e:
+        logger.error(f"Error saving series file: {e}")
+        return False
+
+# --- NEW BULK INSERTION METHOD ---
+def add_series_files_bulk(documents: List[Dict[str, Any]]) -> Tuple[int, int]:
+    """
+    Saves a list of series file documents to the database in bulk.
+    Returns: (successful_count, duplicate_count)
+    """
+    if series_collection is None or not documents:
+        return 0, 0
+
+    successful_count = 0
+    duplicate_count = 0
+    
+    try:
+        # insert_many with ordered=False allows valid documents to be inserted 
+        # even if duplicates fail
+        result = series_collection.insert_many(
+            documents, 
+            ordered=False
+        )
+        successful_count = len(result.inserted_ids)
+    except pymongo.errors.BulkWriteError as bwe:
+        successful_count = bwe.details['nInserted']
+        duplicate_count = len([e for e in bwe.details['writeErrors'] if e['code'] == 11000]) # 11000 is DuplicateKeyError code
+    except Exception as e:
+        logger.error(f"Error during bulk insertion: {e}")
+        
+    return successful_count, duplicate_count
