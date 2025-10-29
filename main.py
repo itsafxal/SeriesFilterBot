@@ -23,7 +23,7 @@ CHANNELS = [-1001996538290]
 # Ensure all ADMINS IDs are valid integers.
 ADMINS = [123456789]  # <-- REPLACE WITH YOUR ADMIN USER ID(s)
 # Ensure LOG_CHANNEL is a valid integer Channel/Supergroup ID.
-LOG_CHANNEL = -1001234567890 # <-- REPLACE WITH YOUR LOG CHANNEL ID
+LOG_CHANNEL = [-1001234567890] # <-- REPLACE WITH YOUR LOG CHANNEL ID
 lock = asyncio.Lock()
 class Temp:
     CURRENT = 1
