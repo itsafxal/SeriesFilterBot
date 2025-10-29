@@ -9,9 +9,11 @@ from telegram.ext import (
     MessageHandler, 
     CallbackQueryHandler, 
     filters,
-    ContextTypes
+    ContextTypes,
+    Defaults # <<< CORRECTED IMPORT
 )
-from motor.motor_asyncio import AsyncIOMotorClient # Reverted to async motor
+from motor.motor_asyncio import AsyncIOMotorClient 
+from pyrogram import Client as PyrogramClient # For Indexing
 
 # --- Setup Logging ---
 logging.basicConfig(
@@ -34,9 +36,6 @@ db = mongo_client["SeriesBotDB"]
 files_collection = db["files"]
 
 # --- Pyrogram User Client (Still required for Channel History) ---
-# PTB does not handle user accounts/channel history reading, so we keep Pyrogram for /index.
-from pyrogram import Client as PyrogramClient
-
 user_app = PyrogramClient(
     "IndexerUser",
     api_id=API_ID,
@@ -115,10 +114,10 @@ def parse_series_info(file_name: str):
 async def send_restart_message(application: Application):
     """Sends a notification to the owner when the bot starts successfully."""
     try:
+        # Note: parse_mode="HTML" is now set by default in the Application builder.
         await application.bot.send_message(
             chat_id=OWNER_ID,
-            text="✨ <b>Bot Restarted!</b>\n\nFile filter service is online and ready.",
-            parse_mode="HTML" 
+            text="✨ <b>Bot Restarted!</b>\n\nFile filter service is online and ready."
         )
         logger.info("Sent restart message to owner.")
     except Exception as e:
@@ -147,13 +146,11 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     query = update.effective_message.text.strip()
-    
     unique_names = await search_series(query)
     
     if unique_names:
         keyboard = []
         for name in sorted(unique_names):
-            # PTB uses str for callback data
             callback_data = f'series_select|{name}'
             button_text = name[:50] + '...' if len(name) > 50 else name
             keyboard.append([InlineKeyboardButton(button_text, callback_data)])
@@ -241,7 +238,6 @@ async def send_season_files(query, series_name: str, season: int) -> None:
         
         if channel_id and message_id:
             try:
-                # PTB uses copy_message (similar to Pyrogram/Gotgbot)
                 await bot.copy_message(
                     chat_id=user_chat_id,
                     from_chat_id=channel_id,
@@ -323,17 +319,14 @@ async def index_channel_files(status_message) -> int:
                     buffer.append(file_doc)
                     
                     if len(buffer) >= 50:
-                        # Bulk insert into DB (Motor)
                         await index_files_in_db(buffer)
                         indexed_count += len(buffer)
                         buffer = []
                         
-                        # Update status message
                         await status_message.edit_text(f"Indexing... {indexed_count} files processed so far.")
                 
                 await asyncio.sleep(0.05)
                 
-        # Insert any remaining documents in the buffer
         if buffer:
             await index_files_in_db(buffer)
             indexed_count += len(buffer)
@@ -352,31 +345,29 @@ async def index_channel_files(status_message) -> int:
 def main() -> None:
     """Start the bot using python-telegram-bot's Application."""
     
-    # 1. Setup Application with HTML parsing default and startup hook
+    # 1. Define Defaults object (Fixes the TypeError)
+    defaults = Defaults(parse_mode="HTML")
+
+    # 2. Setup Application
     application = (
         Application.builder()
         .token(BOT_TOKEN)
-        .defaults(ContextTypes.DEFAULT_TYPE(parse_mode="HTML"))
+        .defaults(defaults) # <<< Correct usage of the Defaults object
         .post_init(post_init) 
         .build()
     )
 
-    # 2. Setup Handlers
-    
-    # Command handlers
+    # 3. Setup Handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("index", index_channel_files_command))
     
-    # Message handler for regular text (not commands, only in private chats)
     private_text_filter = filters.TEXT & (~filters.COMMAND) & filters.ChatType.PRIVATE
     application.add_handler(MessageHandler(private_text_filter, search_handler))
     
-    # Callback query handler (filters all inline button clicks)
     application.add_handler(CallbackQueryHandler(callback_query_handler))
 
-    # 3. Run the Bot
+    # 4. Run the Bot
     logger.info("Starting python-telegram-bot...")
-    # Use polling for simplicity in deployment environments like the one implied by /app/main.py
     application.run_polling(poll_interval=1.0)
 
 if __name__ == "__main__":
