@@ -1,4 +1,3 @@
-# utils.py
 import re
 
 # Common series patterns (s01e01, s01 e01, 1x01, etc.)
@@ -23,7 +22,6 @@ def parse_series_info(filename):
     name_part = filename[:match.start()]
     
     # 2. Aggressively strip trailing separators/delimiters from the end of the name part
-    # This removes characters like ' [', ' .', ' -', ']' from the end of the name
     name_part = re.sub(r'[\s\.\-\[\]_]+$', '', name_part).strip() 
     
     # 3. Replace internal separators ('.', '_', '-') with a single space for a clean, searchable name
