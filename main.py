@@ -10,6 +10,7 @@ from pyrogram.errors import MessageNotModified
 from pymongo import MongoClient, TEXT
 
 # --- Configuration Placeholders (Your actual values) ---
+# NOTE: Replace these with your actual credentials for production.
 API_ID = 28643132
 API_HASH = "510c3009ea589830a89e045bf8aae656"
 BOT_TOKEN = "7661197159:AAHwppy1JjmEBXucY1gxdbfGKVpuqjl_gFg"
@@ -213,7 +214,7 @@ async def search_handler(_, message):
             # Truncate long names for button text
             button_text = name[:50] + '...' if len(name) > 50 else name
             
-            # 🐛 FIXED: Using keyword argument 'callback_data='
+            # FIXED: Using keyword argument 'callback_data='
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -262,7 +263,7 @@ async def show_season_menu(query, series_name: str):
         callback_data = f'season_send|{series_name}|{season}'
         button_text = f"S{season:02d}"
         
-        # 🐛 FIXED: Using keyword argument 'callback_data='
+        # FIXED: Using keyword argument 'callback_data='
         row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
         
         if len(row) >= 5: # 5 buttons per row for better layout
