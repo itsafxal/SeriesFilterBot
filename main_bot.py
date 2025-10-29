@@ -1,15 +1,11 @@
-# main_bot.py
 
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from database import save_user_for_broadcast, search_series, add_series_file, get_all_broadcast_users, get_file_details_by_file_id
-from utils import is_series_file, parse_series_info
-
-# --- Configuration Loading from config.py ---
+from utils import is_series_file, parse_series_info 
 from config import BOT_TOKEN, ADMIN_USER_ID, LOG_LEVEL, MAX_SEARCH_RESULTS
 
-# Set up logging using the variable (ensuring it matches the config in database.py)
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
     level=logging.getLevelName(LOG_LEVEL)
