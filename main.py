@@ -5,7 +5,8 @@ import logging
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
-from motor.motor_asyncio import AsyncIOMotorClient 
+from pymongo import MongoClient, TEXT # <<< CHANGED to PyMongo
+# TGCrypto is used automatically by Pyrogram if installed, no direct import needed
 
 # --- Setup Logging ---
 logging.basicConfig(
@@ -22,58 +23,78 @@ MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&
 DUMP_CHANNEL_ID = int(os.environ.get("DUMP_CHANNEL_ID", -1001996538290))
 OWNER_ID = int(os.environ.get("OWNER_ID", 5483128891)) 
 
-# --- Database Setup (Async Motor) ---
-mongo_client = AsyncIOMotorClient(MONGO_URI)
+# --- Database Setup (Synchronous PyMongo) ---
+mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["SeriesBotDB"]
 files_collection = db["files"]
 
-# --- PyroTGfork Client Setup ---
-# Initialize the client for BOT operations. 
-# We use in_memory=True to avoid creating a session file for the bot token.
+# Ensure indices are created (PyMongo needs this done once)
+files_collection.create_index([("normalized_name", 1), ("season", 1)])
+files_collection.create_index([("normalized_name", TEXT)])
+
+# --- Pyrogram Client Setup ---
 app = Client(
     "SeriesFilterBot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    in_memory=True # Avoids disk session files for the bot
+    in_memory=True 
 )
 
 
 # ###################################################
-# ## DATABASE FUNCTIONS (Async Motor) ##
+# ## DATABASE WRAPPER FUNCTIONS (PyMongo via asyncio.to_thread) ##
 # ###################################################
 
 async def search_series(query: str):
     """Searches MongoDB for unique series names matching the query."""
-    regex_query = re.escape(query).replace(" ", ".*")
-    return await files_collection.distinct(
-        "normalized_name", 
-        {"normalized_name": {"$regex": regex_query, "$options": "i"}}
-    )
+    def sync_search():
+        regex_query = re.escape(query).replace(" ", ".*")
+        pipeline = [
+            {"$match": {"normalized_name": {"$regex": regex_query, "$options": "i"}}},
+            {"$group": {"_id": "$normalized_name"}},
+            {"$project": {"_id": 0, "name": "$_id"}}
+        ]
+        return [doc["name"] for doc in files_collection.aggregate(pipeline)]
+        
+    return await asyncio.to_thread(sync_search)
 
 async def get_unique_seasons_by_name(series_name: str):
     """Gets unique season numbers for a given series."""
-    seasons = await files_collection.distinct("season", {"normalized_name": series_name})
-    return sorted([s for s in seasons if s > 0])
+    def sync_get_seasons():
+        seasons = files_collection.distinct("season", {"normalized_name": series_name})
+        seasons = sorted([s for s in seasons if s > 0])
+        return seasons
+        
+    return await asyncio.to_thread(sync_get_seasons)
 
 async def get_all_files_by_season(series_name: str, season: int):
     """Gets file details (channel_id, message_id) for a specific season."""
-    files_cursor = files_collection.find(
-        {"normalized_name": series_name, "season": season},
-        {"channel_id": 1, "message_id": 1, "_id": 0}
-    )
-    return await files_cursor.to_list(length=None)
+    def sync_get_files():
+        files = files_collection.find(
+            {"normalized_name": series_name, "season": season},
+            {"channel_id": 1, "message_id": 1, "_id": 0}
+        )
+        return list(files)
+        
+    return await asyncio.to_thread(sync_get_files)
     
 async def index_files_in_db(file_docs):
     """Inserts multiple file documents into MongoDB."""
-    if file_docs:
-        result = await files_collection.insert_many(file_docs)
-        return len(result.inserted_ids)
-    return 0
+    def sync_insert_many():
+        if file_docs:
+            files_collection.insert_many(file_docs)
+            return len(file_docs)
+        return 0
+        
+    return await asyncio.to_thread(sync_insert_many)
 
 async def clear_index():
     """Clears all documents from the collection."""
-    await files_collection.delete_many({})
+    def sync_delete():
+        files_collection.delete_many({})
+        
+    await asyncio.to_thread(sync_delete)
 
 # ###################################################
 # ## UTILITY & PARSING ##
@@ -82,7 +103,6 @@ async def clear_index():
 def parse_series_info(file_name: str):
     """
     Attempts to extract Series Name, Season (SXX), and Episode (EXX) from a filename.
-    Returns: (normalized_name, season_number, episode_number)
     """
     if not file_name:
         return "", 0, 0
@@ -106,7 +126,7 @@ def parse_series_info(file_name: str):
 
 
 # ###################################################
-# ## PYROTGFORK HANDLERS ##
+# ## PYROGRAM HANDLERS ##
 # ###################################################
 
 async def send_restart_message(client):
@@ -140,14 +160,13 @@ async def search_handler(_, message):
     """Handles user text search queries."""
     query = message.text.strip()
     
-    unique_names = await search_series(query)
+    unique_names = await search_series(query) # <<< Awaiting PyMongo wrapper
     
     if unique_names:
         keyboard = []
         for name in sorted(unique_names):
             callback_data = f'series_select|{name}'
             button_text = name[:50] + '...' if len(name) > 50 else name
-            # PyroTGfork uses the Pyrogram format for buttons
             keyboard.append([InlineKeyboardButton(button_text, callback_data)])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -181,7 +200,7 @@ async def callback_query_handler(_, query):
 
 async def show_season_menu(query, series_name: str):
     """Displays buttons for all unique seasons of the selected series."""
-    seasons = await get_unique_seasons_by_name(series_name)
+    seasons = await get_unique_seasons_by_name(series_name) # <<< Awaiting PyMongo wrapper
     
     if not seasons:
         try:
@@ -216,7 +235,7 @@ async def show_season_menu(query, series_name: str):
 async def send_season_files(query, series_name: str, season: int):
     """Sends all files belonging to the selected season using copy_message."""
     user_chat_id = query.message.chat.id
-    files = await get_all_files_by_season(series_name, season)
+    files = await get_all_files_by_season(series_name, season) # <<< Awaiting PyMongo wrapper
     
     if not files:
         await query.message.reply_text(text=f"❌ No files found for {series_name} Season {season:02d}.")
@@ -252,7 +271,7 @@ async def send_season_files(query, series_name: str, season: int):
         await query.message.reply_text(final_message)
 
 # ###################################################
-# ## INDEXING COMMAND (PyroTGfork User Client) ##
+# ## INDEXING COMMAND (Pyrogram Client) ##
 # ###################################################
 
 @app.on_message(filters.command("index") & filters.private)
@@ -263,9 +282,7 @@ async def index_channel_files_command(client, message):
         return
     
     # 1. Create a temporary client for indexing (requires user privileges)
-    # ⚠️ THIS WILL LIKELY FAIL IN NON-INTERACTIVE ENVIRONMENTS! ⚠️
-    # To fix this, you must initialize the indexer client with a session string:
-    # indexer_app = Client(USER_SESSION_STRING, API_ID, API_HASH)
+    # WARNING: This will fail with 'EOF when reading a line' in non-interactive environments!
     indexer_app = Client("IndexerUser", api_id=API_ID, api_hash=API_HASH)
 
     status_message = await message.reply_text(
@@ -275,7 +292,7 @@ async def index_channel_files_command(client, message):
     # 2. Start the Indexer Client
     try:
         await indexer_app.start()
-        logger.info("PyroTGfork User Client started for indexing.")
+        logger.info("Pyrogram User Client started for indexing.")
     except Exception as e:
         error_msg = f"❌ Failed to start Indexer Client for login: {e}"
         await status_message.edit_text(error_msg)
@@ -283,7 +300,7 @@ async def index_channel_files_command(client, message):
         return
 
     # 3. Clear the old index
-    await clear_index() 
+    await clear_index() # <<< Awaiting PyMongo wrapper
     await status_message.edit_text(f"Indexing... Cleared old index. Starting file processing.")
 
     # 4. Call the indexing function
@@ -297,7 +314,7 @@ async def index_channel_files_command(client, message):
 
 
 async def index_channel_files(indexer_client, status_message):
-    """Iterates through a channel using PyroTGfork and stores file metadata in MongoDB."""
+    """Iterates through a channel using Pyrogram and stores file metadata in MongoDB."""
     
     indexed_count = 0
     buffer = [] 
@@ -325,7 +342,7 @@ async def index_channel_files(indexer_client, status_message):
                     buffer.append(file_doc)
                     
                     if len(buffer) >= 50:
-                        await index_files_in_db(buffer)
+                        await index_files_in_db(buffer) # <<< Awaiting PyMongo wrapper
                         indexed_count += len(buffer)
                         buffer = []
                         
@@ -334,7 +351,7 @@ async def index_channel_files(indexer_client, status_message):
                 await asyncio.sleep(0.05)
                 
         if buffer:
-            await index_files_in_db(buffer)
+            await index_files_in_db(buffer) # <<< Awaiting PyMongo wrapper
             indexed_count += len(buffer)
             
     except Exception as e:
@@ -349,7 +366,7 @@ async def index_channel_files(indexer_client, status_message):
 # ###################################################
 
 if __name__ == "__main__":
-    logger.info("Starting PyroTGfork bot...")
+    logger.info("Starting Pyrogram bot...")
     
     # Add a handler to run startup tasks (like sending the restart message)
     async def startup_tasks(_):
