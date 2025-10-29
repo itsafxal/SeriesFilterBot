@@ -377,25 +377,26 @@ def main() -> None:
     
     application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
-    # Register Handlers
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    # New command for full indexing
+    # --- Register Handlers (CORRECTED USAGE) ---
+
+    # Command Handlers must be explicitly decorated and called
+    application.add_handler(CommandHandler("start", check_subscription(start_command)))
+    application.add_handler(CommandHandler("help", check_subscription(help_command)))
+    
+    # These admin commands don't need force subscribe but use the original function
     application.add_handler(CommandHandler("index_all", index_all_command)) 
     application.add_handler(CommandHandler("broadcast_test", broadcast_test_command))
 
-    # 1. Search Handler (Initiates the menu)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
+    # 1. Search Handler (Message Handler) - Must be explicitly decorated and called
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_subscription(search_handler)))
     
-    # 2. Callback Query Handler (Manages button clicks for Series and Seasons)
-    application.add_handler(CallbackQueryHandler(callback_query_handler))
+    # 2. Callback Query Handler (Callback Query Handler) - Must be explicitly decorated and called
+    application.add_handler(CallbackQueryHandler(check_subscription(callback_query_handler)))
     
-    # Channel indexing handler (only for new posts in the INDEX_CHANNEL_ID)
+    # Channel indexing handler (does not need subscription check)
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & filters.Document.ALL, channel_post_handler))
 
     print("Bot is running...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-
-if __name__ == '__main__':
-    main()
+# ... (Rest of main_bot.py)
