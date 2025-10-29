@@ -1,5 +1,5 @@
-pyrofork
 pymongo
-python-dotenv
+python-telegram-bot
 motor
 TgCrypto
+gotgbot
