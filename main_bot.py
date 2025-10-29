@@ -1,20 +1,12 @@
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-# Assuming 'config' exists and contains necessary variables
-from config import BOT_TOKEN, ADMIN_USER_ID, LOG_LEVEL, REQUIRED_CHANNEL, INDEX_CHANNEL_ID
-
-# Corrected database imports (Assuming config is set up correctly for imports)
-from database import (
-    save_user_for_broadcast, 
-    add_series_file, 
-    get_all_broadcast_users, 
-    init_db, 
-    search_series, 
-    get_unique_seasons_by_name, 
-    get_all_files_by_season
-)
+# Reduced imports since admin commands are removed
+from database import save_user_for_broadcast, add_series_file, get_all_broadcast_users, init_db, search_series, get_unique_seasons_by_name, get_all_files_by_season
 from utils import is_series_file, parse_series_info
+# Note: Ensure you remove INDEX_CHANNEL_ID and ADMIN_USER_ID from config.py if they are no longer used anywhere else
+from config import BOT_TOKEN, LOG_LEVEL, REQUIRED_CHANNEL, INDEX_CHANNEL_ID 
+# Note: INDEX_CHANNEL_ID is kept for the channel_post_handler, but ADMIN_USER_ID is not used here.
 
 # Configure logging
 logging.basicConfig(
@@ -25,7 +17,7 @@ logging.basicConfig(
 # Define a placeholder function
 def get_series_overview(series_name):
     """Fetches series overview (Placeholder)."""
-    logging.debug("Poster fetch feature is disabled.")
+    logging.info("Poster fetch feature is disabled.")
     return None
 
 ###################################################
@@ -40,15 +32,17 @@ def check_subscription(handler):
         if not update.effective_user:
             return
 
-        # Skip force-sub check for inline results, etc., and focus on message/callback origins
+        # Use effective_message/callback_query to check if we should perform the sub-check
         if not update.effective_message and not update.callback_query:
              return await handler(update, context)
 
         user_id = update.effective_user.id
         
-        # Admins are always allowed
-        if user_id == ADMIN_USER_ID:
-            return await handler(update, context)
+        # If ADMIN_USER_ID is still needed elsewhere, keep it imported, but for this handler, 
+        # we'll assume a clean bot without special admin bypasses if ADMIN_USER_ID is removed.
+        # Since it's often in config, we keep the check simple:
+        # if user_id == ADMIN_USER_ID:
+        #     return await handler(update, context)
 
         try:
             # Check the user's status in the required channel
@@ -92,7 +86,6 @@ def check_subscription(handler):
 ## 🎬 Command Handlers ##
 ###################################################
 
-@check_subscription
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a welcome message and registers user for broadcast."""
     user_id = update.effective_user.id
@@ -105,108 +98,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     await update.message.reply_text(message, parse_mode='Markdown')
 
-@check_subscription
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a help message."""
     message = (
         "**📚 Bot Commands & Usage:**\n"
         "1. **Search:** Just type the series name (e.g., `Aarya`).\n"
-        "2. **/start**: Get a welcome message and register for broadcasts.\n"
-        "3. **/index_all**: Start indexing ALL files from the source channel (Admin only).\n"
-        "4. **/broadcast_test**: Send a test broadcast to all users (Admin only).\n"
+        "2. **/start**: Get a welcome message and register for broadcasts."
     )
     await update.message.reply_text(message, parse_mode='Markdown')
-
-async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Command to start indexing ALL messages from the INDEX_CHANNEL_ID (Admin only).
-    """
-    if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text("❌ You are not authorized to use this command.")
-        return
-
-    await update.message.reply_text(f"⏳ **Starting full indexing...**\nIndexing channel messages from `{INDEX_CHANNEL_ID}`. This may take a while. The bot will try to process up to 20,000 messages.", parse_mode='Markdown')
-    
-    indexed_count = 0
-    message_id_counter = 0
-    message_id = 1
-    MAX_MESSAGE_ID = 20000 
-    MAX_CONSECUTIVE_MISSES = 500 
-    consecutive_errors = 0 
-    
-    try:
-        while message_id <= MAX_MESSAGE_ID:
-            try:
-                # 🌟 REVERTED TO STANDARD: Using get_message
-                message = await context.bot.get_message(chat_id=INDEX_CHANNEL_ID, message_id=message_id)
-                consecutive_errors = 0 # Reset error counter
-
-                channel_post = message
-                # Ensure the message is a document (file)
-                if channel_post and channel_post.document:
-                    file_name = channel_post.document.file_name or channel_post.caption or ""
-                    
-                    if is_series_file(file_name):
-                        series_info = parse_series_info(file_name)
-                        if series_info:
-                            series_name, season, episode = series_info
-                            
-                            channel_id = str(channel_post.chat.id)
-                            message_id_ = channel_post.message_id
-                            
-                            # Database check for duplicates is handled inside add_series_file
-                            if add_series_file(series_name, season, episode, channel_id, message_id_):
-                                indexed_count += 1
-                                logging.info(f"Indexed Series File: {series_name} S{season:02d}E{episode:02d}")
-                
-            except Exception as e:
-                # Catch "message not found" (the expected failure for gaps)
-                error_msg = str(e)
-                # Including the attribute error in the log for clarity, though it should ideally be caught by the general exception
-                if 'message not found' in error_msg.lower() or 'bad request' in error_msg.lower() or 'has no attribute' in error_msg.lower():
-                    consecutive_errors += 1
-                    if consecutive_errors >= MAX_CONSECUTIVE_MISSES:
-                        logging.warning(f"Stopped indexing after {MAX_CONSECUTIVE_MISSES} consecutive failures or critical error.")
-                        break # Break out of the while loop
-                else:
-                    # Logging unhandled errors
-                    logging.error(f"Full indexing unhandled error on message {message_id}: {e}")
-                    
-            message_id += 1 
-            message_id_counter = message_id - 1
-            
-            # Update admin every 1000 messages
-            if message_id % 1000 == 0:
-                await context.bot.send_message(update.effective_chat.id, f"Progress: Reached message ID **{message_id}**. Indexed **{indexed_count}** files so far.", parse_mode='Markdown')
-
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Indexing stopped due to a critical error: `{e}`", parse_mode='Markdown')
-        logging.error(f"Full indexing critical error: {e}")
-
-    await update.message.reply_text(f"✅ **Full Indexing Complete!**\nIndexed **{indexed_count}** new files up to message ID **{message_id_counter}**.", parse_mode='Markdown')
-
-async def broadcast_test_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends a test broadcast to all users (Admin only)."""
-    if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text("❌ You are not authorized to use this command.")
-        return
-
-    users = get_all_broadcast_users()
-    if not users:
-        await update.message.reply_text("No users registered for broadcast.")
-        return
-
-    test_message = "📢 **Broadcast Test!** This is a test message from the admin."
-    count = 0
-    for user_id in users:
-        try:
-            await context.bot.send_message(user_id, test_message, parse_mode='Markdown')
-            count += 1
-        except Exception as e:
-            logging.error(f"Failed to send broadcast to user {user_id}: {e}")
-
-    await update.message.reply_text(f"✅ Sent test broadcast to {count} users.")
-
 
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles messages posted in the indexed channel (to save files)."""
@@ -240,7 +139,6 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 ## 🔎 Autofilter Logic Handlers ##
 ###################################################
 
-@check_subscription
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles user text search queries and initiates the series selection menu."""
     query = update.message.text.strip()
@@ -263,7 +161,6 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         await update.message.reply_text(f"❌ No series files found matching '{query}'.")
 
-@check_subscription
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles button clicks for series and season selection."""
     query = update.callback_query
@@ -289,7 +186,11 @@ async def show_season_menu(query, series_name, context):
     overview = get_series_overview(series_name) 
     
     if not seasons:
-        await query.edit_message_text(text=f"❌ No seasons found for **{series_name}**.", parse_mode='Markdown')
+        # Use edit_message_text if the original message was text, or send new message
+        try:
+             await query.message.edit_text(text=f"❌ No seasons found for **{series_name}**.", parse_mode='Markdown')
+        except Exception:
+             await context.bot.send_message(query.message.chat_id, text=f"❌ No seasons found for **{series_name}**.", parse_mode='Markdown')
         return
 
     keyboard = []
@@ -314,22 +215,20 @@ async def show_season_menu(query, series_name, context):
     
     caption += "\n\n**Select a Season:**"
     
+    chat_id = query.message.chat_id
+    
+    # Attempt to delete the previous message (search result or series list)
     try:
-        # Edit the original message to show the season menu
-        await query.edit_message_text(
-            text=caption,
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-    except Exception as e:
-         logging.error(f"Error editing message to show season menu: {e}")
-         # Fallback to sending a new message if editing fails (e.g., message too old)
-         await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text=caption,
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
+        await query.message.delete()
+    except Exception:
+        pass 
+        
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=caption,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
     
     await query.answer()
 
@@ -340,26 +239,19 @@ async def send_season_files(query, series_name, season, context):
     files = get_all_files_by_season(series_name, season)
     
     if not files:
-        # Attempt to edit the message to show the 'no files found' error
+        # Check if the message is a photo/caption message or a simple text message to edit
         try:
-             await query.edit_message_caption(caption=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='Markdown')
+             await query.message.edit_text(text=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='Markdown')
         except Exception:
-            await query.edit_message_text(text=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='Markdown')
+             await context.bot.send_message(user_chat_id, text=f"❌ No files found for **{series_name}** Season **{season:02d}**.", parse_mode='Markdown')
         return
 
-    # Update message to show 'sending files' status
-    try:
-        # Try to edit caption first (if the message has media)
-        await query.edit_message_caption(
-            caption=f"📦 Sending **{len(files)} files** for **{series_name}** Season **{season:02d}**...",
-            parse_mode='Markdown'
-        )
-    except Exception:
-        # Fallback to editing text message
-        await query.edit_message_text(
-            text=f"📦 Sending **{len(files)} files** for **{series_name}** Season **{season:02d}**...",
-            parse_mode='Markdown'
-        )
+    # Send a status message (since the previous message was deleted)
+    status_message = await context.bot.send_message(
+        user_chat_id,
+        text=f"📦 Sending **{len(files)} files** for **{series_name}** Season **{season:02d}**...",
+        parse_mode='Markdown'
+    )
 
     success_count = 0
     for file_entry in files:
@@ -379,45 +271,40 @@ async def send_season_files(query, series_name, season, context):
                 logging.error(f"Failed to copy message {message_id} from {channel_id}: {e}")
 
     final_message = f"✅ Sent **{success_count}** files for **{series_name}** Season **{season:02d}**."
-    await context.bot.send_message(user_chat_id, final_message, parse_mode='Markdown')
     
+    # Edit the status message with the final count
+    try:
+        await status_message.edit_text(final_message, parse_mode='Markdown')
+    except Exception:
+        await context.bot.send_message(user_chat_id, final_message, parse_mode='Markdown')
+
 
 ###################################################
 ## ⚙️ Main Bot Setup ##
 ###################################################
 
 async def post_init(application: Application) -> None:
-    """Send a restart message to the admin."""
-    if ADMIN_USER_ID:
-        try:
-            await application.bot.send_message(
-                chat_id=ADMIN_USER_ID, 
-                text="🤖 **Bot Restarted Successfully**", 
-                parse_mode='Markdown'
-            )
-            logging.info("Sent restart message to admin.")
-        except Exception as e:
-            logging.error(f"Failed to send restart message to admin: {e}")
+    """A placeholder post-init function."""
+    logging.info("Bot started and ready for requests.")
 
 def main() -> None:
     """Start the bot."""
     init_db() # Initialize the database connection
     
-    application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    # Removed post_init since we removed the admin notification
+    application = Application.builder().token(BOT_TOKEN).build()
 
     # --- Register Handlers ---
-    
-    # Handlers that require the subscription check decorator
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
-    application.add_handler(CallbackQueryHandler(callback_query_handler))
-    
-    # Admin commands (no subscription check needed)
-    application.add_handler(CommandHandler("index_all", index_all_command)) 
-    application.add_handler(CommandHandler("broadcast_test", broadcast_test_command))
 
-    # Channel indexing handler 
+    # Core commands require subscription check
+    application.add_handler(CommandHandler("start", check_subscription(start_command)))
+    application.add_handler(CommandHandler("help", check_subscription(help_command)))
+    
+    # Search and Callback handlers require subscription check
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_subscription(search_handler)))
+    application.add_handler(CallbackQueryHandler(check_subscription(callback_query_handler)))
+    
+    # Channel indexing handler (does NOT need subscription check)
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & filters.Document.ALL, channel_post_handler))
 
     print("Bot is running...")
