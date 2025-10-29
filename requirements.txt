@@ -2,3 +2,4 @@ pyrotgfork
 pymongo
 python-dotenv
 motor
+TgCrypto
