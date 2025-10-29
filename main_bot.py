@@ -29,11 +29,9 @@ def get_series_overview(series_name):
     return None
 
 ###################################################
-## 🔒 Force Subscribe Middleware (Corrected) ##
+## 🔒 Force Subscribe Middleware ##
 ###################################################
 
-# NOTE: The @check_subscription decorator pattern is kept, but it MUST be applied 
-# directly to the async handler functions before adding them to the Application.
 def check_subscription(handler):
     """
     Decorator-like function to check if the user is a member of REQUIRED_CHANNEL.
@@ -65,7 +63,7 @@ def check_subscription(handler):
                 keyboard = [[InlineKeyboardButton("Join Channel 📢", url=f"https://t.me/{channel_link}")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
-                # Send the requirement message
+                # Determine where to send the requirement message
                 if update.callback_query:
                     # For callbacks, use answer and send a new message
                     await update.callback_query.answer(text="Subscription Required!", show_alert=True)
@@ -122,7 +120,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Command to start indexing ALL messages from the INDEX_CHANNEL_ID (Admin only).
-    **FIXED: Using context.bot.get_chat_message instead of get_message.**
+    **REVERTED FIX: Using context.bot.get_message to fix the get_chat_message error.**
     """
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ You are not authorized to use this command.")
@@ -140,8 +138,8 @@ async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     try:
         while message_id <= MAX_MESSAGE_ID:
             try:
-                # 🌟 FIX: Using get_chat_message for channel posts
-                message = await context.bot.get_chat_message(chat_id=INDEX_CHANNEL_ID, message_id=message_id)
+                # 🌟 REVERTED FIX: Using get_message, which is the standard name in many versions
+                message = await context.bot.get_message(chat_id=INDEX_CHANNEL_ID, message_id=message_id)
                 consecutive_errors = 0 # Reset error counter
 
                 channel_post = message
@@ -283,10 +281,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         season = int(data[2])
         await send_season_files(query, series_name, season, context)
     else:
-        # This will only happen if the force-sub check fails to block the query and the data is invalid
         await query.edit_message_text(text="Invalid action.")
 
-# show_season_menu and send_season_files remain the same
 async def show_season_menu(query, series_name, context):
     """Displays buttons for all unique seasons of the selected series."""
     seasons = get_unique_seasons_by_name(series_name)
