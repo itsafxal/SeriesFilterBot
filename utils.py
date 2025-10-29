@@ -1,5 +1,3 @@
-# utils.py
-
 import re
 
 # Common series patterns (s01e01, s01 e01, 1x01, etc.)
@@ -12,11 +10,9 @@ SERIES_PATTERN = re.compile(
 # Keywords often indicating a movie or non-series file (kept for context, but logic prioritizes SXXEXX)
 MOVIE_KEYWORDS = ['movie', '1080p', '720p', 'bluray', 'dvdrip', 'webrip', 'x265', 'film']
 
-# utils.py - FIX: Name cleanup in parse_series_info
-
 def parse_series_info(filename):
     """
-    Attempts to extract series name, season, and episode from a filename.
+    FIXED: Attempts to extract series name, season, and episode from a filename.
     
     Returns: (series_name, season, episode) or None
     """
@@ -29,19 +25,19 @@ def parse_series_info(filename):
     # 1. Get the name part (up to the SXXEXX match)
     name_part = filename[:match.start()]
     
-    # 2. Aggressively strip everything after the *series name* but before the SXXEXX tag
-    # This specifically targets common file delimiters like '.', '_', ' -', or spaces before the SXXEXX tag.
+    # 2. Aggressively strip trailing separators/delimiters from the end of the name part
+    # This removes characters like ' [', ' .', ' -', ']' from the end of the name
     name_part = re.sub(r'[\s\.\-\[\]_]+$', '', name_part).strip() 
     
-    # 3. Replace internal separators ('.', '_') with a single space for a clean, searchable name
-    name = name_part.replace('.', ' ').replace('_', ' ').strip()
+    # 3. Replace internal separators ('.', '_', '-') with a single space for a clean, searchable name
+    name = name_part.replace('.', ' ').replace('_', ' ').replace('-', ' ').strip()
     name = re.sub(r'\s+', ' ', name).strip() # Reduce multiple spaces to one
-    
-    # If the name is still empty, something is wrong.
+
+    # If the name is empty after cleanup, reject it
     if not name:
         return None
 
-    # 4. S/E parsing (This part is correct)
+    # 4. S/E parsing
     s_match = re.search(r'[Ss](\d{1,2})', se_part, re.IGNORECASE)
     e_match = re.search(r'[Ee](\d{1,3})', se_part, re.IGNORECASE)
     
@@ -50,10 +46,11 @@ def parse_series_info(filename):
     
     # If both season and episode are found, and a name exists, it's a success
     if season > 0 and episode > 0 and name:
+        # Convert to Title Case for database consistency
         return name.title(), season, episode
     
     return None
-    
+
 def is_series_file(filename):
     """
     Checks if the filename looks like a series episode.
