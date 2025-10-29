@@ -3,9 +3,8 @@ import os
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import MessageNotModified
+from pyrogram.errors import MessageNotModified, BotMethodInvalid
 from motor.motor_asyncio import AsyncIOMotorClient # Recommended for async MongoDB
-
 
 API_ID = 21352077 # Your API ID
 API_HASH = "e4ba74d3f410dffbe848402989e61a04" # Your API Hash
@@ -105,8 +104,7 @@ async def get_all_files_by_season(series_name: str, season: int):
 # ## 🔎 Autofilter Logic Handlers (Pyrogram) ##
 # ###################################################
 
-# FIXED: filters.command must be called with an argument to prevent TypeError.
-# We explicitly negate known commands like "start" and "index".
+# Corrected filter call: filters.command must be called with an argument
 @app.on_message(filters.text & filters.private & ~filters.command(["start", "index"]))
 async def search_handler(_, message):
     """
@@ -244,7 +242,10 @@ async def index_channel_files_command(_, message):
     
     # Confirm clearing the old index
     await files_collection.delete_many({}) 
-    await status_message.edit_text(f"Indexing... **Cleared old index**. Starting file processing.")
+    try:
+        await status_message.edit_text(f"Indexing... **Cleared old index**. Starting file processing.")
+    except MessageNotModified:
+        pass
 
     total_indexed = await index_channel_files(status_message)
     
@@ -257,39 +258,57 @@ async def index_channel_files(status_message):
     
     indexed_count = 0
     
-    # We use app.get_chat_history() to iterate through all messages
-    async for msg in app.get_chat_history(DUMP_CHANNEL_ID):
-        
-        # Check if the message contains a relevant file type (document/video)
-        if msg.document or msg.video:
-            file_name = msg.document.file_name if msg.document else (msg.video.file_name or "")
+    try:
+        # app.get_chat_history() attempts to read the channel history
+        async for msg in app.get_chat_history(DUMP_CHANNEL_ID):
             
-            normalized_name, season, episode = parse_series_info(file_name)
-            
-            # Only index if parsing found a season number greater than 0
-            if season > 0: 
-                file_doc = {
-                    "channel_id": DUMP_CHANNEL_ID,
-                    "message_id": msg.id,
-                    "file_name": file_name,
-                    "normalized_name": normalized_name,
-                    "season": season,
-                    "episode": episode,
-                    "timestamp": msg.date
-                }
+            # Check if the message contains a relevant file type (document/video)
+            if msg.document or msg.video:
+                file_name = msg.document.file_name if msg.document else (msg.video.file_name or "")
                 
-                # Insert the document
-                await files_collection.insert_one(file_doc)
-                indexed_count += 1
+                normalized_name, season, episode = parse_series_info(file_name)
                 
-                # Update status message every 50 files
-                if indexed_count % 50 == 0:
-                    try:
-                        await status_message.edit_text(f"Indexing... **{indexed_count} files** processed so far.")
-                    except MessageNotModified:
-                        pass
+                # Only index if parsing found a season number greater than 0
+                if season > 0: 
+                    file_doc = {
+                        "channel_id": DUMP_CHANNEL_ID,
+                        "message_id": msg.id,
+                        "file_name": file_name,
+                        "normalized_name": normalized_name,
+                        "season": season,
+                        "episode": episode,
+                        "timestamp": msg.date
+                    }
                     
-            await asyncio.sleep(0.1) # Small delay to avoid flooding Telegram API
+                    # Insert the document
+                    await files_collection.insert_one(file_doc)
+                    indexed_count += 1
+                    
+                    # Update status message every 50 files
+                    if indexed_count % 50 == 0:
+                        try:
+                            await status_message.edit_text(f"Indexing... **{indexed_count} files** processed so far.")
+                        except MessageNotModified:
+                            pass
+                        
+                await asyncio.sleep(0.1) # Small delay to avoid flooding Telegram API
+                
+    except BotMethodInvalid as e:
+        # Specific handler for the 400 BOT_METHOD_INVALID error
+        error_msg = (
+            f"❌ **Indexing Failed: Permission Error**\n\n"
+            f"Telegram API responded with: `{e.MESSAGE}`\n\n"
+            f"**Action Required:** The bot must be made an **Administrator** in channel `{DUMP_CHANNEL_ID}` "
+            f"with the permission to **Read Channel History**."
+        )
+        await status_message.edit_text(error_msg, parse_mode='Markdown')
+        print(f"Indexing Error: {e}")
+        return 0
+    except Exception as e:
+        # General error handler
+        await status_message.edit_text(f"❌ **An unknown error occurred during indexing:** `{e}`", parse_mode='Markdown')
+        print(f"Indexing Error: {e}")
+        return 0
             
     return indexed_count
 
