@@ -1,3 +1,2 @@
-python-telegram-bot
-motor
-git+http://github.com/PaulSonOfLars/gotgbot
+pyrofork
+python-telegram-bot==20.x motor
