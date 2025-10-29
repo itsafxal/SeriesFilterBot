@@ -38,11 +38,35 @@ def init_db():
         
         # 1. Series Collection Setup
         series_collection = db[COLLECTION_NAME]
+        
+        # --- FIX FOR IndexOptionsConflict (Error Code 85) ---
+        # Attempt to drop the old conflicting index or the previously named index.
+        # This ensures the new index can be created cleanly.
+        try:
+            # Drop the explicitly named index first, in case options changed
+            series_collection.drop_index('series_search_index')
+        except OperationFailure:
+            pass # Index didn't exist with this name, continue
+
+        try:
+            # Drop the index name that was mentioned in the error traceback
+            # This handles cases where MongoDB auto-names an index that conflicts.
+            series_collection.drop_index('series_name_text_season_1_episode_1')
+        except OperationFailure:
+            pass # Index didn't exist with this name, continue
+        # ---------------------------------------------------
+
+        # NOTE: Text indexes on multiple fields will index the concatenated content.
+        # For better search results, a single TEXT index on the primary search field ('series_name') 
+        # is often sufficient, with the other fields being regular indexes for filtering/sorting.
+        # Using a compound index with TEXT requires the TEXT field to be first.
+        
         series_collection.create_index([
             ('series_name', pymongo.TEXT),
-            ('season', 1), 
+            ('season', 1),  
             ('episode', 1)
         ], name='series_search_index')
+        
         # Ensure files are unique to prevent re-indexing duplicates
         series_collection.create_index([
             ('channel_id', 1),
@@ -60,16 +84,16 @@ def init_db():
         
         logger.info("MongoDB connection and collections successfully initialized.")
 
-    except ConnectionError as e:
+    except ConnectionFailure as e: # Catch the correct type of PyMongo connection error
         logger.error(f"MongoDB connection failed: {e}")
         raise
     except ConfigurationError as e:
         logger.error(f"MongoDB configuration error: {e}")
         raise
     except Exception as e:
-        logger.error(f"An unexpected error occurred during DB initialization: {e}")
+        logger.error(f"An unexpected error occurred during DB initialization: {e}", exc_info=True)
+        # Re-raise the exception to stop the application startup
         raise
-
 # --- Broadcast Users Functions ---
 
 def save_user_for_broadcast(user_id: int) -> bool:
