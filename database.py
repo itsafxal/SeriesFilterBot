@@ -7,12 +7,11 @@ import logging
 from datetime import datetime
 from typing import List, Tuple, Dict, Any, Optional
 
-# --- Configuration (MUST BE CONFIGURED IN config.py) ---
-# NOTE: These values are placeholders. They must be defined in your config.py
+# --- Configuration Imports ---
 try:
     from config import DATABASE_URI, DATABASE_NAME, COLLECTION_NAME, LOG_LEVEL 
 except ImportError:
-    # Fallback to local placeholders for standalone testing (replace with your config details)
+    # Fallback to placeholders for robust execution (ensure config.py is present for production)
     DATABASE_URI = "mongodb://localhost:27017/" 
     DATABASE_NAME = "telegram_indexer"
     COLLECTION_NAME = "series_files"
@@ -20,7 +19,6 @@ except ImportError:
 
 GENERIC_COLLECTION_NAME = "generic_files"
 BROADCAST_USERS_FILE = 'broadcast_users.json' 
-# --- End Configuration ---
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -33,20 +31,20 @@ mongo_client: Optional[MongoClient] = None
 db = None
 series_collection = None
 generic_collection = None
-broadcast_users_set = set() # In-memory cache for fast user lookup
+broadcast_users_set = set()
 
 def init_db():
     """Initializes the MongoDB connection and collections."""
     global mongo_client, db, series_collection, generic_collection
     try:
         mongo_client = MongoClient(DATABASE_URI, serverSelectionTimeoutMS=5000)
-        mongo_client.admin.command('ismaster') # Check connection
+        mongo_client.admin.command('ismaster') 
         
         db = mongo_client[DATABASE_NAME]
         series_collection = db[COLLECTION_NAME]
         generic_collection = db[GENERIC_COLLECTION_NAME]
 
-        # Ensure indexes for fast querying and uniqueness
+        # Ensure indexes for series files
         series_collection.create_index(
             [("series_name", pymongo.ASCENDING), ("season", pymongo.ASCENDING), ("episode", pymongo.ASCENDING)], 
             unique=True, 
@@ -54,8 +52,8 @@ def init_db():
         )
         series_collection.create_index("series_name", name="series_name_idx")
         
-        # Index for generic files for efficient duplicate checking
-        generic_collection.create_index("file_unique_id", unique=True, name="file_unique_id_idx")
+        # --- FIX APPLIED HERE: Using the existing index name 'unique_file_id' ---
+        generic_collection.create_index("file_unique_id", unique=True, name="unique_file_id")
         
         logger.info("MongoDB connection and collections initialized successfully.")
         
@@ -63,7 +61,6 @@ def init_db():
 
     except (ConnectionFailure, ConfigurationError, OperationFailure) as e:
         logger.error(f"Failed to connect or initialize MongoDB: {e}")
-        # Re-raise the exception to prevent the bot from starting without a database
         raise
 
 # --- Broadcast User Logic (Using JSON File) ---
