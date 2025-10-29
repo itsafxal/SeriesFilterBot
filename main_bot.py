@@ -21,14 +21,14 @@ def get_series_overview(series_name):
     logging.info("Poster fetch feature is disabled.")
     return None
 
----
-
-## 🔒 Force Subscribe Middleware (Corrected Synchronous Decorator)
+###################################################
+## 🔒 Force Subscribe Middleware (Corrected) ##
+###################################################
 
 def check_subscription(handler):
     """
     Decorator-like function to check if the user is a member of REQUIRED_CHANNEL.
-    If not, it prompts them to join. (Synchronous outer function is correct here)
+    If not, it prompts them to join.
     """
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user:
@@ -49,7 +49,6 @@ def check_subscription(handler):
                 return await handler(update, context) # User is subscribed, run the handler
             else:
                 # User is not subscribed or status is 'left', 'kicked', 'restricted'
-                # Ensure REQUIRED_CHANNEL is correctly formatted (e.g., '@mychannel')
                 channel_link = REQUIRED_CHANNEL.replace('@', '')
                 keyboard = [[InlineKeyboardButton("Join Channel 📢", url=f"https://t.me/{channel_link}")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
@@ -67,9 +66,9 @@ def check_subscription(handler):
 
     return wrapper
 
----
-
-## 🎬 Command Handlers
+###################################################
+## 🎬 Command Handlers ##
+###################################################
 
 @check_subscription
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -108,14 +107,11 @@ async def index_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     message_id_counter = 0 
     
     try:
-        # NOTE: This uses context.bot.get_message(..., message_id) which is very inefficient and slow.
-        # It's intended as a placeholder; for real-world indexing, use a dedicated Telegram library like Telethon or Pyrogram.
-        # Iterating up to 10,000 messages. You might need to adjust based on Telegram API limits.
+        # NOTE: This is inefficient but uses python-telegram-bot's methods.
         for message_id in range(1, 10001): 
             try:
                 message = await context.bot.get_message(chat_id=INDEX_CHANNEL_ID, message_id=message_id)
             except Exception:
-                # Message not found (e.g., deleted or end of history)
                 break
 
             channel_post = message
@@ -197,9 +193,9 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         logging.info(f"Ignored Movie/Non-Series File (Post): {file_name}")
 
----
-
-## 🔎 Autofilter Logic Handlers
+###################################################
+## 🔎 Autofilter Logic Handlers ##
+###################################################
 
 @check_subscription
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -275,6 +271,7 @@ async def show_season_menu(query, series_name, context):
     caption += "\n\n**Select a Season:**"
     
     try:
+        # Delete the previous message (search result or series list)
         await query.message.delete()
     except Exception:
         pass 
@@ -335,9 +332,9 @@ async def send_season_files(query, series_name, season, context):
     await context.bot.send_message(user_chat_id, final_message, parse_mode='Markdown')
     
 
----
-
-## ⚙️ Main Bot Setup
+###################################################
+## ⚙️ Main Bot Setup ##
+###################################################
 
 async def post_init(application: Application) -> None:
     """Send a restart message to the admin."""
@@ -356,7 +353,6 @@ def main() -> None:
     """Start the bot."""
     init_db() # Initialize the database connection
     
-    # post_init is used to send the restart message
     application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     # --- Register Handlers (Using the Synchronous Decorator) ---
@@ -377,7 +373,6 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & filters.Document.ALL, channel_post_handler))
 
     print("Bot is running...")
-    # This call is blocking and keeps the bot running
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
