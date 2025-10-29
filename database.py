@@ -16,7 +16,6 @@ except ImportError:
     COLLECTION_NAME = "series_files"
     LOG_LEVEL = 'INFO'
 
-# Removed: GENERIC_COLLECTION_NAME 
 BROADCAST_USERS_FILE = 'broadcast_users.json' 
 
 logging.basicConfig(
@@ -29,7 +28,6 @@ logger = logging.getLogger(__name__)
 mongo_client: Optional[MongoClient] = None
 db = None
 series_collection = None
-# Removed: generic_collection
 broadcast_users_set = set()
 
 def _load_broadcast_users():
@@ -37,7 +35,6 @@ def _load_broadcast_users():
     global broadcast_users_set
     try:
         with open(BROADCAST_USERS_FILE, 'r') as f:
-            # Load users as strings, convert to integers
             data = [int(uid) for uid in json.load(f)]
             broadcast_users_set = set(data)
         logger.info(f"Loaded {len(broadcast_users_set)} broadcast users.")
@@ -51,7 +48,6 @@ def _load_broadcast_users():
 def _save_broadcast_users():
     """Saves broadcast users to the JSON file."""
     try:
-        # Save users as strings for JSON compatibility
         with open(BROADCAST_USERS_FILE, 'w') as f:
             json.dump([str(uid) for uid in broadcast_users_set], f)
     except Exception as e:
@@ -68,13 +64,11 @@ def init_db():
         
         db = mongo_client[DATABASE_NAME]
         series_collection = db[COLLECTION_NAME]
-        # Removed generic_collection initialization
 
-        # Ensure indexes for fast searching (only series_collection needs indexes now)
+        # Ensure index for fast searching and a unique index to prevent duplicate file entries
         series_collection.create_index([("series_name", "text")])
-        # Note: Removing the unique index on series_name/season/episode is not necessary,
-        # but if this collection is only for lookup, we can simplify:
-        series_collection.create_index([("series_name", pymongo.ASCENDING)])
+        series_collection.create_index([("series_name", pymongo.ASCENDING), ("season", pymongo.ASCENDING), ("episode", pymongo.ASCENDING)], unique=True)
+
 
         _load_broadcast_users()
     except (ConnectionFailure, ConfigurationError) as e:
@@ -91,11 +85,37 @@ def save_user_for_broadcast(user_id: int):
         _save_broadcast_users()
         logger.info(f"User {user_id} registered for broadcast.")
 
-# Removed: add_series_file, save_generic_file
-
 def get_all_broadcast_users() -> List[int]:
     """Returns a list of all registered user IDs for broadcast."""
     return list(broadcast_users_set)
+
+# --- NEW/RE-ADDED FILE INSERTION METHOD ---
+def add_series_file(series_name: str, season: int, episode: int, channel_id: str, message_id: int) -> bool:
+    """
+    Saves a series episode file reference to the database.
+    Returns True if saved, False if duplicate or failed.
+    """
+    if series_collection is None:
+        return False
+
+    document = {
+        "series_name": series_name,
+        "season": season,
+        "episode": episode,
+        "channel_id": channel_id,
+        "message_id": message_id,
+        "indexed_at": datetime.utcnow()
+    }
+    
+    try:
+        series_collection.insert_one(document)
+        return True
+    except pymongo.errors.DuplicateKeyError:
+        return False
+    except Exception as e:
+        logger.error(f"Error saving series file: {e}")
+        return False
+# ------------------------------------------
 
 def search_series(query: str) -> List[Tuple[str, int, int]]:
     """
