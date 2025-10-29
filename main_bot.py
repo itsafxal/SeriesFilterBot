@@ -13,9 +13,14 @@ config.read('config.ini')
 
 BOT_TOKEN = config['TELEGRAM']['BOT_TOKEN']
 ADMIN_USER_ID = int(config['TELEGRAM']['ADMIN_USER_ID'])
+LOG_LEVEL = config['TELEGRAM']['LOG_LEVEL'] 
+MAX_RESULTS = int(config['LIMITS']['MAX_SEARCH_RESULTS'])
 
-# Set up logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# Set up logging using the variable
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
+    level=logging.getLevelName(LOG_LEVEL)
+)
 
 # --- Command Handlers ---
 
@@ -61,7 +66,7 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     file_name = post.document.file_name
     file_id = post.document.file_id
     channel_id = str(post.chat_id)
-    message_id = post.message_id # Get the Message ID for robust retrieval
+    message_id = post.message_id 
     
     if is_series_file(file_name):
         series_info = parse_series_info(file_name)
@@ -94,11 +99,16 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         name, season, episode, file_id = results[0] 
         
         # 1. Send text response first
-        response = f"**🔎 Found {len(results)} matches.** Sending the best result:\n"
-        response += f'🔸 {name} - S{season:02d}E{episode:02d}'
+        response = f"**🔎 Found {len(results)} matches.** Showing top {min(len(results), MAX_RESULTS)}:\n"
+        
+        # List the results based on the MAX_RESULTS limit
+        for i, (res_name, res_season, res_episode, _) in enumerate(results[:MAX_RESULTS]):
+             response += f'🔸 {res_name} - S{res_season:02d}E{res_episode:02d}\n'
+
+        response += "\nSending the best result now..."
         await update.message.reply_text(response, parse_mode='Markdown')
         
-        # 2. Retrieve Channel and Message ID using the file_id
+        # 2. Retrieve Channel and Message ID using the file_id of the best match
         full_entry = get_file_details_by_file_id(file_id)
         
         if full_entry:
