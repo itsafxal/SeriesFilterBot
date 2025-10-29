@@ -9,7 +9,7 @@ SERIES_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-# Keywords often indicating a movie or non-series file (still kept, but the logic below overrides it)
+# Keywords often indicating a movie or non-series file (kept for context, but logic prioritizes SXXEXX)
 MOVIE_KEYWORDS = ['movie', '1080p', '720p', 'bluray', 'dvdrip', 'webrip', 'x265', 'film']
 
 def parse_series_info(filename):
@@ -27,7 +27,7 @@ def parse_series_info(filename):
     # 1. Get the name part
     name_part = filename[:match.start()]
     
-    # 2. Aggressively strip trailing non-word characters and separators (FIX for Aarya [)
+    # 2. Aggressively strip trailing non-word characters and separators (FIX for Aarya [ issue)
     # This removes characters like ' [', ' .', ' -', ']' from the end of the name
     name_part = re.sub(r'[\s\.\-\[\]]+$', '', name_part).strip() 
     
@@ -55,8 +55,5 @@ def parse_series_info(filename):
 def is_series_file(filename):
     """
     Checks if the filename looks like a series episode.
-    
-    RULE: If a strong SXXEYY pattern is present and successfully parsed, it is considered a series.
     """
-    # This function is now correctly defined and callable
     return parse_series_info(filename) is not None
