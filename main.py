@@ -8,10 +8,10 @@ from motor.motor_asyncio import AsyncIOMotorClient # Recommended for async Mongo
 
 # --- Configuration (Replace with your actual values) ---
 # It's best practice to use environment variables for sensitive data
-API_ID = 1234567 # Your API ID
-API_HASH = "YOUR_API_HASH" # Your API Hash
-BOT_TOKEN = "YOUR_BOT_TOKEN" # Your Bot Token
-MONGO_URI = "mongodb://localhost:27017/" # Your MongoDB connection string
+API_ID = 21352077 # Your API ID
+API_HASH = "e4ba74d3f410dffbe848402989e61a04" # Your API Hash
+BOT_TOKEN = "7661197159:AAHwppy1JjmEBXucY1gxdbfGKVpuqjl_gFg" # Your Bot Token
+MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" # Your MongoDB connection string
 DUMP_CHANNEL_ID = -1001234567890 # ID of the channel containing the files (must be a supergroup/channel ID)
 
 # --- Database Setup ---
