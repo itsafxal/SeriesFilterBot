@@ -107,7 +107,9 @@ async def send_restart_message():
     except Exception as e:
         print(f"Failed to send restart message to owner {OWNER_ID}: {e}")
 
-# The problematic @app.on_ready() is REMOVED. The logic is moved to the main() function.
+# This async function will be executed immediately after the client starts
+async def startup_tasks(_):
+    await send_restart_message()
 
 
 @app.on_message(filters.command("start") & filters.private)
@@ -328,18 +330,11 @@ async def index_channel_files(status_message):
 if __name__ == "__main__":
     print("Bot started...")
     
-    async def main():
-        # Start the Bot Client
-        await app.start()
-        
-        # Send the restart notification to the admin immediately after starting
-        await send_restart_message()
-        
-        # Keep the bot running and listening for updates
-        await app.idle()
-        
-        # Stop the client when idle is exited (e.g., Ctrl+C)
-        await app.stop()
-
-    # We use asyncio.run() to manage the async entry point
-    asyncio.run(main())
+    # 1. Add the startup function as a handler immediately before running.
+    # The signature must match: async def handler(client: Client, *args)
+    # Since we don't need the client arg, we use _ for the placeholder.
+    app.add_handler(startup_tasks, group=-1) # Group -1 ensures it runs first
+    
+    # 2. FIX: Use app.run() to let Pyrogram manage the asyncio loop, 
+    # which resolves the "attached to a different loop" RuntimeError.
+    app.run()
