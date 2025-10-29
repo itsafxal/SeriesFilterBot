@@ -1,4 +1,4 @@
-# bot_main.py (Complete Code for Real-time Series Indexing Bot - Revised)
+# bot_main.py (Complete Code for Real-time Series Indexing Bot - Final Version)
 
 import re
 import os
@@ -51,16 +51,19 @@ app = Client(
 async def search_series(query: str):
     """Searches MongoDB for unique series names matching the query."""
     def sync_search():
-        # Escaping and then replacing spaces with '.*' allows flexible searching
         regex_query = re.escape(query).replace(" ", ".*")
         pipeline = [
             {"$match": {"normalized_name": {"$regex": regex_query, "$options": "i"}}},
             {"$group": {"_id": "$normalized_name"}},
             {"$project": {"_id": 0, "name": "$_id"}}
         ]
-        return [doc["name"] for doc in files_collection.aggregate(pipeline)]
+        # FIX: Ensure the synchronous cursor is fully converted to a list here.
+        # This prevents the 'async_generator' object is not iterable error.
+        return list(files_collection.aggregate(pipeline))
         
-    return await asyncio.to_thread(sync_search)
+    # Extract names from the list of dictionaries returned by the thread
+    results = await asyncio.to_thread(sync_search)
+    return [doc["name"] for doc in results]
 
 async def get_unique_seasons_by_name(series_name: str):
     """Gets unique season numbers for a given series."""
@@ -87,7 +90,6 @@ async def save_file_to_db(file_doc: dict):
     """Inserts a single file document into MongoDB."""
     def sync_insert_one():
         try:
-            # Check for existing document to prevent duplicates (optional, but good)
             files_collection.update_one(
                 {"channel_id": file_doc["channel_id"], "message_id": file_doc["message_id"]},
                 {"$set": file_doc},
@@ -101,14 +103,13 @@ async def save_file_to_db(file_doc: dict):
     return await asyncio.to_thread(sync_insert_one)
 
 # ###################################################
-# ## UTILITY & PARSING ##
+# ## UTILITY & PARSING (Name Unification Logic) ##
 # ###################################################
 
 def parse_series_info(file_name: str):
     """
     Attempts to extract Series Name, Season (SXX), and Episode (EXX) from a filename.
-    
-    REVISED: Added better cleanup for embedded tags like [Series World Tm] and technical tags.
+    Includes aggressive cleanup to ensure series names are unified.
     """
     if not file_name:
         return "", 0, 0
@@ -124,16 +125,13 @@ def parse_series_info(file_name: str):
         normalized_name = re.sub(r"([. _-]+)?[sS]\d+[eE]\d+([. _-]+)?", " ", file_name).strip()
         
         # 2. Clean common garbage terms (case-insensitive)
-        # BOLD: Added common technical tags that caused duplicates (10BIT, MKV, WEBRIP, etc.)
         common_terms = ["4K", "1080P", "720P", "HDRIP", "WEB-DL", "AMZN", "NETFLIX", 
                         "DDP5.1", "X265", "x264", "MULTISUB", "AAC", "10BIT", "MKV", "WEBRIP"] 
         
         for term in common_terms:
-            # Use \b for word boundaries
             normalized_name = re.sub(r"\b" + re.escape(term) + r"\b", "", normalized_name, flags=re.IGNORECASE).strip()
 
         # 3. Aggressively remove bracketed/parenthesized channel/source tags (e.g., [@Series World Tm])
-        # BOLD: This step specifically removes the " [Series World Tm] " part causing your duplicates.
         normalized_name = re.sub(r"\[.*?\]|\(.*?\)", " ", normalized_name).strip()
         
         # 4. Replace multiple spaces/dots/underscores with a single space, then Title case it
@@ -159,17 +157,15 @@ async def media_handler(_, message):
     """
     
     file_name = ""
-    # Prioritize file name from document/video
     if message.document:
         file_name = message.document.file_name or ""
     elif message.video:
         file_name = message.video.file_name or ""
-    else: # Fallback for audio
+    else: 
         file_name = getattr(message.audio, "file_name", "")
 
     normalized_name, season, episode = parse_series_info(file_name)
     
-    # Only index files that were successfully parsed as part of a series (Season > 0)
     if season > 0:
         file_doc = {
             "channel_id": message.chat.id,
@@ -189,9 +185,7 @@ async def media_handler(_, message):
 # ## PYROGRAM HANDLERS (User Interaction) ##
 # ###################################################
 
-# --- Startup Logic (Now simplified) ---
 async def send_startup_notification(client):
-    """A minimal placeholder, as OWNER_ID is removed."""
     logger.info("Bot restarted successfully.")
 
 
@@ -201,7 +195,6 @@ async def start_command(_, message):
     """Handles the /start command."""
     welcome_text = (
         "👋 <b>Welcome! I'm your Series File Filter Bot.</b>\n\n"
-        "I automatically index new files posted in the archive channels.\n\n"
         "Just send me the <b>name of a series</b> you are looking for, "
         "and I'll show you the available seasons and episodes from the index.\n\n"
         "<b>Example:</b> <code>Loki</code>"
@@ -220,12 +213,10 @@ async def search_handler(_, message):
         keyboard = []
         # Sort names alphabetically
         for name in sorted(unique_names):
-            # The action is always 'series_select'
             callback_data = f'series_select|{name}'
-            # Truncate long names for button text
             button_text = name[:50] + '...' if len(name) > 50 else name
             
-            # Use a full button row for the series name
+            # Show only one series button per result
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -268,7 +259,6 @@ async def show_season_menu(query, series_name: str):
             pass
         return
 
-    # Count the total episodes/files for the series
     total_files = sum(len(await get_all_files_by_season(series_name, s)) for s in seasons)
     
     keyboard = []
@@ -279,7 +269,7 @@ async def show_season_menu(query, series_name: str):
         
         row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
         
-        if len(row) >= 4: # 4 buttons per row for better layout
+        if len(row) >= 4: 
             keyboard.append(row)
             row = []
     
@@ -287,7 +277,6 @@ async def show_season_menu(query, series_name: str):
         keyboard.append(row)
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    # Added total files count to the caption
     caption = (
         f"📺 <b>{series_name}</b>\n"
         f"<i>Total Files Indexed: {total_files} in {len(seasons)} seasons.</i>\n\n"
@@ -321,20 +310,18 @@ async def send_season_files(query, series_name: str, season: int):
         
         if channel_id and message_id:
             try:
-                # Use copy_message to forward the file without the 'via @botname' tag
                 await app.copy_message(
                     chat_id=user_chat_id,
                     from_chat_id=channel_id,
                     message_id=message_id
                 )
                 success_count += 1
-                await asyncio.sleep(0.5) # Throttle to avoid flooding Telegram
+                await asyncio.sleep(0.5) 
             except Exception as e:
                 logger.error(f"Failed to copy message {message_id} from {channel_id}: {e}")
 
     final_message = f"✅ Sent <b>{success_count}</b> files for <b>{series_name}</b> Season {season:02d}."
     
-    # Try to edit the status message, fall back to a new message if it fails
     try:
         await status_message.edit_text(final_message, parse_mode=enums.ParseMode.HTML) 
     except Exception:
@@ -346,22 +333,18 @@ async def send_season_files(query, series_name: str, season: int):
 # ###################################################
 
 async def startup_task():
-    """Runs immediately after the bot client successfully starts."""
     await send_startup_notification(app)
 
 if __name__ == "__main__":
     logger.info("Starting Pyrogram bot...")
     
-    # Set the startup function to run once the client is connected
     @app.on_raw_update()
     async def run_startup_task(client, update, users, chats):
-        # This check prevents running the task multiple times
         if not hasattr(client, '_startup_done'):
             client._startup_done = True
             await startup_task()
 
     try:
-        # The robust way to run a Pyrogram client
         app.run()
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot shutting down...")
