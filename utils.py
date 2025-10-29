@@ -1,3 +1,4 @@
+# utils.py
 import re
 
 # Common series patterns (s01e01, s01 e01, 1x01, etc.)
@@ -7,13 +8,9 @@ SERIES_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-# Keywords often indicating a movie or non-series file (kept for context, but logic prioritizes SXXEXX)
-MOVIE_KEYWORDS = ['movie', '1080p', '720p', 'bluray', 'dvdrip', 'webrip', 'x265', 'film']
-
 def parse_series_info(filename):
     """
-    FIXED: Attempts to extract series name, season, and episode from a filename.
-    
+    Attempts to extract series name, season, and episode from a filename.
     Returns: (series_name, season, episode) or None
     """
     match = SERIES_PATTERN.search(filename)
@@ -52,7 +49,5 @@ def parse_series_info(filename):
     return None
 
 def is_series_file(filename):
-    """
-    Checks if the filename looks like a series episode.
-    """
+    """Checks if the filename looks like a series episode."""
     return parse_series_info(filename) is not None
