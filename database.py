@@ -1,9 +1,11 @@
+# database.py
+
 import pymongo
 from pymongo import MongoClient
 import re
 import json
 import logging
-from datetime import datetime # ⬅️ Imported for MongoDB timestamp fix
+from datetime import datetime
 from config import DATABASE_URI, DATABASE_NAME, COLLECTION_NAME, LOG_LEVEL 
 
 # NOTE: Since BROADCAST_USERS_FILE is not in config.py, we define it here as a local file path.
@@ -25,23 +27,36 @@ def init_db():
     global client, db, series_collection
     try:
         client = MongoClient(DATABASE_URI)
-        client.admin.command('ping') 
+        client.admin.command('ping') # Check connection
         db = client[DATABASE_NAME]
         series_collection = db[COLLECTION_NAME] 
         
-        # Ensure indexes for fast searching and uniqueness
-        series_collection.create_index([("file_id", 1)], unique=True)
+        # Ensure index for fast searching and uniqueness on episode info
+        # NOTE: Unique index on 'file_id' removed to allow re-indexing of files.
         series_collection.create_index([("series_name", pymongo.TEXT), ("season", 1), ("episode", 1)])
         
         logging.info("MongoDB connection successful.")
         
     except Exception as e:
-        logging.error(f"MongoDB connection error. Check DATABASE_URI. Error: {e}")
+        logging.error(f"MongoDB connection failed: {e}")
 
+# --- Duplicate Fix Implemented Here ---
 def add_series_file(series_name, season, episode, file_id, channel_id, message_id):
-    """Inserts a new series file record."""
-    if series_collection is None: return False 
+    """Inserts a new series file record after checking for exact episode duplicates."""
+    if series_collection is None: 
+        return False 
     
+    # Check if this exact episode already exists by (name, season, episode).
+    existing_file = series_collection.find_one({
+        "series_name": series_name,
+        "season": int(season),
+        "episode": int(episode)
+    })
+    
+    if existing_file:
+        # File is skipped because an entry for this exact episode already exists.
+        return False 
+
     document = {
         "series_name": series_name,
         "season": int(season),
@@ -49,17 +64,41 @@ def add_series_file(series_name, season, episode, file_id, channel_id, message_i
         "file_id": file_id,  
         "channel_id": channel_id,
         "message_id": int(message_id),
-        "indexed_at": datetime.utcnow() # ⬅️ FIXED: Use BSON-compatible datetime object
+        "indexed_at": datetime.utcnow()
     }
     
     try:
         series_collection.insert_one(document)
         return True
-    except pymongo.errors.DuplicateKeyError:
-        return False
     except Exception as e:
-        logging.error(f"MongoDB error on adding series: {e}")
+        logging.error(f"MongoDB error on adding series: Invalid document {document} | {e}")
         return False
+
+# --- New Functions for Autofilter Menu ---
+def search_series(query: str):
+    """
+    Performs a MongoDB text search for series files.
+    Returns a list of (series_name, season, episode) tuples.
+    """
+    if series_collection is None: return []
+
+    # Use regex for better partial matching if text index is not specific enough
+    regex_query = re.escape(query) 
+    
+    results = series_collection.find(
+        {'series_name': {'$regex': regex_query, '$options': 'i'}},
+        {'series_name': 1, 'season': 1, 'episode': 1, '_id': 0}
+    ).limit(50) # Limit initial search results
+
+    # Return only unique names and their first matched S/E
+    unique_names = {}
+    for doc in results:
+        name = doc['series_name']
+        if name not in unique_names:
+            unique_names[name] = (name, doc['season'], doc['episode'])
+            
+    return list(unique_names.values())
+
 
 def get_unique_seasons_by_name(series_name):
     """Retrieves a list of unique season numbers for a given series name."""
