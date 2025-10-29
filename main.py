@@ -2,9 +2,9 @@ import re
 import os
 import asyncio
 import logging
-from pyrotgfork import Client, filters
-from pyrotgfork.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrotgfork.errors import MessageNotModified
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.errors import MessageNotModified
 from motor.motor_asyncio import AsyncIOMotorClient 
 
 # --- Setup Logging ---
