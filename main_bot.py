@@ -4,7 +4,6 @@ import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from database import save_user_for_broadcast, add_series_file, get_all_broadcast_users
-from database import search_series, get_unique_seasons_by_name, get_all_files_by_season, init_db
 from utils import is_series_file, parse_series_info
 from config import BOT_TOKEN, ADMIN_USER_ID, LOG_LEVEL, MAX_SEARCH_RESULTS, REQUIRED_CHANNEL, INDEX_CHANNEL_ID 
 
