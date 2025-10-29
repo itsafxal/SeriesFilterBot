@@ -155,7 +155,10 @@ def save_user_for_broadcast(user_id):
     
 def get_all_broadcast_users():
     """Returns a list of all user IDs for broadcast (converted back to int for sending)."""
-    return [int(uid) for uid in load_broadcast_users()]        "message_id": int(message_id),
+    return [int(uid) for uid in load_broadcast_users()]
+
+    document = {
+        "message_id": int(message_id),
         "indexed_at": datetime.utcnow()
     }
     
