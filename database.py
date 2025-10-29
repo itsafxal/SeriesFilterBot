@@ -1,12 +1,10 @@
-# database.py (Rewritten)
-
 import pymongo
 from pymongo import MongoClient
 import re
 import json
 import logging
 from datetime import datetime
-# Ensure you import INDEX_CHANNEL_ID from config later for the indexer
+# Ensure you import config variables
 from config import DATABASE_URI, DATABASE_NAME, COLLECTION_NAME, LOG_LEVEL # Added INDEX_CHANNEL_ID
 
 # NOTE: Since BROADCAST_USERS_FILE is not in config.py, we define it here as a local file path.
@@ -41,7 +39,6 @@ def init_db():
         logging.error(f"MongoDB connection failed: {e}")
 
 # --- Duplicate Fix Implemented Here ---
-# REMOVED file_id argument as it's no longer stored
 def add_series_file(series_name, season, episode, channel_id, message_id):
     """Inserts a new series file record after checking for exact episode duplicates."""
     if series_collection is None: 
@@ -75,31 +72,6 @@ def add_series_file(series_name, season, episode, channel_id, message_id):
         return False
 
 # --- New Functions for Autofilter Menu ---
-# (Modified to remove file_id)
-def search_series(query: str):
-    """
-    Performs a MongoDB text search for series files.
-    Returns a list of (series_name, season, episode) tuples.
-    """
-    if series_collection is None: return []
-
-    # Use regex for better partial matching if text index is not specific enough
-    regex_query = re.escape(query) 
-    
-    results = series_collection.find(
-        {'series_name': {'$regex': regex_query, '$options': 'i'}},
-        {'series_name': 1, 'season': 1, 'episode': 1, '_id': 0}
-    ).limit(50) # Limit initial search results
-
-    # Return only unique names and their first matched S/E
-    unique_names = {}
-    for doc in results:
-        name = doc['series_name']
-        if name not in unique_names:
-            unique_names[name] = (name, doc['season'], doc['episode'])
-            
-    return list(unique_names.values())
-
 
 def get_unique_seasons_by_name(series_name):
     """Retrieves a list of unique season numbers for a given series name."""
@@ -134,7 +106,6 @@ def get_file_details_by_file_id(file_id):
     # We will search by file_id if it's there from old data.
     return series_collection.find_one({"file_id": file_id})
 
-# (Modified to remove file_id from return tuple)
 def search_series(query):
     """
     Searches series using the 'Pro Search' logic (Name and SXXEYY).
@@ -152,6 +123,7 @@ def search_series(query):
         
         pipeline = [
             {'$match': {
+                # Use regex for partial matching on the name part
                 'series_name': {'$regex': f'.*{re.escape(name_part)}.*', '$options': 'i'},
                 'season': season,
                 'episode': episode
@@ -172,7 +144,7 @@ def search_series(query):
     return [(res['series_name'], res['season'], res['episode']) for res in results]
 
 
-# --- User Data for Broadcast (JSON/File Storage - No MongoDB checks needed here) ---
+# --- User Data for Broadcast (JSON/File Storage) ---
 
 def load_broadcast_users():
     """Loads user IDs saved for future broadcasts."""
@@ -185,16 +157,16 @@ def load_broadcast_users():
 def save_user_for_broadcast(user_id):
     """Adds a user ID to the broadcast list."""
     users = load_broadcast_users()
-    if user_id not in users:
-        users.add(user_id)
+    # User ID must be converted to string for JSON if not already
+    user_id_str = str(user_id)
+    if user_id_str not in users:
+        users.add(user_id_str)
         with open(BROADCAST_USERS_FILE, 'w') as f:
             json.dump(list(users), f)
         return True
     return False # User already exists
     
 def get_all_broadcast_users():
-    """Returns a list of all user IDs for broadcast."""
-    return list(load_broadcast_users())
-
-# Initialize the database connection when the module is imported
-# init_db() # Moved to main() for controlled startup
+    """Returns a list of all user IDs for broadcast (converted back to int for sending)."""
+    return [int(uid) for uid in load_broadcast_users()]
+    
