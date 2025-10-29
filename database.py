@@ -5,6 +5,7 @@ from pymongo import MongoClient
 import re
 import json
 import logging
+from datetime import datetime
 from config import DATABASE_URI, DATABASE_NAME, COLLECTION_NAME, LOG_LEVEL 
 
 # NOTE: Since BROADCAST_USERS_FILE is not in config.py, we define it here as a local file path.
@@ -42,7 +43,6 @@ def init_db():
 
 def add_series_file(series_name, season, episode, file_id, channel_id, message_id):
     """Inserts a new series file record."""
-    # ✅ CORRECTED CHECK: use 'is None'
     if series_collection is None: return False 
     
     document = {
@@ -52,7 +52,9 @@ def add_series_file(series_name, season, episode, file_id, channel_id, message_i
         "file_id": file_id,  
         "channel_id": channel_id,
         "message_id": int(message_id),
-        "indexed_at": MongoClient.server_info
+        # ❌ WAS: "indexed_at": MongoClient.server_info 
+        # ✅ FIX: Use a BSON-compatible timestamp (datetime object)
+        "indexed_at": datetime.utcnow() 
     }
     
     try:
