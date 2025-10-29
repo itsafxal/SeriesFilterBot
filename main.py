@@ -16,14 +16,15 @@ BOT_TOKEN = "7661197159:AAFfQ-d7k89NYDK3N64yoYzh_HJzQ0P52UU"
 MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
 # List of channel IDs (integers or strings) where files are posted and should be indexed.
-# ENSURE all IDs are correctly formatted as integers or strings, not mixed.
 CHANNELS = [-1001996538290] 
 
 # --- Bulk Indexing Placeholders (REPLACE THESE) ---
 # Ensure all ADMINS IDs are valid integers.
 ADMINS = [123456789]  # <-- REPLACE WITH YOUR ADMIN USER ID(s)
-# Ensure LOG_CHANNEL is a valid integer Channel/Supergroup ID.
-LOG_CHANNEL = [-1001234567890] # <-- REPLACE WITH YOUR LOG CHANNEL ID
+# 
+# FIX APPLIED HERE: LOG_CHANNEL must be a single integer, not a list.
+# 
+LOG_CHANNEL = -1001234567890 # <-- REPLACE WITH YOUR LOG CHANNEL ID (REMOVED BRACKETS [])
 lock = asyncio.Lock()
 class Temp:
     CURRENT = 1
