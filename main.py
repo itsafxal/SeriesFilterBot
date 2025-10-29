@@ -33,7 +33,7 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-# 2. User Client (for channel history reading, requires session login)
+# 2. User Client (for channel history reading - requires session login and a separate start/stop)
 user_app = Client(
     "IndexerUser",
     api_id=API_ID,
@@ -92,20 +92,8 @@ async def get_all_files_by_season(series_name: str, season: int):
 
 
 # ###################################################
-# ## ✨ NEW: Bot Startup and Start Command ##
+# ## ✨ Startup and Command Handlers ##
 # ###################################################
-
-@app.on_message(filters.command("start") & filters.private)
-async def start_command(_, message):
-    """Handles the /start command and welcomes the user."""
-    welcome_text = (
-        "👋 **Welcome! I'm your Series File Filter Bot.**\n\n"
-        "Just send me the **name of a series** you are looking for, "
-        "and I'll show you the available seasons and episodes from the index.\n\n"
-        "**Example:** `The Last of Us`\n\n"
-        f"**Admin:** Use `/index` to update the file database."
-    )
-    await message.reply_text(welcome_text, parse_mode="markdown")
 
 async def send_restart_message():
     """Sends a notification to the owner when the bot starts successfully."""
@@ -118,10 +106,24 @@ async def send_restart_message():
         print(f"Sent restart message to owner {OWNER_ID}.")
     except Exception as e:
         print(f"Failed to send restart message to owner {OWNER_ID}: {e}")
-        
-# ###################################################
-# ## 🔎 Autofilter Logic Handlers ##
-# ###################################################
+
+# FIX: Use @app.on_ready() to call the restart message after the client starts
+@app.on_ready()
+async def on_client_ready(_):
+    """Called once the bot client is fully connected and running."""
+    await send_restart_message()
+
+@app.on_message(filters.command("start") & filters.private)
+async def start_command(_, message):
+    """Handles the /start command and welcomes the user."""
+    welcome_text = (
+        "👋 **Welcome! I'm your Series File Filter Bot.**\n\n"
+        "Just send me the **name of a series** you are looking for, "
+        "and I'll show you the available seasons and episodes from the index.\n\n"
+        "**Example:** `The Last of Us`\n\n"
+        f"**Admin:** Use `/index` to update the file database."
+    )
+    await message.reply_text(welcome_text, parse_mode="markdown")
 
 @app.on_message(filters.text & filters.private & ~filters.command(["start", "index"]))
 async def search_handler(_, message):
@@ -244,7 +246,7 @@ async def send_season_files(query, series_name, season):
         await query.message.reply_text(final_message, parse_mode=None)
 
 # ###################################################
-# ## 💾 Indexing Command ##
+# ## 💾 Indexing Command (Uses User Client) ##
 # ###################################################
 
 @app.on_message(filters.command("index") & filters.private)
@@ -272,7 +274,7 @@ async def index_channel_files_command(_, message):
     except MessageNotModified:
         pass
 
-    # 2. Pass the user_app to the indexing function
+    # 2. Call the indexing function
     total_indexed = await index_channel_files(status_message)
     
     # 3. Stop the User Client after indexing is complete
@@ -288,6 +290,7 @@ async def index_channel_files(status_message):
     indexed_count = 0
     
     try:
+        # Use the User Client (user_app) to read history (Fixes 400 BOT_METHOD_INVALID)
         async for msg in user_app.get_chat_history(DUMP_CHANNEL_ID): 
             
             if msg.document or msg.video:
@@ -328,20 +331,6 @@ async def index_channel_files(status_message):
 if __name__ == "__main__":
     print("Bot started...")
     
-    # Use Pyrogram's `idle` to run a coroutine (the restart message) before blocking
-    async def main():
-        # Start the Bot Client
-        await app.start()
-        
-        # Send the restart notification to the admin
-        await send_restart_message()
-        
-        # Keep the bot running
-        await app.idle()
-        
-        # Stop the client when idle is exited (e.g., Ctrl+C)
-        await app.stop()
-
-    # Pyrogram must be run using asyncio.run() or app.run(). 
-    # For a coroutine like `main`, we use the standard Python asyncio run.
-    asyncio.run(main())
+    # FIX: Use app.run() which is Pyrogram's own blocking runner.
+    # It manages the asyncio loop internally, which avoids the RuntimeError.
+    app.run()
