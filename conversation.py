@@ -18,27 +18,38 @@ def register_conversation_handlers(app: Client):
         )
         await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
-    @app.on_message(filters.text & filters.private & ~filters.command("start"))
-    async def search_handler(_, message):
-        """Handles user text search queries."""
-        query = message.text.strip()
+@app.on_message(filters.text & filters.private & ~filters.command("start"))
+async def search_handler(_, message):
+    """Handles user text search queries."""
+    query = message.text.strip()
+    
+    unique_names = await search_series(query) 
+    
+    if unique_names:
+        # --- MODIFIED LOGIC START ---
         
-        unique_names = await search_series(query) 
+        # 1. Get the single name to display (using the first match from the sorted list)
+        selected_name = sorted(unique_names)[0] 
         
-        if unique_names:
-            keyboard = []
-            for name in sorted(unique_names):
-                callback_data = f'series_select|{name}'
-                button_text = name[:50] + '...' if len(name) > 50 else name 
-                keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-            
-            reply_markup = InlineKeyboardMarkup(keyboard)
+        callback_data = f'series_select|{selected_name}'
+        button_text = selected_name[:50] + '...' if len(selected_name) > 50 else selected_name 
+        
+        # 2. Create a keyboard with ONLY the selected name
+        keyboard = [[InlineKeyboardButton(button_text, callback_data=callback_data)]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-            response = f"🔎 Found {len(unique_names)} matching series. Please select one:"
-            await message.reply_text(response, reply_markup=reply_markup)
+        # 3. Modify the response text to reflect the single selection
+        if len(unique_names) > 1:
+            response = f"🔎 Found {len(unique_names)} matching series. Select the best match from the results below:"
         else:
-            await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
-
+            response = f"🔎 Found 1 matching series. Please select it to view seasons:"
+        
+        await message.reply_text(response, reply_markup=reply_markup)
+        
+        # --- MODIFIED LOGIC END ---
+    else:
+        await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
+        
     @app.on_callback_query(filters.regex(r"series_select|season_send"))
     async def callback_query_handler(_, query):
         """Handles button clicks for series and season selection."""
