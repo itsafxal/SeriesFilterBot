@@ -16,13 +16,9 @@ MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&
 # List of channel IDs (integers or strings) where files are posted and should be indexed.
 CHANNELS = [-1001996538290] 
 
-# --- Bulk Indexing Placeholders (REPLACE THESE) ---
-# Ensure all ADMINS IDs are valid integers.
 ADMINS = [5483128891]  # <-- REPLACE WITH YOUR ADMIN USER ID(s)
-#
-# FIX APPLIED: LOG_CHANNEL is a single integer, not a list.
-#
 LOG_CHANNEL = -1001996538290 # <-- REPLACE WITH YOUR LOG CHANNEL ID (NO BRACKETS [])
+
 lock = asyncio.Lock()
 class Temp:
     CURRENT = 1
@@ -558,7 +554,7 @@ async def send_for_index(bot, message):
         buttons = [
             [
                 InlineKeyboardButton('Yes',
-                                     callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')
+                                    callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')
             ],
             [
                 InlineKeyboardButton('close', callback_data='close_data'),
@@ -581,11 +577,11 @@ async def send_for_index(bot, message):
     buttons = [
         [
             InlineKeyboardButton('Accept Index',
-                                 callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')
+                                    callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')
         ],
         [
             InlineKeyboardButton('Reject Index',
-                                 callback_data=f'index#reject#{chat_id}#{message.id}#{message.from_user.id}'),
+                                    callback_data=f'index#reject#{chat_id}#{message.id}#{message.from_user.id}'),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
@@ -616,22 +612,40 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
     deleted = 0
     no_media = 0
     unsupported = 0
+    
+    # Use lst_msg_id as the initial offset for get_chat_history
+    current_offset_id = lst_msg_id
+    
     async with lock:
         try:
-            current = temp.CURRENT
             temp.CANCEL = False
-            async for message in bot.iter_messages(chat, lst_msg_id, temp.CURRENT):
+            current_processed_count = 0
+            
+            # --- FIX: Replaced bot.iter_messages with bot.get_chat_history ---
+            # It starts from offset_id and goes backwards.
+            async for message in bot.get_chat_history(chat_id=chat, offset_id=current_offset_id):
+                
+                # If a skip number is set, we skip messages until we pass the set number
+                if temp.CURRENT > 1:
+                    if message.id > temp.CURRENT:
+                        current_processed_count += 1
+                        continue # Skip message until we pass the last indexed message ID
+                    # Once we pass the last indexed ID, reset temp.CURRENT for the next index run
+                    temp.CURRENT = 1
+                
+                current_processed_count += 1
+                
                 if temp.CANCEL:
                     await msg.edit(f"Successfully Cancelled!!\n\nSaved <code>{total_files}</code> files to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>")
                     break
-                current += 1
-                if current % 20 == 0:
+                    
+                if current_processed_count % 20 == 0:
                     can = [[InlineKeyboardButton('Cancel', callback_data='index_cancel')]]
                     reply = InlineKeyboardMarkup(can)
                     await msg.edit_text(
-                        text=f"Total messages fetched: <code>{current}</code>\nTotal messages saved: <code>{total_files}</code>\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>",
+                        text=f"Total messages fetched: <code>{current_processed_count}</code>\nTotal messages saved: <code>{total_files}</code>\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>",
                         reply_markup=reply)
-                
+                        
                 # --- START: Series Indexing Logic ---
                 if message.empty:
                     deleted += 1
@@ -654,6 +668,10 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
                 elif status_code == 2:
                     errors += 1
                 # --- END: Series Indexing Logic ---
+                
+                # Update the message ID for the next run (used by the setskip command)
+                current_offset_id = message.id
+                temp.CURRENT = current_offset_id # Store the last processed message ID
 
         except Exception as e:
             logger.exception(e)
