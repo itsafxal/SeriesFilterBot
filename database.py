@@ -25,7 +25,6 @@ try:
     
     logger.info("✅ MongoDB Indexes ensured/created successfully.")
 
-# The missing 'except' block that caused the SyntaxError
 except Exception as e:
     logger.error(f"❌ Failed to ensure/create MongoDB Indexes: {e}")
     # Depending on how critical the indexes are, you might want to exit or raise here
@@ -99,11 +98,15 @@ async def get_unique_seasons_by_name(series_name: str):
     return await asyncio.to_thread(sync_get_seasons)
 
 async def get_all_files_by_season(series_name: str, season: int):
-    """Gets file details (channel_id, message_id) for a specific season."""
+    """
+    Gets file details (channel_id, message_id, file_name, episode) for a specific season.
+    The file_name is crucial for displaying the episode title in the menu.
+    """
     def sync_get_files():
         files = files_collection.find(
             {"normalized_name": series_name, "season": season},
-            {"channel_id": 1, "message_id": 1, "_id": 0}
+            # --- MODIFIED: Added "file_name" and "episode" ---
+            {"channel_id": 1, "message_id": 1, "file_name": 1, "episode": 1, "_id": 0} 
         ).sort("episode", 1)
         return list(files)
         
