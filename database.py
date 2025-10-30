@@ -27,7 +27,6 @@ try:
 
 except Exception as e:
     logger.error(f"❌ Failed to ensure/create MongoDB Indexes: {e}")
-    # Depending on how critical the indexes are, you might want to exit or raise here
     
 async def save_bot_state(chat_id, last_msg_id):
     """Saves the last processed message ID for a given chat to resume later."""
@@ -55,7 +54,7 @@ async def search_series(query: str):
     Searches MongoDB for unique series names matching the query. 
     Prioritizes text index for better fuzzy matching.
     """
-    import re # Local import for regex fallback
+    import re
     def sync_search():
         # 1. Text Search 
         pipeline_text_search = [
@@ -105,7 +104,6 @@ async def get_all_files_by_season(series_name: str, season: int):
     def sync_get_files():
         files = files_collection.find(
             {"normalized_name": series_name, "season": season},
-            # --- MODIFIED: Added "file_name" and "episode" ---
             {"channel_id": 1, "message_id": 1, "file_name": 1, "episode": 1, "_id": 0} 
         ).sort("episode", 1)
         return list(files)
@@ -127,9 +125,9 @@ async def save_file_to_db(file_doc: dict):
                 return True
             else:
                 logger.debug(f"DB: SKIPPED (Duplicate unchanged). Msg ID: {file_doc['message_id']}")
-                return False # False means duplicate/no change
+                return False
         except Exception as e:
             logger.error(f"Failed to insert/update file doc: {e}")
-            return False # False means error
+            return False
             
     return await asyncio.to_thread(sync_insert_one)
