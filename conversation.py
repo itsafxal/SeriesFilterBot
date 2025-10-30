@@ -3,8 +3,9 @@ import re
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
-from database import search_series, get_unique_seasons_by_name, get_all_files_by_season, logger
-from config import logger # Assuming config also provides logger
+from database import search_series, get_unique_seasons_by_name, get_all_files_by_season
+# Import logger and custom caption text from config
+from config import logger, CUSTOM_CAPTION_TEXT 
 
 def register_conversation_handlers(app: Client):
 
@@ -22,21 +23,18 @@ def register_conversation_handlers(app: Client):
     @app.on_message(filters.text & filters.private & ~filters.command("start"))
     async def search_handler(_, message):
         """
-        Handles user text search queries. The series names returned are already unified 
-        by the new logic in utils.py.
+        Handles user text search queries, displaying unified series names.
         """
         query = message.text.strip()
         
-        # unique_names now contains the clean, unified names (e.g., ['The Flash', 'Loki'])
+        # Names are already unified by utils.py/database.py
         unique_names = await search_series(query) 
         
         if unique_names:
-            # --- SIMPLIFIED LOGIC: Use names directly as they are already unified ---
             final_display_names = sorted(list(set(unique_names)))
             
             keyboard = []
             for unified_name in final_display_names:
-                # The unified name is used for both display and callback, as the DB name is now clean.
                 original_db_name = unified_name
                 callback_data = f'series_select|{original_db_name}' 
                 button_text = unified_name[:50] + '...' if len(unified_name) > 50 else unified_name 
@@ -66,7 +64,7 @@ def register_conversation_handlers(app: Client):
 
     @app.on_callback_query(filters.regex(r"send_single_episode"))
     async def send_single_episode_handler(app, query):
-        """Handles sending a single file after selecting an episode."""
+        """Handles sending a single file after selecting an episode, applying a custom caption."""
         data = query.data.split('|')
         channel_id = int(data[1])
         message_id = int(data[2])
@@ -75,18 +73,43 @@ def register_conversation_handlers(app: Client):
         await query.answer("📦 Sending file...", cache_time=0)
 
         try:
+            # 1. Get the message object to retrieve the original file name
+            message_to_copy = await app.get_messages(
+                chat_id=channel_id,
+                message_ids=message_id
+            )
+            
+            # 2. Extract file name based on media type
+            file_name = ""
+            if message_to_copy.document:
+                file_name = message_to_copy.document.file_name or ""
+            elif message_to_copy.video:
+                file_name = message_to_copy.video.file_name or ""
+            elif message_to_copy.audio:
+                file_name = message_to_copy.audio.file_name or ""
+            
+            # 3. Format the custom caption
+            bot_username = (await app.get_me()).username
+            custom_caption = CUSTOM_CAPTION_TEXT.format(
+                file_name=file_name,
+                bot_username=bot_username
+            )
+            
+            # 4. Copy the message with the new caption
             await app.copy_message(
                 chat_id=user_chat_id,
                 from_chat_id=channel_id,
-                message_id=message_id
+                message_id=message_id,
+                caption=custom_caption, 
+                parse_mode=enums.ParseMode.MARKDOWN 
             )
         except Exception as e:
             logger.error(f"Failed to copy single message {message_id} from {channel_id}: {e}")
-            await query.answer("❌ Failed to send file. It might be inaccessible.", show_alert=True)
+            await query.answer("❌ Failed to send file. It might be inaccessible or the caption formatting failed.", show_alert=True)
 
 
     async def show_season_menu(query, series_name: str):
-        """Displays buttons for all unique seasons of the selected series in the 'Season X' format (Image 1)."""
+        """Displays buttons for all unique seasons of the selected series in the 'Season X' format."""
         seasons = await get_unique_seasons_by_name(series_name)
         
         if not seasons:
@@ -128,7 +151,7 @@ def register_conversation_handlers(app: Client):
             pass
 
     async def show_episode_menu(query, series_name: str, season: int):
-        """Displays a menu with buttons for all episodes in the selected season (Image 3)."""
+        """Displays a menu with buttons for all episodes in the selected season."""
         
         files = await get_all_files_by_season(series_name, season)
         
