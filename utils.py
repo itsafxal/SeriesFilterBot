@@ -118,7 +118,7 @@ async def save_series_file_for_bulk_index(message: types.Message):
         saved = await save_file_to_db(file_doc)
         
         if saved:
-            return True, 1  # New file indexed
+            return True, 1 # New file indexed
         else:
             # False from save_file_to_db means duplicate/no change
             return False, 0 
