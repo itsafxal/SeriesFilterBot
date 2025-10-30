@@ -1,3 +1,4 @@
+
 import re
 import os
 import asyncio
@@ -6,9 +7,21 @@ from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified, ChannelInvalid, UsernameInvalid, UsernameNotModified, ChatAdminRequired
 from pyrogram.errors.exceptions.flood_420 import FloodWait
-from pymongo import MongoClient, TEXT, DESCENDING
-from config import API_ID, API_HASH, BOT_TOKEN, CHANNELS, ADMINS, LOG_CHANNEL
+from pymongo import MongoClient, TEXT, DESCENDING 
 
+# --- Configuration Placeholders (Your actual values) ---
+API_ID = 28643132
+API_HASH = "510c3009ea589830a89e045bf8aae656"
+BOT_TOKEN = "8163888122:AAEuGzXZDxKlcehE2b5Yj4kpayBUo1VaZWs"
+MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+
+# List of channel IDs (integers or strings) where files are posted and should be indexed.
+CHANNELS = [-1001996538290] 
+
+# --- Bulk Indexing Placeholders (REPLACE THESE) ---
+# Ensure all ADMINS IDs are valid integers.
+ADMINS = [5483128891]  # <-- REPLACE WITH YOUR ADMIN USER ID(s)
+LOG_CHANNEL = -1001996538290 # <-- REPLACE WITH YOUR LOG CHANNEL ID
 lock = asyncio.Lock()
 class Temp:
     CURRENT = 1
@@ -23,6 +36,32 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# --- Database Setup (Synchronous PyMongo) ---
+mongo_client = MongoClient(MONGO_URI)
+db = mongo_client["SeriesBotDB"]
+files_collection = db["files"]
+
+# Ensure indices are created (PyMongo needs this done once)
+try:
+    # 1. Compound index for fast unique checks and sorting
+    files_collection.create_index([("normalized_name", 1), ("season", 1)], background=True)
+    
+    # 2. Ensure the required TEXT INDEX for fuzzy search is created
+    files_collection.create_index(
+        [("normalized_name", TEXT)], 
+        name="series_name_text_index", 
+        default_language='english',
+        background=True, 
+        unique=False
+    )
+    # 3. Ensure index for bot state is created (new collection)
+    db["bot_state"].create_index([("_id", 1)], unique=True)
+    
+    logger.info("✅ MongoDB Indexes ensured/created successfully.")
+except Exception as e:
+    logger.error(f"❌ Error creating MongoDB Indexes. The bot may fail to search: {e}")
+
+
 # --- Pyrogram Client Setup ---
 app = Client(
     "SeriesFilterBot",
@@ -32,6 +71,115 @@ app = Client(
     in_memory=True
 )
 
+
+###################################################
+## DATABASE WRAPPER FUNCTIONS (PyMongo via asyncio.to_thread) ##
+###################################################
+
+async def save_bot_state(chat_id, last_msg_id):
+    """Saves the last processed message ID for a given chat to resume later."""
+    def sync_save():
+        # chat_id can be a string (username) or integer (ID)
+        state_collection = db["bot_state"]
+        state_collection.update_one(
+            {"_id": chat_id},
+            {"$set": {"last_indexed_id": last_msg_id}},
+            upsert=True
+        )
+        logger.info(f"DB: Updated state for {chat_id} to ID {last_msg_id}")
+
+    await asyncio.to_thread(sync_save)
+
+async def get_bot_state(chat_id):
+    """Retrieves the last processed message ID for a given chat."""
+    def sync_get():
+        state_collection = db["bot_state"]
+        doc = state_collection.find_one({"_id": chat_id})
+        # Returns the stored ID, or None if the chat hasn't been indexed before
+        return doc.get("last_indexed_id") if doc else None
+
+    return await asyncio.to_thread(sync_get)
+
+
+async def search_series(query: str):
+    """
+    Searches MongoDB for unique series names matching the query. 
+    Prioritizes text index for better fuzzy matching.
+    """
+    def sync_search():
+        # 1. Text Search 
+        pipeline_text_search = [
+            {"$match": {"$text": {"$search": query}}},
+            {"$project": {
+                "normalized_name": 1,
+                "search_score": {"$meta": "textScore"} 
+            }},
+            {"$sort": {"search_score": DESCENDING}}, 
+            {"$group": {"_id": "$normalized_name"}},
+            {"$project": {"_id": 0, "name": "$_id"}}
+        ]
+        
+        try:
+            results = list(files_collection.aggregate(pipeline_text_search))
+            if results:
+                return results
+        except Exception as e:
+            logger.warning(f"Text search failed (Index issue likely): {e}. Falling back to Regex.")
+        
+        # 2. Fallback to the original regex search
+        regex_query = re.escape(query).replace(" ", ".*") 
+        pipeline_regex_search = [
+            {"$match": {"normalized_name": {"$regex": regex_query, "$options": "i"}}},
+            {"$group": {"_id": "$normalized_name"}},
+            {"$project": {"_id": 0, "name": "$_id"}}
+        ]
+        return list(files_collection.aggregate(pipeline_regex_search))
+        
+    results = await asyncio.to_thread(sync_search)
+    return [doc["name"] for doc in results]
+
+async def get_unique_seasons_by_name(series_name: str):
+    """Gets unique season numbers for a given series."""
+    def sync_get_seasons():
+        seasons = files_collection.distinct("season", {"normalized_name": series_name})
+        seasons = sorted([s for s in seasons if s > 0])
+        return seasons
+        
+    return await asyncio.to_thread(sync_get_seasons)
+
+async def get_all_files_by_season(series_name: str, season: int):
+    """Gets file details (channel_id, message_id) for a specific season."""
+    def sync_get_files():
+        files = files_collection.find(
+            {"normalized_name": series_name, "season": season},
+            {"channel_id": 1, "message_id": 1, "_id": 0}
+        ).sort("episode", 1)
+        return list(files)
+        
+    return await asyncio.to_thread(sync_get_files)
+    
+async def save_file_to_db(file_doc: dict):
+    """Inserts/updates a single file document into MongoDB. Returns True if saved/modified."""
+    def sync_insert_one():
+        try:
+            result = files_collection.update_one(
+                {"channel_id": file_doc["channel_id"], "message_id": file_doc["message_id"]},
+                {"$set": file_doc},
+                upsert=True
+            )
+            
+            if result.upserted_id or result.modified_count > 0:
+                logger.info(f"DB: INSERTED/UPDATED file. Msg ID: {file_doc['message_id']}")
+                return True
+            else:
+                 logger.debug(f"DB: SKIPPED (Duplicate unchanged). Msg ID: {file_doc['message_id']}")
+                 return False # False means duplicate/no change
+        except Exception as e:
+            logger.error(f"Failed to insert/update file doc: {e}")
+            return False # False means error
+            
+    return await asyncio.to_thread(sync_insert_one)
+
 ###################################################
 ## UTILITY & PARSING (Name Unification Logic) ##
 ###################################################
@@ -39,7 +187,7 @@ app = Client(
 def parse_series_info(file_name: str):
     """
     Attempts to extract Series Name, Season (SXX), and Episode (EXX) from a filename.
-    Includes enhanced cleaning logic to ensure a pure series name and the exact SXXEXX format.
+    Includes enhanced cleaning logic to ensure a pure series name.
     """
     if not file_name:
         return "", 0, 0
@@ -51,49 +199,47 @@ def parse_series_info(file_name: str):
         season = int(match.group(1))
         episode = int(match.group(2))
         
-        # 1. Capture the part *before* the SXXEXX marker as a starting point
-        pre_match_part = file_name[:match.start()].strip()
+        normalized_name = re.sub(r"([. _-]+)?[sS]\d+[. _-]*[eE]\d+([. _-]+)?", " ", file_name).strip()
         
-        # 2. Aggressively remove bracketed/parenthesized tags AND @channel tags from the *entire* filename first
-        normalized_name = re.sub(r"\[.*?\]|\(.*?\)|@\S+|[sS]\d+[. _-]*[eE]\d+", " ", file_name).strip()
-        
-        # 3. Clean common garbage terms, quality, language, AND YEAR tags.
+        # 1. Clean common garbage terms, quality, language, AND YEAR tags.
         common_terms = [
             "4K", "1080P", "720P", "HDRIP", "WEB-DL", "WEBRIP", "BLURAY", "HDTV", 
             "AMZN", "NETFLIX", "HULU", "DDP5.1", "X265", "x264", "10BIT", "MKV", 
             "MULTISUB", "AAC", "PSA", "DUB", "SUB", "MULTI", "REPACK", "COMPLETE", 
             "ENG", "SPA", "ITA", "FRE", "GER", "DUAL", "AUDIO", 
             r"(19|20)\d{2}", 
-            # Note: Removing generic SXX tags is less important here as the SXXEXX is the focus
+            "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10" 
         ]
         
         for term in common_terms:
             flags = re.IGNORECASE
             if r"(19|20)\d{2}" not in term:
-                 # \b ensures we only match the whole word (e.g., prevents matching 'web' in 'weber')
-                term = r"\b" + term + r"\b" 
+                 term = r"\b" + term + r"\b"
             
             normalized_name = re.sub(term, " ", normalized_name, flags=flags).strip()
 
 
-        # 4. ENHANCED CLEANING: Remove common channel/group tags (e.g., "CK The Flash")
-        # NOTE: This is a complex heuristic, tune to your channel's tags.
+        # 2. Aggressively remove bracketed/parenthesized tags AND @channel tags
+        normalized_name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", normalized_name).strip()
+        
+        # 3. ENHANCED CLEANING: Remove common channel/group tags (e.g., "CK The Flash")
         channel_tags = ["CK", "UB", "TG", "MOVIE HUB", "FILM"] 
         for tag in channel_tags:
-            # Matches tag at the start or end of the string
             tag_regex = rf"^\s*{re.escape(tag)}[\s._-]*|[\s._-]*{re.escape(tag)}\s*$"
             normalized_name = re.sub(tag_regex, " ", normalized_name, flags=re.IGNORECASE).strip()
             
-        # 5. Final cleaning: collapse multiple separators, then Title Case it
+        # 4. Final cleaning: collapse multiple separators, then title case it
         normalized_name = re.sub(r"[. _]+", " ", normalized_name).title().strip()
         
-        # 6. LAST STEP: Use the *normalized name* (e.g., "Loki")
-        # The user requested 'loki S01 Ep01' as the final *storage/display* name,
-        # but the *normalized_name* in the DB must be just 'Loki' for searching.
+        # 5. LAST STEP: Truncate after the first strong separator (like a stray hyphen)
+        if ' - ' in normalized_name:
+             normalized_name = normalized_name.split(' - ')[0].strip()
+        
+        normalized_name = normalized_name.title().strip()
         
         return normalized_name, season, episode
-        
-    return file_name.title().strip(), 0, 0 # Non-series file
+    
+    return file_name.title().strip(), 0, 0 
 
 
 async def save_series_file_for_bulk_index(message):
@@ -127,7 +273,7 @@ async def save_series_file_for_bulk_index(message):
         saved = await save_file_to_db(file_doc)
         
         if saved:
-            return True, 1 # New file indexed
+            return True, 1  # New file indexed
         else:
             # False from save_file_to_db means duplicate/no change
             return False, 0 
@@ -137,7 +283,7 @@ async def save_series_file_for_bulk_index(message):
 
 
 ###################################################
-## PYROGRAM HANDLERS (User Interaction) - MODIFIED LOGIC ##
+## REAL-TIME FILE HANDLER (INDEXING LOGIC) ##
 ###################################################
 
 media_filter = filters.document | filters.video | filters.audio
@@ -163,7 +309,7 @@ async def media_handler(_, message):
             "channel_id": message.chat.id,
             "message_id": message.id,
             "file_name": file_name,
-            "normalized_name": normalized_name, # The cleaned name for search
+            "normalized_name": normalized_name,
             "season": season,
             "episode": episode,
             "timestamp": message.date
@@ -174,6 +320,14 @@ async def media_handler(_, message):
             logger.info(f"INDEXING: {normalized_name} S{season:02d}E{episode:02d} (Msg ID: {message.id})")
     else:
         logger.info(f"SKIP: Non-series file skipped ('{file_name}' from Msg ID: {message.id})")
+
+
+###################################################
+## PYROGRAM HANDLERS (User Interaction) & BULK INDEXING ##
+###################################################
+
+async def send_startup_notification(client):
+    logger.info("Bot restarted successfully.")
 
 
 @app.on_message(filters.command("start") & filters.private)
@@ -189,38 +343,24 @@ async def start_command(_, message):
 
 @app.on_message(filters.text & filters.private & ~filters.command("start"))
 async def search_handler(_, message):
-    """MODIFIED: Handles user text search queries to implement the 'found' button logic."""
+    """Handles user text search queries."""
     query = message.text.strip()
     
     unique_names = await search_series(query) 
     
     if unique_names:
-        # **NEW LOGIC: If a single match, show the confirmation button.**
-        if len(unique_names) == 1:
-            series_name = unique_names[0]
-            callback_data = f'series_select|{series_name}'
-            
-            keyboard = [[InlineKeyboardButton(f"🎬 Click for {series_name} Series", callback_data=callback_data)]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            response = f"✅ I found your **{series_name}** series in my database. If you need the series, click the button below."
-            
-        # **Keep the existing logic for multiple matches.**
-        else:
-            keyboard = []
-            for name in sorted(unique_names):
-                callback_data = f'series_select|{name}'
-                button_text = name[:50] + '...' if len(name) > 50 else name 
-                keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-            
-            reply_markup = InlineKeyboardMarkup(keyboard)
+        keyboard = []
+        for name in sorted(unique_names):
+            callback_data = f'series_select|{name}'
+            button_text = name[:50] + '...' if len(name) > 50 else name 
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-            response = f"🔎 Found {len(unique_names)} matching series. Please select one:"
-            
-        await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        response = f"🔎 Found {len(unique_names)} matching series. Please select one:"
+        await message.reply_text(response, reply_markup=reply_markup)
     else:
         await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
-
 
 @app.on_callback_query(filters.regex(r"series_select|season_send"))
 async def callback_query_handler(_, query):
@@ -254,29 +394,27 @@ async def show_season_menu(query, series_name: str):
             pass
         return
 
-    # Prepare data for total files count in the caption (optional, but good for context)
     tasks = [get_all_files_by_season(series_name, s) for s in seasons]
-    all_season_files_list = await asyncio.gather(*tasks)
-    total_files = sum(len(files_list) for files_list in all_season_files_list)
+    all_season_files = await asyncio.gather(*tasks)
+    total_files = sum(len(files_list) for files_list in all_season_files)
     
     keyboard = []
     row = []
     
-    # Season Buttons
     for season in seasons:
         callback_data = f'season_send|{series_name}|{season}'
-        button_text = f"Season {season:01d}" # S1, S2, S3... 
+        button_text = f"S{season:02d}" # SXX format
         
         row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
         
-        if len(row) >= 3: # 3 buttons per row for better look
+        if len(row) >= 4: 
             keyboard.append(row)
             row = []
     
     if row:
         keyboard.append(row)
     
-    # Final row: Back to search and Close
+    # Add Back and Close buttons as a final row
     final_row = []
     final_row.append(InlineKeyboardButton("⬅️ BACK", callback_data='go_back_to_search'))
     final_row.append(InlineKeyboardButton("❌ CLOSE", callback_data='close'))
@@ -287,7 +425,7 @@ async def show_season_menu(query, series_name: str):
     caption = (
         f"📺 <b>{series_name}</b>\n"
         f"<i>Total Files Indexed: {total_files} in {len(seasons)} seasons.</i>\n\n"
-        "Select the **Season** you need:"
+        "Select a Season:"
     )
     
     try:
@@ -295,13 +433,12 @@ async def show_season_menu(query, series_name: str):
     except MessageNotModified:
         pass
 
-
 @app.on_callback_query(filters.regex(r"go_back_to_search"))
 async def go_back_to_search_handler(_, query):
      try:
          await query.message.edit_text(
              "Send a new series name to search for files."
-            )
+           )
          await query.answer()
      except Exception:
          await query.answer("Cannot go back to search results.", show_alert=True)
@@ -309,7 +446,7 @@ async def go_back_to_search_handler(_, query):
 @app.on_callback_query(filters.regex(r"close"))
 async def close_menu_handler(_, query):
     try:
-        await query.message.edit_text("Search menu closed. Send a new series name to start a new search.")
+        await query.message.delete()
         await query.answer("Menu closed.")
     except Exception:
         await query.answer("Could not close the menu.")
@@ -318,12 +455,6 @@ async def close_menu_handler(_, query):
 async def send_season_files(query, series_name: str, season: int):
     """Sends all files belonging to the selected season using copy_message."""
     user_chat_id = query.message.chat.id
-    
-    # The new logic is to reply with the files, and then replace the old season button message 
-    # with the *next* season button.
-    
-    # 1. Get all seasons for context
-    all_seasons = await get_unique_seasons_by_name(series_name)
     files = await get_all_files_by_season(series_name, season) 
     
     if not files:
@@ -331,7 +462,7 @@ async def send_season_files(query, series_name: str, season: int):
         return
 
     status_message = await query.message.reply_text(
-        f"📦 Sending **{len(files)}** files for **{series_name}** Season {season:01d}..."
+        f"📦 Sending {len(files)} files for <b>{series_name}</b> Season {season:02d}..."
     )
 
     success_count = 0
@@ -342,73 +473,25 @@ async def send_season_files(query, series_name: str, season: int):
         
         if channel_id and message_id:
             try:
-                # The file_name logic is complex; here we just copy the message as-is.
-                # If you need to *edit the caption* or *rename the file*, you'd need to
-                # download and re-upload/send with a new caption. For simplicity and
-                # respecting your current code, we use copy_message.
                 await app.copy_message(
                     chat_id=user_chat_id,
                     from_chat_id=channel_id,
                     message_id=message_id
                 )
                 success_count += 1
-                await asyncio.sleep(0.5) # Anti-flood delay
+                await asyncio.sleep(0.5) 
             except Exception as e:
                 logger.error(f"Failed to copy message {message_id} from {channel_id}: {e}")
 
-    # 2. Find the next season
+    final_message = f"✅ Sent <b>{success_count}</b> files for <b>{series_name}</b> Season {season:02d}."
+    
     try:
-        current_index = all_seasons.index(season)
-        next_season = all_seasons[current_index + 1]
-    except (ValueError, IndexError):
-        next_season = None # Current season is the last one
-
-
-    # 3. Finalize the status message and update the original menu with the NEXT/BACK buttons
-
-    if next_season:
-        # Show button for the next season
-        next_callback = f'season_send|{series_name}|{next_season}'
-        keyboard = [
-            [InlineKeyboardButton(f"➡️ Click for Season {next_season:01d}", callback_data=next_callback)],
-            [InlineKeyboardButton("⬅️ Back to Season Menu", callback_data=f'series_select|{series_name}'), InlineKeyboardButton("❌ CLOSE", callback_data='close')]
-        ]
-        next_markup = InlineKeyboardMarkup(keyboard)
-        final_status = f"✅ Sent **{success_count}** files for **{series_name}** Season {season:01d}."
-        
-        # Replace the previous season menu message
-        try:
-             await query.message.edit_text(
-                 final_status + "\n\nClick the button for the next season:", 
-                 reply_markup=next_markup, 
-                 parse_mode=enums.ParseMode.MARKDOWN
-            )
-        except Exception:
-            await query.message.reply_text(final_status, reply_markup=next_markup, parse_mode=enums.ParseMode.MARKDOWN)
-
-    else:
-        # Last season reached
-        keyboard = [
-            [InlineKeyboardButton("⬅️ Back to Season Menu", callback_data=f'series_select|{series_name}')],
-            [InlineKeyboardButton("❌ CLOSE", callback_data='close')]
-        ]
-        final_markup = InlineKeyboardMarkup(keyboard)
-        final_status = f"✅ Sent **{success_count}** files for **{series_name}** Season {season:01d}.\n\n"
-        final_status += "That was the final season in the index! You can go back to the season menu or close this."
-
-        try:
-             await query.message.edit_text(final_status, reply_markup=final_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        except Exception:
-             await query.message.reply_text(final_status, reply_markup=final_markup, parse_mode=enums.ParseMode.MARKDOWN)
-
-    # Delete the temporary 'Sending files...' message
-    try:
-        await status_message.delete()
+        await status_message.edit_text(final_message, parse_mode=enums.ParseMode.HTML) 
     except Exception:
-        pass
+        await query.message.reply_text(final_message, parse_mode=enums.ParseMode.HTML) 
 
 
-# --- REMAINING BULK INDEXING FUNCTIONS ARE THE SAME ---
+# --- BULK INDEXING FUNCTIONS START HERE ---
 
 @app.on_callback_query(filters.regex(r'^index'))
 async def index_files(bot, query):
@@ -502,7 +585,7 @@ async def send_for_index(bot, message):
         buttons = [
             [
                 InlineKeyboardButton('Yes',
-                                     callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')
+                                    callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')
             ],
             [
                 InlineKeyboardButton('close', callback_data='close_data'),
@@ -525,11 +608,11 @@ async def send_for_index(bot, message):
     buttons = [
         [
             InlineKeyboardButton('Accept Index',
-                                     callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')
+                                    callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')
         ],
         [
             InlineKeyboardButton('Reject Index',
-                                     callback_data=f'index#reject#{chat_id}#{message.id}#{message.from_user.id}'),
+                                    callback_data=f'index#reject#{chat_id}#{message.id}#{message.from_user.id}'),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
