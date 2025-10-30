@@ -496,7 +496,7 @@ async def send_season_files(query, series_name: str, season: int):
 async def index_files(bot, query):
     if query.data.startswith('index_cancel'):
         temp.CANCEL = True
-        return await query.answer("Cancelling Indexing")
+        return await query.answer("Stopping Indexing...")
     _, raju, chat, lst_msg_id, from_user = query.data.split("#")
     if raju == 'reject':
         await query.message.delete()
@@ -517,7 +517,7 @@ async def index_files(bot, query):
     await msg.edit(
         "Starting Indexing",
         reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton('Cancel', callback_data='index_cancel')]]
+            [[InlineKeyboardButton('🛑 Stop Indexing', callback_data='index_cancel')]] # UPDATED TEXT
         )
     )
     try:
@@ -643,7 +643,7 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
     no_media = 0
     unsupported = 0
     
-    # 1. NEW: Check for a saved resume point
+    # 1. Check for a saved resume point
     resume_id = await get_bot_state(chat)
     if resume_id and resume_id < lst_msg_id:
         current_offset_id = resume_id
@@ -659,7 +659,7 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
             
             while True: # <--- OUTER LOOP
                 if temp.CANCEL:
-                    # 2. NEW: Clear the resume point on cancel/completion
+                    # Clear the resume point on cancel/completion
                     await save_bot_state(chat, 1) 
                     await msg.edit(f"Successfully Cancelled!!\n\nSaved <code>{total_files}</code> files to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>")
                     break
@@ -687,12 +687,12 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
 
                         current_processed_count += 1
                         
-                        # 3. NEW: Save state every 50 messages to ensure resume point is recent
+                        # Save state every 50 messages to ensure resume point is recent
                         if current_processed_count % 50 == 0:
                             # Save the ID BEFORE the current message (to avoid re-processing the current message)
                             await save_bot_state(chat, message.id + 1) 
                             
-                            can = [[InlineKeyboardButton('Cancel', callback_data='index_cancel')]]
+                            can = [[InlineKeyboardButton('🛑 Stop Indexing', callback_data='index_cancel')]] # UPDATED TEXT
                             reply = InlineKeyboardMarkup(can)
                             await msg.edit_text(
                                 text=f"Total messages fetched: <code>{current_processed_count}</code>\n**RESUME POINT:** <code>{message.id + 1}</code>\nTotal messages saved: <code>{total_files}</code>\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>",
@@ -742,7 +742,7 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
 
                 except FloodWait as e: # <--- CATCHES FLOOD_WAIT ONLY
                     logger.error(f"Hit FloodWait: Waiting for {e.value} seconds.")
-                    # 4. NEW: Save state before waiting to ensure continuity after restart
+                    # Save state before waiting to ensure continuity after restart
                     await save_bot_state(chat, current_offset_id) 
                     
                     await msg.edit(f'⚠️ FloodWait hit! Pausing indexing for **{e.value}** seconds to comply with Telegram API limits. The bot can **resume automatically** from ID <code>{current_offset_id}</code> if it restarts.')
@@ -759,7 +759,7 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
             logger.exception(e)
             await msg.edit(f'Fatal Error: {e}')
         else:
-            # 5. NEW: Clear the resume point on successful completion
+            # Clear the resume point on successful completion
             await save_bot_state(chat, 1) 
             await msg.edit(f'✅ Succesfully saved <code>{total_files}</code> to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>')
 
