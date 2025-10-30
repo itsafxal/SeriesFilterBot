@@ -5,10 +5,8 @@ from pyrogram.errors import MessageNotModified
 from database import search_series, get_unique_seasons_by_name, get_all_files_by_season, logger
 from config import logger
 
-def register_conversation_handlers(app: Client): # <--- 'app' is the Client instance
-    
-    # Handlers must be defined within the scope of register_conversation_handlers(app: Client)
-    
+def register_conversation_handlers(app: Client):
+
     @app.on_message(filters.command("start") & filters.private)
     async def start_command(_, message):
         """Handles the /start command."""
@@ -28,21 +26,16 @@ def register_conversation_handlers(app: Client): # <--- 'app' is the Client inst
         unique_names = await search_series(query) 
         
         if unique_names:
-            # --- Using the modified single-button logic from previous conversation ---
-            selected_name = sorted(unique_names)[0] 
-            callback_data = f'series_select|{selected_name}'
-            button_text = selected_name[:50] + '...' if len(selected_name) > 50 else selected_name 
+            keyboard = []
+            for name in sorted(unique_names):
+                callback_data = f'series_select|{name}'
+                button_text = name[:50] + '...' if len(name) > 50 else name 
+                keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
             
-            keyboard = [[InlineKeyboardButton(button_text, callback_data=callback_data)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
-            if len(unique_names) > 1:
-                response = f"🔎 Found {len(unique_names)} matching series. Select the best match from the results below:"
-            else:
-                response = f"🔎 Found 1 matching series. Please select it to view seasons:"
-            
+            response = f"🔎 Found {len(unique_names)} matching series. Please select one:"
             await message.reply_text(response, reply_markup=reply_markup)
-            
         else:
             await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
 
@@ -157,10 +150,7 @@ def register_conversation_handlers(app: Client): # <--- 'app' is the Client inst
             
             if channel_id and message_id:
                 try:
-                    # NOTE: Here, 'app' must be accessed/passed from the outer scope 
-                    # For this inner function, since it's defined within register_conversation_handlers,
-                    # it implicitly captures the 'app' from the outer function's scope.
-                    await app.copy_message( 
+                    await app.copy_message(
                         chat_id=user_chat_id,
                         from_chat_id=channel_id,
                         message_id=message_id
