@@ -20,9 +20,6 @@ CHANNELS = [-1001996538290]
 # --- Bulk Indexing Placeholders (REPLACE THESE) ---
 # Ensure all ADMINS IDs are valid integers.
 ADMINS = [5483128891]  # <-- REPLACE WITH YOUR ADMIN USER ID(s)
-#
-# FIX APPLIED: LOG_CHANNEL is a single integer, not a list.
-#
 LOG_CHANNEL = -1001996538290 # <-- REPLACE WITH YOUR LOG CHANNEL ID (NO BRACKETS [])
 lock = asyncio.Lock()
 class Temp:
@@ -618,7 +615,6 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
     no_media = 0
     unsupported = 0
     
-    # Initialize with the maximum message ID to start with
     current_offset_id = lst_msg_id
     
     async with lock:
@@ -626,94 +622,100 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
             temp.CANCEL = False
             current_processed_count = 0
             
-            while True:
+            while True: # <--- OUTER LOOP
                 if temp.CANCEL:
                     await msg.edit(f"Successfully Cancelled!!\n\nSaved <code>{total_files}</code> files to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>")
                     break
-
-                # Determine the message IDs to fetch in this batch (100 messages)
-                start_id = max(1, current_offset_id - 100)
                 
-                # Fetch messages using a range of message IDs (Bot-safe history retrieval)
-                messages = await bot.get_messages(
-                    chat_id=chat, 
-                    message_ids=list(range(start_id, current_offset_id)),
-                )
-                
-                if not messages:
-                    break # Reached the beginning of the chat or no more messages in the range
+                # --- START: Inner Try/Except block for FloodWait Handling ---
+                try: 
+                    # Determine the message IDs to fetch in this batch (100 messages)
+                    start_id = max(1, current_offset_id - 100)
+                    
+                    # Fetch messages using a range of message IDs
+                    messages = await bot.get_messages(
+                        chat_id=chat, 
+                        message_ids=list(range(start_id, current_offset_id)),
+                    )
+                    
+                    if not messages:
+                        break # Reached the beginning of the chat
 
-                # Sort messages in reverse order (highest ID first) since we iterate backward
-                messages.sort(key=lambda m: m.id, reverse=True)
+                    # Sort messages in reverse order (highest ID first) since we iterate backward
+                    messages.sort(key=lambda m: m.id, reverse=True)
 
-                for message in messages:
+                    for message in messages:
+                        if temp.CANCEL:
+                            break
+
+                        current_processed_count += 1
+                        
+                        # Update status every 20 processed messages
+                        if current_processed_count % 20 == 0:
+                            can = [[InlineKeyboardButton('Cancel', callback_data='index_cancel')]]
+                            reply = InlineKeyboardMarkup(can)
+                            await msg.edit_text(
+                                text=f"Total messages fetched: <code>{current_processed_count}</code>\nTotal messages saved: <code>{total_files}</code>\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>",
+                                reply_markup=reply)
+
+                        # --- Skipping/Resuming Logic ---
+                        if temp.CURRENT > 1 and message.id > temp.CURRENT:
+                            continue
+
+                        temp.CURRENT = 1
+                        
+                        # --- START: Series Indexing Logic ---
+                        if message.empty:
+                            deleted += 1
+                            continue
+                        elif not message.media:
+                            no_media += 1
+                            continue
+                        elif message.media not in [enums.MessageMediaType.VIDEO, enums.MessageMediaType.AUDIO, enums.MessageMediaType.DOCUMENT]:
+                            unsupported += 1
+                            continue
+
+                        is_saved, status_code = await save_series_file_for_bulk_index(message)
+                        
+                        if is_saved:
+                            total_files += 1
+                        elif status_code == 0:
+                            duplicate += 1
+                        elif status_code == 2:
+                            errors += 1
+                        # --- END: Series Indexing Logic ---
+                        
+                    # Break if canceled during message processing
                     if temp.CANCEL:
                         break
+                        
+                    # Set the offset for the next batch to the lowest ID in the current batch
+                    current_offset_id = messages[-1].id if messages else 0
+                    
+                    # --- FIX: Add a small delay to avoid FloodWait ---
+                    await asyncio.sleep(0.5) 
+                    # --- END FIX ---
+                    
+                    # Check if we have processed all messages (message ID 1 is the first)
+                    if current_offset_id <= 1:
+                        break
 
-                    current_processed_count += 1
-                    
-                    # Update status every 20 processed messages
-                    if current_processed_count % 20 == 0:
-                        can = [[InlineKeyboardButton('Cancel', callback_data='index_cancel')]]
-                        reply = InlineKeyboardMarkup(can)
-                        await msg.edit_text(
-                            text=f"Total messages fetched: <code>{current_processed_count}</code>\nTotal messages saved: <code>{total_files}</code>\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>",
-                            reply_markup=reply)
-
-                    # --- Skipping/Resuming Logic ---
-                    if temp.CURRENT > 1 and message.id > temp.CURRENT:
-                        continue
-
-                    temp.CURRENT = 1
-                    
-                    # --- START: Series Indexing Logic ---
-                    if message.empty:
-                        deleted += 1
-                        continue
-                    elif not message.media:
-                        no_media += 1
-                        continue
-                    elif message.media not in [enums.MessageMediaType.VIDEO, enums.MessageMediaType.AUDIO, enums.MessageMediaType.DOCUMENT]:
-                        unsupported += 1
-                        continue
-
-                    is_saved, status_code = await save_series_file_for_bulk_index(message)
-                    
-                    if is_saved:
-                        total_files += 1
-                    elif status_code == 0:
-                        duplicate += 1
-                    elif status_code == 2:
-                        errors += 1
-                    # --- END: Series Indexing Logic ---
-                    
-                # Break if canceled during message processing
-                if temp.CANCEL:
-                    break
-                    
-                # Set the offset for the next batch to the lowest ID in the current batch
-                current_offset_id = messages[-1].id if messages else 0
+                except FloodWait as e: # <--- CATCHES FLOOD_WAIT ONLY
+                    logger.error(f"Hit FloodWait: Waiting for {e.value} seconds.")
+                    # Report to the user and wait the required time + 1 second buffer
+                    await msg.edit(f'⚠️ FloodWait hit! Pausing indexing for **{e.value}** seconds to comply with Telegram API limits.')
+                    await asyncio.sleep(e.value + 1)
+                    continue # <--- CONTINUE is now correctly inside the 'while True' loop
                 
-                # --- FIX: Add a small delay to avoid FloodWait ---
-                await asyncio.sleep(0.5) # Wait half a second after processing a batch of up to 100 messages
-                # --- END FIX ---
-                
-                # Check if we have processed all messages (message ID 1 is the first)
-                if current_offset_id <= 1:
-                    break
+                except Exception as e: # <--- CATCHES OTHER ERRORS IN THE LOOP
+                    logger.exception(e)
+                    await msg.edit(f'Error: {e}')
+                    break # Exit the while loop on unexpected error
 
         except Exception as e:
-            # --- FIX: Handle FloodWait explicitly ---
-            if isinstance(e, FloodWait):
-                logger.error(f"Hit FloodWait: Waiting for {e.value} seconds.")
-                # Report to the user and wait the required time + 1 second buffer
-                await msg.edit(f'⚠️ FloodWait hit! Pausing indexing for **{e.value}** seconds to comply with Telegram API limits.')
-                await asyncio.sleep(e.value + 1)
-                continue # Continue the outer while loop to fetch the next batch
-            
-            # Handle other errors
+            # This outer try/except catches errors from the lock or outside the while loop's try block.
             logger.exception(e)
-            await msg.edit(f'Error: {e}')
+            await msg.edit(f'Fatal Error: {e}')
         else:
             await msg.edit(f'✅ Succesfully saved <code>{total_files}</code> to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>')
 
