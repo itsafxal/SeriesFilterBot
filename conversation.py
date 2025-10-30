@@ -18,26 +18,64 @@ def register_conversation_handlers(app: Client):
         )
         await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
-    @app.on_message(filters.text & filters.private & ~filters.command("start"))
-    async def search_handler(_, message):
-        """Handles user text search queries."""
-        query = message.text.strip()
-        
-        unique_names = await search_series(query) 
-        
-        if unique_names:
-            keyboard = []
-            for name in sorted(unique_names):
-                callback_data = f'series_select|{name}'
-                button_text = name[:50] + '...' if len(name) > 50 else name 
-                keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-            
-            reply_markup = InlineKeyboardMarkup(keyboard)
+    # conversation.py - MODIFIED search_handler
 
-            response = f"🔎 Found {len(unique_names)} matching series. Please select one:"
-            await message.reply_text(response, reply_markup=reply_markup)
-        else:
-            await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
+@app.on_message(filters.text & filters.private & ~filters.command("start"))
+async def search_handler(_, message):
+    """Handles user text search queries and post-filters for unification."""
+    query = message.text.strip()
+    
+    unique_names = await search_series(query) 
+    
+    if unique_names:
+        # --- NEW POST-FILTERING LOGIC ---
+        # This uses the common practice of showing the shortest or most popular name
+        # when many near-duplicates are returned (e.g., The Witcher vs The Witcher A Sermon)
+        
+        base_series_names = {}
+        for name in unique_names:
+            # Strip everything after a common separator (colon, hyphen) or excessive spaces
+            base_name = re.sub(r'[:—\-].*$', '', name).strip()
+            base_name = re.sub(r'\s{3,}.*$', '', base_name).strip() # Too many spaces means subtitle
+            
+            # The name 'The Witcher' is likely the base name for any name starting with it.
+            if name.lower().startswith('the witcher'):
+                base_name = 'The Witcher'
+            
+            # Use the shortest name as the most unified version
+            if base_name not in base_series_names or len(name) < len(base_series_names[base_name]):
+                base_series_names[base_name] = name # Store the original name that resulted in this base_name
+        
+        # Now, use the keys (the unified names) as the final list to display
+        # We need to map the unified name back to the original DB name to select the season menu
+        # Since the 'normalized_name' in the DB is still the long one, we MUST use the long name
+        # for the callback data until re-indexing is complete.
+        
+        final_display_names = list(base_series_names.keys())
+        # --- END POST-FILTERING LOGIC ---
+
+        keyboard = []
+        # Use the *unified* name for the button text, but the *original* name for the callback data
+        for unified_name in sorted(final_display_names):
+            # Find an original DB name that matches this unified name (we will use the shortest one stored in the dict value)
+            original_db_name = base_series_names[unified_name]
+            
+            # NOTE: After re-indexing with the fixed utils.py, the unified_name will be identical
+            # to the original_db_name, making this simpler.
+            
+            # Use the *original DB name* for the callback, as the DB still stores the long name
+            callback_data = f'series_select|{original_db_name}' 
+            
+            # Use the *unified* name for the button text
+            button_text = unified_name[:50] + '...' if len(unified_name) > 50 else unified_name 
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+            
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        response = f"🔎 Found {len(final_display_names)} matching series. Please select one:"
+        await message.reply_text(response, reply_markup=reply_markup)
+    else:
+        await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
 
     @app.on_callback_query(filters.regex(r"series_select|season_send"))
     async def callback_query_handler(_, query):
