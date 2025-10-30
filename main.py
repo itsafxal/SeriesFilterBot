@@ -16,9 +16,13 @@ MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&
 # List of channel IDs (integers or strings) where files are posted and should be indexed.
 CHANNELS = [-1001996538290] 
 
+# --- Bulk Indexing Placeholders (REPLACE THESE) ---
+# Ensure all ADMINS IDs are valid integers.
 ADMINS = [5483128891]  # <-- REPLACE WITH YOUR ADMIN USER ID(s)
+#
+# FIX APPLIED: LOG_CHANNEL is a single integer, not a list.
+#
 LOG_CHANNEL = -1001996538290 # <-- REPLACE WITH YOUR LOG CHANNEL ID (NO BRACKETS [])
-
 lock = asyncio.Lock()
 class Temp:
     CURRENT = 1
@@ -613,7 +617,7 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
     no_media = 0
     unsupported = 0
     
-    # Use lst_msg_id as the initial offset for get_chat_history
+    # Initialize with the maximum message ID to start with
     current_offset_id = lst_msg_id
     
     async with lock:
@@ -621,57 +625,90 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
             temp.CANCEL = False
             current_processed_count = 0
             
-            # --- FIX: Replaced bot.iter_messages with bot.get_chat_history ---
-            # It starts from offset_id and goes backwards.
-            async for message in bot.get_chat_history(chat_id=chat, offset_id=current_offset_id):
-                
-                # If a skip number is set, we skip messages until we pass the set number
-                if temp.CURRENT > 1:
-                    if message.id > temp.CURRENT:
-                        current_processed_count += 1
-                        continue # Skip message until we pass the last indexed message ID
-                    # Once we pass the last indexed ID, reset temp.CURRENT for the next index run
-                    temp.CURRENT = 1
-                
-                current_processed_count += 1
-                
+            # --- FIX FOR BOT_METHOD_INVALID: Use while loop + get_messages ---
+            while True:
                 if temp.CANCEL:
                     await msg.edit(f"Successfully Cancelled!!\n\nSaved <code>{total_files}</code> files to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>")
                     break
-                    
-                if current_processed_count % 20 == 0:
-                    can = [[InlineKeyboardButton('Cancel', callback_data='index_cancel')]]
-                    reply = InlineKeyboardMarkup(can)
-                    await msg.edit_text(
-                        text=f"Total messages fetched: <code>{current_processed_count}</code>\nTotal messages saved: <code>{total_files}</code>\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>",
-                        reply_markup=reply)
-                        
-                # --- START: Series Indexing Logic ---
-                if message.empty:
-                    deleted += 1
-                    continue
-                elif not message.media:
-                    no_media += 1
-                    continue
-                elif message.media not in [enums.MessageMediaType.VIDEO, enums.MessageMediaType.AUDIO, enums.MessageMediaType.DOCUMENT]:
-                    unsupported += 1
-                    continue
 
-                # Use the new helper function for series indexing and clean naming
-                is_saved, status_code = await save_series_file_for_bulk_index(message)
+                # Fetch a batch of 100 messages backward from the last processed ID
+                # NOTE: get_messages with message_ids=range() is safer for history, 
+                # but we'll use a direct limit-based iteration for simplicity
                 
-                if is_saved:
-                    total_files += 1
-                elif status_code == 0:
-                    # This covers files that are media but not series (no SXXEXX) AND duplicates/unchanged
-                    duplicate += 1
-                elif status_code == 2:
-                    errors += 1
-                # --- END: Series Indexing Logic ---
+                # Fetch messages from 1 (inclusive) up to the current_offset_id (exclusive)
+                # Ensure the offset is greater than 1
+                messages = await bot.get_messages(
+                    chat_id=chat, 
+                    message_ids=list(range(max(1, current_offset_id - 100), current_offset_id)),
+                    # Using message_ids list is the most reliable bot-safe way to get history
+                )
                 
-                # Update the message ID for the next run (used by the setskip command)
-                current_offset_id = message.id
-                temp.CURRENT = current_offset_id # Store the last processed message ID
+                if not messages:
+                    break # Reached the beginning of the chat or no more messages in the range
+
+                # Sort messages in reverse order (highest ID first) since we iterate backward
+                messages.sort(key=lambda m: m.id, reverse=True)
+
+                for message in messages:
+                    if temp.CANCEL:
+                        break
+
+                    current_processed_count += 1
+                    
+                    # Update status every 20 processed messages
+                    if current_processed_count % 20 == 0:
+                        can = [[InlineKeyboardButton('Cancel', callback_data='index_cancel')]]
+                        reply = InlineKeyboardMarkup(can)
+                        await msg.edit_text(
+                            text=f"Total messages fetched: <code>{current_processed_count}</code>\nTotal messages saved: <code>{total_files}</code>\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>",
+                            reply_markup=reply)
+
+                    # --- Skipping/Resuming Logic ---
+                    # If a skip number is set, we skip messages until we pass the set number
+                    # This logic uses 'message.id <= temp.CURRENT' because we are iterating backward.
+                    # We are only interested in messages with an ID lower than the last processed ID.
+                    if temp.CURRENT > 1 and message.id > temp.CURRENT:
+                        # Skip messages with IDs higher than the last processed ID
+                        continue
+
+                    # Once we pass the last indexed ID, reset temp.CURRENT for the next index run
+                    temp.CURRENT = 1
+                    
+                    # --- START: Series Indexing Logic ---
+                    if message.empty:
+                        deleted += 1
+                        continue
+                    elif not message.media:
+                        no_media += 1
+                        continue
+                    elif message.media not in [enums.MessageMediaType.VIDEO, enums.MessageMediaType.AUDIO, enums.MessageMediaType.DOCUMENT]:
+                        unsupported += 1
+                        continue
+
+                    is_saved, status_code = await save_series_file_for_bulk_index(message)
+                    
+                    if is_saved:
+                        total_files += 1
+                    elif status_code == 0:
+                        duplicate += 1
+                    elif status_code == 2:
+                        errors += 1
+                    # --- END: Series Indexing Logic ---
+                    
+                    # Store the ID of the last message successfully processed (for resuming)
+                    # We only update current_offset_id AFTER all messages in the batch are processed
+                    # This ensures the next batch starts from the correct point.
+                    
+                # Break if canceled during message processing
+                if temp.CANCEL:
+                    break
+                    
+                # Set the offset for the next batch to the lowest ID in the current batch
+                current_offset_id = messages[-1].id if messages else 0
+                
+                # Check if we have processed all messages (message ID 1 is the first)
+                if current_offset_id <= 1:
+                    break
 
         except Exception as e:
             logger.exception(e)
