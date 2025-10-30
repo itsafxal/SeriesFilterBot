@@ -1,4 +1,4 @@
-# conversation.py
+# conversation.py - MODIFIED TO DIRECTLY SEND FILES ON QUALITY SELECTION
 
 import asyncio
 import re
@@ -16,8 +16,6 @@ from utils import clean_series_name
 
 def register_conversation_handlers(app: Client):
 
-    # FIX: Handler names are now locally defined and returned correctly.
-    
     @app.on_message(filters.command("start") & filters.private)
     async def start_command(_, message):
         """Handles the /start command."""
@@ -36,7 +34,6 @@ def register_conversation_handlers(app: Client):
         unique_names = await search_series(query) 
         
         if unique_names:
-            # --- AGGRESSIVE POST-SEARCH UNIFICATION LOGIC ---
             unified_map = {}
             for db_name in unique_names:
                 cleaned_name = clean_series_name(db_name) 
@@ -57,7 +54,6 @@ def register_conversation_handlers(app: Client):
                      unified_map[final_root_name] = final_root_name
 
             final_display_names = sorted(list(unified_map.keys()))
-            # --- END AGGRESSIVE POST-SEARCH UNIFICATION LOGIC ---
 
             keyboard = []
             for unified_name in final_display_names:
@@ -88,16 +84,91 @@ def register_conversation_handlers(app: Client):
         await query.answer()
 
     @app.on_callback_query(filters.regex(r"quality_select")) 
-    async def quality_select_handler(_, query):
+    async def quality_select_handler(app, query): # <-- MODIFIED HANDLER
+        """
+        Retrieves all files for the selected season/quality and sends them 
+        directly to the user's private messages.
+        """
         data = query.data.split('|')
         series_name = data[1]
         season = int(data[2])
         quality = data[3]
-        await show_episode_menu(query, series_name, season, quality)
-        await query.answer()
+        user_chat_id = query.message.chat.id
         
+        await query.answer(f"📦 Sending all {quality} files for Season {season}...", cache_time=0)
+        
+        # 1. Get all file entries
+        files = await get_all_files_by_season_and_quality(series_name, season, quality) 
+        
+        if not files:
+            await app.send_message(user_chat_id, f"❌ No episodes found for **{series_name}** Season {season} in **{quality}**.", parse_mode=enums.ParseMode.MARKDOWN)
+            return
+            
+        # 2. Update the menu to confirm action and provide back button
+        try:
+             await query.message.edit_text(
+                f"📤 **Sending {len(files)} files to your PM:**\n\n"
+                f"🎬 **{series_name} - S{season} ({quality})**\n\n"
+                "_Please wait for all files to arrive. This may take a few minutes._",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(f"⬅️ Back to Seasons", callback_data=f'series_select|{series_name}')],
+                    [InlineKeyboardButton("🗑️ Close Menu", callback_data='close')]
+                ]),
+                parse_mode=enums.ParseMode.MARKDOWN
+             )
+        except MessageNotModified:
+            pass
+            
+        # 3. Iterate and send files one by one
+        total_sent = 0
+        for file_entry in files:
+            channel_id = file_entry.get('channel_id')
+            message_id = file_entry.get('message_id')
+            file_name = file_entry.get('file_name', f"S{season:02d}E{file_entry.get('episode', 99)}")
+            
+            try:
+                message_to_copy = await app.get_messages(
+                    chat_id=channel_id,
+                    message_ids=message_id
+                )
+                
+                bot_username = (await app.get_me()).username
+                custom_caption = CUSTOM_CAPTION_TEXT.format(
+                    file_name=file_name,
+                    bot_username=bot_username
+                )
+                
+                await app.copy_message(
+                    chat_id=user_chat_id,
+                    from_chat_id=channel_id,
+                    message_id=message_id,
+                    caption=custom_caption, 
+                    parse_mode=enums.ParseMode.MARKDOWN 
+                )
+                total_sent += 1
+                await asyncio.sleep(1) # Delay to respect Telegram rate limits
+                
+            except Exception as e:
+                logger.error(f"Failed to copy file {message_id} from {channel_id}: {e}")
+                # Continue loop even if one file fails
+                
+        await app.send_message(
+            user_chat_id, 
+            f"✅ **Transmission Complete!** Sent {total_sent} files for **{series_name}** Season {season} ({quality}).", 
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+
+    # Note: send_single_episode_handler and show_episode_menu are REMOVED/UNUSED
+    
+    # ... (Other handler definitions remain the same)
+    # The remaining functions in conversation.py are kept as they were:
+    
     @app.on_callback_query(filters.regex(r"send_single_episode"))
     async def send_single_episode_handler(app, query):
+        """
+        Kept in case this is needed for manual forward. 
+        It is NOT used in the quality selection flow anymore.
+        """
         data = query.data.split('|')
         channel_id = int(data[1])
         message_id = int(data[2])
@@ -131,6 +202,9 @@ def register_conversation_handlers(app: Client):
             await query.answer("❌ Failed to send file. It might be inaccessible.", show_alert=True)
 
 
+    # The following non-handler functions MUST be kept in conversation.py
+    # (show_season_menu, show_quality_menu are necessary for the UI flow)
+    
     async def show_season_menu(query, series_name: str):
         seasons = await get_unique_seasons_by_name(series_name)
         
@@ -187,6 +261,7 @@ def register_conversation_handlers(app: Client):
             
         keyboard = []
         for quality in qualities:
+            # Note: This callback now goes directly to the quality_select_handler to trigger file sending
             callback_data = f'quality_select|{series_name}|{season}|{quality}'
             button_text = f"💾 {quality}"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
@@ -196,36 +271,8 @@ def register_conversation_handlers(app: Client):
         reply_markup = InlineKeyboardMarkup(keyboard)
         caption = (
             f"🎬 **{series_name} - Season {season}**\n"
-            f"Select the desired video quality:"
+            f"Select the desired video quality to **start downloading all episodes**:"
         )
-        
-        try:
-            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        except MessageNotModified:
-            pass
-
-
-    async def show_episode_menu(query, series_name: str, season: int, quality: str):
-        files = await get_all_files_by_season_and_quality(series_name, season, quality) 
-        
-        if not files:
-            await query.message.edit_text(text=f"❌ No episodes found for <b>{series_name}</b> Season {season:02d} in **{quality}**.", parse_mode=enums.ParseMode.HTML)
-            return
-
-        keyboard = []
-        
-        for file_entry in files:
-            channel_id = file_entry.get('channel_id')
-            message_id = file_entry.get('message_id')
-            full_episode_name = file_entry.get('file_name', f"S{season:02d}E{file_entry.get('episode', 99)}") 
-            callback_data = f'send_single_episode|{channel_id}|{message_id}'
-            button_text = full_episode_name[:60].strip()
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-        
-        keyboard.append([InlineKeyboardButton(f"⬅️ Back to Quality", callback_data=f'season_select|{series_name}|{season}')])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        caption = f"🎬 **{series_name} - S{season} ({quality})**\n\n_Tap an episode to download/send it._"
         
         try:
             await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
