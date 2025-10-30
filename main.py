@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 # --- Database Setup (Synchronous PyMongo) ---
+# --- Database Setup (Synchronous PyMongo) ---
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["SeriesBotDB"]
 files_collection = db["files"]
@@ -54,7 +55,8 @@ try:
         unique=False
     )
     # 3. Ensure index for bot state is created (new collection)
-    db["bot_state"].create_index([("_id", 1)], unique=True)
+    # REMOVED: db["bot_state"].create_index([("_id", 1)], unique=True) 
+    # The _id index is created automatically and is always unique.
     
     logger.info("✅ MongoDB Indexes ensured/created successfully.")
 except Exception as e:
