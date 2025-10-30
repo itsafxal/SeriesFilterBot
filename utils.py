@@ -2,7 +2,7 @@
 
 import re
 from pyrogram import types
-from database import save_file_to_db # Assuming database is accessible
+from database import save_file_to_db 
 
 ###################################################
 ## UTILITY & PARSING (Name Unification Logic) ##
@@ -57,7 +57,6 @@ def parse_series_info(file_name: str):
     # Match SXXEXX patterns
     match = re.search(r"[sS](\d+)[. _-]*[eE](\d+)", file_name)
     
-    # If no SXXEXX, it's not a standard series file
     if not match:
         return clean_series_name(file_name), 0, 0 
 
