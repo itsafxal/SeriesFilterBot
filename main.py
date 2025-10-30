@@ -826,3 +826,29 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
         except Exception as e:
             # This outer try/except catches errors from the lock or outside the while loop's try block.
             logger.exception(e)
+            await msg.edit(f'Fatal Error: {e}')
+        else:
+            # Clear the resume point on successful completion
+            await save_bot_state(chat, 1) 
+            await msg.edit(f'✅ Succesfully saved <code>{total_files}</code> to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>')
+
+
+###################################################
+## MAIN EXECUTION ##
+###################################################
+
+if __name__ == "__main__":
+    logger.info("Starting Pyrogram bot...")
+    
+    @app.on_raw_update()
+    async def run_startup_task(client, update, users, chats):
+        if not hasattr(client, '_startup_done'):
+            client._startup_done = True
+            await send_startup_notification(app)
+
+    try:
+        app.run()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot shutting down...")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during bot execution: {e}")
