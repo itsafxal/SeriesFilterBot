@@ -1,30 +1,38 @@
 import os
-from dotenv import load_dotenv
+import asyncio
+import logging
+from pyrogram import Client, filters, enums
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# Load environment variables from .env file (if it exists)
-load_dotenv()
+# --- Configuration Placeholders (Your actual values) ---
+API_ID = 28643132
+API_HASH = "510c3009ea589830a89e045bf8aae656"
+BOT_TOKEN = "8163888122:AAEuGzXZDxKlcehE2b5Yj4kpayBUo1VaZWs"
+MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
-# --- Configuration Class ---
-# This class holds all your configuration constants.
+# List of channel IDs (integers or strings) where files are posted and should be indexed.
+CHANNELS = [-1001996538290] 
 
-class Config:
-    # 1. Mandatory/Sensitive Credentials
-    API_ID = int(os.environ.get("API_ID", 28643132))
-    API_HASH = os.environ.get("API_HASH", "510c3009ea589830a89e045bf8aae656")
-    BOT_TOKEN = os.environ.get("BOT_TOKEN", "8163888122:AAEuGzXZDxKlcehE2b5Yj4kpayBUo1VaZWs")
-    MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+# --- Bulk Indexing Placeholders ---
+# Ensure all ADMINS IDs are valid integers.
+ADMINS = [5483128891]  # <-- REPLACE WITH YOUR ADMIN USER ID(s)
+LOG_CHANNEL = -1001996538290 # <-- REPLACE WITH YOUR LOG CHANNEL ID
 
-    # 2. Lists/Tuples (Parsed from environment variable strings)
-    # The default value is None, which will raise an error if not set, which is good for mandatory config.
-    try:
-        ADMINS = [int(x) for x in os.environ.get("ADMINS", "5483128891").split(',')]
-        CHANNELS = [int(x) for x in os.environ.get("CHANNELS", "-1001996538290").split(',')]
-    except ValueError:
-        # Handle case where ADMINS/CHANNELS are not valid integers (e.g., in development)
-        ADMINS = []
-        CHANNELS = []
-        print("WARNING: ADMINS or CHANNELS environment variables are not properly formatted integers.")
+# Concurrency lock for bulk indexing
+lock = asyncio.Lock()
 
-    # 3. Simple Variables
-    # The default for LOG_CHANNEL is 0 (an invalid ID), which is better than hardcoding.
-    LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", -1001996538290)) 
+# Temporary class for bulk indexing state
+class Temp:
+    CURRENT = 1
+    CANCEL = False
+
+temp = Temp()
+
+# --- Setup Logging ---
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Media filter for real-time indexing
+media_filter = filters.document | filters.video | filters.audio
