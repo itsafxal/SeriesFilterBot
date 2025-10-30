@@ -1,4 +1,5 @@
 import asyncio
+import re  # <-- NEW: Needed for post-filtering logic
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
@@ -18,64 +19,61 @@ def register_conversation_handlers(app: Client):
         )
         await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
-    # conversation.py - MODIFIED search_handler
-
-@app.on_message(filters.text & filters.private & ~filters.command("start"))
-async def search_handler(_, message):
-    """Handles user text search queries and post-filters for unification."""
-    query = message.text.strip()
-    
-    unique_names = await search_series(query) 
-    
-    if unique_names:
-        # --- NEW POST-FILTERING LOGIC ---
-        # This uses the common practice of showing the shortest or most popular name
-        # when many near-duplicates are returned (e.g., The Witcher vs The Witcher A Sermon)
+    @app.on_message(filters.text & filters.private & ~filters.command("start"))
+    async def search_handler(_, message):
+        """
+        Handles user text search queries and post-filters for unification.
+        This fixes the issue of showing 'The Witcher A Sermon...' multiple times.
+        """
+        query = message.text.strip()
         
-        base_series_names = {}
-        for name in unique_names:
-            # Strip everything after a common separator (colon, hyphen) or excessive spaces
-            base_name = re.sub(r'[:—\-].*$', '', name).strip()
-            base_name = re.sub(r'\s{3,}.*$', '', base_name).strip() # Too many spaces means subtitle
-            
-            # The name 'The Witcher' is likely the base name for any name starting with it.
-            if name.lower().startswith('the witcher'):
-                base_name = 'The Witcher'
-            
-            # Use the shortest name as the most unified version
-            if base_name not in base_series_names or len(name) < len(base_series_names[base_name]):
-                base_series_names[base_name] = name # Store the original name that resulted in this base_name
+        # unique_names contains all normalized names found in DB (e.g., 'The Witcher A Sermon...')
+        unique_names = await search_series(query) 
         
-        # Now, use the keys (the unified names) as the final list to display
-        # We need to map the unified name back to the original DB name to select the season menu
-        # Since the 'normalized_name' in the DB is still the long one, we MUST use the long name
-        # for the callback data until re-indexing is complete.
-        
-        final_display_names = list(base_series_names.keys())
-        # --- END POST-FILTERING LOGIC ---
+        if unique_names:
+            # --- NEW POST-FILTERING LOGIC ---
+            base_series_names = {}
+            for name in unique_names:
+                # Strip everything after a common separator (colon, hyphen) or excessive spaces
+                base_name = re.sub(r'[:—\-].*$', '', name).strip()
+                base_name = re.sub(r'\s{3,}.*$', '', base_name).strip() # Too many spaces means subtitle
+                
+                # Heuristic for The Witcher specifically (can be extended)
+                if name.lower().startswith('the witcher'):
+                    base_name = 'The Witcher'
+                elif name.lower().startswith('loki'):
+                    base_name = 'Loki'
+                
+                # Use the shortest name as the most unified version
+                # If we encounter a shorter, cleaner name, use that for the base_name key
+                # We store the *original DB name* as the value to use in the callback
+                if base_name not in base_series_names or len(name) < len(base_series_names[base_name]):
+                    # Store the *original DB name* that resulted in this unified base_name
+                    # This is crucial because the DB still uses the long name for lookups
+                    base_series_names[base_name] = name 
+            
+            # Use the unified names for display
+            final_display_names = list(base_series_names.keys())
+            # --- END POST-FILTERING LOGIC ---
 
-        keyboard = []
-        # Use the *unified* name for the button text, but the *original* name for the callback data
-        for unified_name in sorted(final_display_names):
-            # Find an original DB name that matches this unified name (we will use the shortest one stored in the dict value)
-            original_db_name = base_series_names[unified_name]
-            
-            # NOTE: After re-indexing with the fixed utils.py, the unified_name will be identical
-            # to the original_db_name, making this simpler.
-            
-            # Use the *original DB name* for the callback, as the DB still stores the long name
-            callback_data = f'series_select|{original_db_name}' 
-            
-            # Use the *unified* name for the button text
-            button_text = unified_name[:50] + '...' if len(unified_name) > 50 else unified_name 
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-            
-        reply_markup = InlineKeyboardMarkup(keyboard)
+            keyboard = []
+            for unified_name in sorted(final_display_names):
+                # Retrieve the original, long DB name for the callback
+                original_db_name = base_series_names[unified_name]
+                
+                # Use the *original DB name* for the callback data
+                callback_data = f'series_select|{original_db_name}' 
+                
+                # Use the *unified* name for the button text
+                button_text = unified_name[:50] + '...' if len(unified_name) > 50 else unified_name 
+                keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+                
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
-        response = f"🔎 Found {len(final_display_names)} matching series. Please select one:"
-        await message.reply_text(response, reply_markup=reply_markup)
-    else:
-        await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
+            response = f"🔎 Found {len(final_display_names)} matching series. Please select one:"
+            await message.reply_text(response, reply_markup=reply_markup)
+        else:
+            await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
 
     @app.on_callback_query(filters.regex(r"series_select|season_send"))
     async def callback_query_handler(_, query):
@@ -100,11 +98,11 @@ async def search_handler(_, message):
 
     async def show_season_menu(query, series_name: str):
         """Displays buttons for all unique seasons of the selected series in SXX format."""
-        seasons = await get_unique_seasons_by_name(series_name) 
+        seasons = await get_unique_seasons_by_name(series_name)
         
         if not seasons:
             try:
-                await query.message.edit_text(text=f"❌ No seasons found for <b>{series_name}</b>.", parse_mode=enums.ParseMode.HTML) 
+                await query.message.edit_text(text=f"❌ No seasons found for <b>{series_name}</b>.", parse_mode=enums.ParseMode.HTML)
             except MessageNotModified:
                 pass
             return
@@ -122,7 +120,7 @@ async def search_handler(_, message):
             
             row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
             
-            if len(row) >= 4: 
+            if len(row) >= 4:
                 keyboard.append(row)
                 row = []
         
@@ -170,10 +168,10 @@ async def search_handler(_, message):
     async def send_season_files(query, series_name: str, season: int):
         """Sends all files belonging to the selected season using copy_message."""
         user_chat_id = query.message.chat.id
-        files = await get_all_files_by_season(series_name, season) 
+        files = await get_all_files_by_season(series_name, season)
         
         if not files:
-            await query.message.reply_text(text=f"❌ No files found for <b>{series_name}</b> Season {season:02d}.", parse_mode=enums.ParseMode.HTML) 
+            await query.message.reply_text(text=f"❌ No files found for <b>{series_name}</b> Season {season:02d}.", parse_mode=enums.ParseMode.HTML)
             return
 
         status_message = await query.message.reply_text(
