@@ -18,6 +18,14 @@ CHANNELS = [-1001996538290]
 ADMINS = [5483128891]  # <-- REPLACE WITH YOUR ADMIN USER ID(s)
 LOG_CHANNEL = -1001996538290 # <-- REPLACE WITH YOUR LOG CHANNEL ID
 
+CUSTOM_CAPTION_TEXT = """
+✨ **File Sent!**
+{file_name}
+
+🔗 **Join our channel for more:**
+@{bot_username}
+"""
+
 # Concurrency lock for bulk indexing
 lock = asyncio.Lock()
 
