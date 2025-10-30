@@ -1,6 +1,8 @@
+# utils.py
+
 import re
 from pyrogram import types
-from database import save_file_to_db
+from database import save_file_to_db # Assuming database is accessible
 
 ###################################################
 ## UTILITY & PARSING (Name Unification Logic) ##
@@ -15,10 +17,10 @@ def clean_series_name(name: str) -> str:
     common_terms = [
         "4K", "1080P", "720P", "HDRIP", "WEB-DL", "WEBRIP", "BLURAY", "HDTV", 
         "AMZN", "NETFLIX", "HULU", "DDP5.1", "X265", "x264", "10BIT", "HEVC", 
-        "MKV", "AAC", "PSA", "DUB", "SUB", "MULTI", "REPACK", "COMPLETE", "WEB", # Added WEB
+        "MKV", "AAC", "PSA", "DUB", "SUB", "MULTI", "REPACK", "COMPLETE", "WEB",
         "ENG", "SPA", "ITA", "FRE", "GER", "DUAL", "AUDIO", "2CH",
         r"(19|20)\d{2}",  # Year tag
-        "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", # Clean up stray SXX
+        "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", 
     ]
     
     for term in common_terms:
@@ -47,7 +49,7 @@ def clean_series_name(name: str) -> str:
 def parse_series_info(file_name: str):
     """
     Extracts Series Name, Season (SXX), and Episode (EXX) from a filename, 
-    and applies unification logic.
+    and applies unification logic for saving to DB.
     """
     if not file_name:
         return "", 0, 0
@@ -71,7 +73,6 @@ def parse_series_info(file_name: str):
     # 3. ENHANCED UNIFICATION: Force specific series to a single name
     temp_name = normalized_name.lower()
     
-    # Custom unification for files like "The Flash 2ch Hevc" -> "The Flash"
     if temp_name.startswith('the flash'):
         normalized_name = 'The Flash'
     elif temp_name.startswith('the witcher'):
@@ -79,7 +80,7 @@ def parse_series_info(file_name: str):
     elif temp_name.startswith('loki'):
         normalized_name = 'Loki'
 
-    # Fallback to truncate names that are still too long (often episode titles)
+    # Fallback to truncate names that are still too long
     elif len(normalized_name.split()) > 5:
         normalized_name = " ".join(normalized_name.split()[:5]) 
 
@@ -104,8 +105,8 @@ async def save_series_file_for_bulk_index(message: types.Message):
         file_doc = {
             "channel_id": message.chat.id,
             "message_id": message.id,
-            "file_name": file_name, # Original filename (used for episode button text)
-            "normalized_name": normalized_name, # Cleaned name (used for search/grouping)
+            "file_name": file_name,
+            "normalized_name": normalized_name, 
             "season": season,
             "episode": episode,
             "timestamp": message.date
