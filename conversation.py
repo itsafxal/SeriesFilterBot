@@ -1,11 +1,14 @@
+# conversation.py
+
 import asyncio
 import re
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
 from database import search_series, get_unique_seasons_by_name, get_all_files_by_season
-# Import logger and custom caption text from config
 from config import logger, CUSTOM_CAPTION_TEXT 
+# --- Import the cleaning function from utils.py ---
+from utils import clean_series_name 
 
 def register_conversation_handlers(app: Client):
 
@@ -23,20 +26,38 @@ def register_conversation_handlers(app: Client):
     @app.on_message(filters.text & filters.private & ~filters.command("start"))
     async def search_handler(_, message):
         """
-        Handles user text search queries, displaying unified series names.
+        Handles user text search queries, applying *post-search* unification 
+        to clean up results before displaying buttons. This groups variants like 
+        "Heart Beat 480P" and "Heart Beat X" under one "Heart Beat" button.
         """
         query = message.text.strip()
         
-        # Names are already unified by utils.py/database.py
+        # unique_names contains clean, unified names from the DB (e.g., 'Heart Beat Fledgling Bonds')
         unique_names = await search_series(query) 
         
         if unique_names:
-            final_display_names = sorted(list(set(unique_names)))
-            
+            # --- POST-SEARCH UNIFICATION LOGIC (Fixes the "Heart Beat" issue) ---
+            unified_map = {}
+            for db_name in unique_names:
+                # 1. Clean the name aggressively
+                base_name = clean_series_name(db_name) 
+
+                # 2. Aggressively strip any remaining subtitles (e.g., "Heart Beat: Subtitle" -> "Heart Beat")
+                unified_name = re.sub(r'[:—\-].*$', '', base_name).strip() 
+                
+                # 3. Use the unified name as the key for display and callback
+                if unified_name and len(unified_name) > 2: # Ensure it's not just a blank string
+                    unified_map[unified_name] = unified_name 
+                else:
+                    # Fallback to the aggressively cleaned name if the subtitle strip failed
+                    unified_map[base_name] = base_name
+
+            final_display_names = sorted(list(unified_map.keys()))
+            # --- END POST-SEARCH UNIFICATION LOGIC ---
+
             keyboard = []
             for unified_name in final_display_names:
-                original_db_name = unified_name
-                callback_data = f'series_select|{original_db_name}' 
+                callback_data = f'series_select|{unified_name}' 
                 button_text = unified_name[:50] + '...' if len(unified_name) > 50 else unified_name 
                 keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
                 
@@ -109,7 +130,7 @@ def register_conversation_handlers(app: Client):
 
 
     async def show_season_menu(query, series_name: str):
-        """Displays buttons for all unique seasons of the selected series in the 'Season X' format."""
+        """Displays buttons for all unique seasons of the selected series."""
         seasons = await get_unique_seasons_by_name(series_name)
         
         if not seasons:
@@ -126,11 +147,10 @@ def register_conversation_handlers(app: Client):
         keyboard = []
         
         for season in seasons:
-            callback_data = f'season_select|{series_name}|{season}'
+            callback_data = f'series_select|{series_name}|{season}' # BUG FIX: was season_select, changed to series_select
             button_text = f"Season {season}"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
-        # Add the 'Re Fetch Again' button and search buttons
         keyboard.append([InlineKeyboardButton("🚨 Re Fetch Again 🚨", callback_data='go_back_to_search')])
         
         keyboard.append([
@@ -165,7 +185,6 @@ def register_conversation_handlers(app: Client):
             channel_id = file_entry.get('channel_id')
             message_id = file_entry.get('message_id')
             
-            # Use file_name, which is fetched from DB, for the button text
             full_episode_name = file_entry.get('file_name', f"S{season:02d}E{file_entry.get('episode', 99)}") 
             
             callback_data = f'send_single_episode|{channel_id}|{message_id}'
@@ -173,7 +192,6 @@ def register_conversation_handlers(app: Client):
             
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
-        # Button to go back to the season list
         keyboard.append([InlineKeyboardButton(f"⬅️ {series_name}", callback_data=f'series_select|{series_name}')])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
