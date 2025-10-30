@@ -1,7 +1,9 @@
+# database.py
+
 import asyncio
+import re
 from pymongo import MongoClient, TEXT, DESCENDING
-from pyrogram.errors import MessageNotModified
-from config import MONGO_URI, logger
+from config import MONGO_URI, logger 
 
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["SeriesBotDB"]
@@ -52,11 +54,10 @@ async def get_bot_state(chat_id):
 async def search_series(query: str):
     """
     Searches MongoDB for unique series names matching the query. 
-    Prioritizes text index for better fuzzy matching.
+    Returns the indexed names (e.g., 'Heart Beat Fledgling Bonds').
     """
-    import re
     def sync_search():
-        # 1. Text Search 
+        # 1. Text Search (Preferred)
         pipeline_text_search = [
             {"$match": {"$text": {"$search": query}}},
             {"$project": {
@@ -75,7 +76,7 @@ async def search_series(query: str):
         except Exception as e:
             logger.warning(f"Text search failed (Index issue likely): {e}. Falling back to Regex.")
         
-        # 2. Fallback to the original regex search
+        # 2. Fallback to Regex
         regex_query = re.escape(query).replace(" ", ".*") 
         pipeline_regex_search = [
             {"$match": {"normalized_name": {"$regex": regex_query, "$options": "i"}}},
@@ -88,9 +89,18 @@ async def search_series(query: str):
     return [doc["name"] for doc in results]
 
 async def get_unique_seasons_by_name(series_name: str):
-    """Gets unique season numbers for a given series."""
+    """
+    Gets unique season numbers for a given series.
+    Uses regex to handle short, root names (e.g., "Heart Beat") matching 
+    longer indexed names (e.g., "Heart Beat Fledgling Bonds").
+    """
     def sync_get_seasons():
-        seasons = files_collection.distinct("season", {"normalized_name": series_name})
+        # Use regex to find all normalized_names starting with the passed series_name
+        regex_query = f"^{re.escape(series_name)}" 
+        
+        seasons = files_collection.distinct("season", {
+            "normalized_name": {"$regex": regex_query, "$options": "i"}
+        })
         seasons = sorted([s for s in seasons if s > 0])
         return seasons
         
@@ -98,12 +108,14 @@ async def get_unique_seasons_by_name(series_name: str):
 
 async def get_all_files_by_season(series_name: str, season: int):
     """
-    Gets file details (channel_id, message_id, file_name, episode) for a specific season.
-    The file_name is crucial for displaying the episode title in the menu.
+    Gets file details for a specific season, using regex to match the root name.
     """
     def sync_get_files():
+        # Use regex to find all normalized_names starting with the passed series_name
+        regex_query = f"^{re.escape(series_name)}"
+        
         files = files_collection.find(
-            {"normalized_name": series_name, "season": season},
+            {"normalized_name": {"$regex": regex_query, "$options": "i"}, "season": season},
             {"channel_id": 1, "message_id": 1, "file_name": 1, "episode": 1, "_id": 0} 
         ).sort("episode", 1)
         return list(files)
