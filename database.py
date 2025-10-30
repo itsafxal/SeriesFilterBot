@@ -25,6 +25,11 @@ try:
     
     logger.info("✅ MongoDB Indexes ensured/created successfully.")
 
+# The missing 'except' block that caused the SyntaxError
+except Exception as e:
+    logger.error(f"❌ Failed to ensure/create MongoDB Indexes: {e}")
+    # Depending on how critical the indexes are, you might want to exit or raise here
+    
 async def save_bot_state(chat_id, last_msg_id):
     """Saves the last processed message ID for a given chat to resume later."""
     def sync_save():
