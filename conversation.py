@@ -7,7 +7,6 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
 from database import search_series, get_unique_seasons_by_name, get_all_files_by_season
 from config import logger, CUSTOM_CAPTION_TEXT 
-# --- Import the cleaning function from utils.py ---
 from utils import clean_series_name 
 
 def register_conversation_handlers(app: Client):
@@ -26,9 +25,9 @@ def register_conversation_handlers(app: Client):
     @app.on_message(filters.text & filters.private & ~filters.command("start"))
     async def search_handler(_, message):
         """
-        Handles user text search queries, applying *post-search* unification 
-        to clean up results before displaying buttons. This groups variants like 
-        "Heart Beat 480P" and "Heart Beat X" under one "Heart Beat" button.
+        FIXED: Applies aggressive post-search unification to ensure only the 
+        root series name is shown in the buttons, relying on database.py 
+        regex for lookup.
         """
         query = message.text.strip()
         
@@ -36,27 +35,40 @@ def register_conversation_handlers(app: Client):
         unique_names = await search_series(query) 
         
         if unique_names:
-            # --- POST-SEARCH UNIFICATION LOGIC (Fixes the "Heart Beat" issue) ---
+            # --- AGGRESSIVE POST-SEARCH UNIFICATION LOGIC (FIX) ---
             unified_map = {}
             for db_name in unique_names:
-                # 1. Clean the name aggressively
-                base_name = clean_series_name(db_name) 
+                # 1. Clean the name aggressively using the helper function
+                cleaned_name = clean_series_name(db_name) 
 
-                # 2. Aggressively strip any remaining subtitles (e.g., "Heart Beat: Subtitle" -> "Heart Beat")
-                unified_name = re.sub(r'[:—\-].*$', '', base_name).strip() 
+                # 2. Get the root name by taking only the first 2-3 words (e.g., "Heart Beat" from "Heart Beat Fledgling Bonds")
+                name_parts = cleaned_name.split()
                 
-                # 3. Use the unified name as the key for display and callback
-                if unified_name and len(unified_name) > 2: # Ensure it's not just a blank string
-                    unified_map[unified_name] = unified_name 
-                else:
-                    # Fallback to the aggressively cleaned name if the subtitle strip failed
-                    unified_map[base_name] = base_name
+                # Heuristic for determining root name length (e.g., 'Game of Thrones' = 3 words, 'Loki' = 1 word)
+                root_word_count = 1 
+                if len(name_parts) >= 2:
+                    root_word_count = 2
+                    # If the second word is a conjunction/preposition, take one more word (e.g., 'of', 'and')
+                    if len(name_parts) >= 3 and name_parts[1].lower() in ['of', 'and', 'the', 'a']:
+                        root_word_count = 3
+                
+                # The final display name is the root of the title
+                final_root_name = " ".join(name_parts[:root_word_count]).strip()
+
+                # Fallback check
+                if len(final_root_name) < 2:
+                    final_root_name = cleaned_name # Use the fully cleaned name if the root name is too short
+
+                # 3. Store in the map, using the root name for both the key and the callback data
+                if final_root_name:
+                     unified_map[final_root_name] = final_root_name
 
             final_display_names = sorted(list(unified_map.keys()))
-            # --- END POST-SEARCH UNIFICATION LOGIC ---
+            # --- END AGGRESSIVE POST-SEARCH UNIFICATION LOGIC ---
 
             keyboard = []
             for unified_name in final_display_names:
+                # Use the short, unified name for the callback
                 callback_data = f'series_select|{unified_name}' 
                 button_text = unified_name[:50] + '...' if len(unified_name) > 50 else unified_name 
                 keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
@@ -71,7 +83,7 @@ def register_conversation_handlers(app: Client):
     @app.on_callback_query(filters.regex(r"series_select"))
     async def series_select_handler(_, query):
         data = query.data.split('|')
-        series_name = data[1]
+        series_name = data[1] # This is the short, unified name (e.g., "Heart Beat")
         await show_season_menu(query, series_name)
         await query.answer()
 
@@ -131,6 +143,7 @@ def register_conversation_handlers(app: Client):
 
     async def show_season_menu(query, series_name: str):
         """Displays buttons for all unique seasons of the selected series."""
+        # This uses the short series_name (e.g., "Heart Beat") and relies on database.py's regex to find all variants.
         seasons = await get_unique_seasons_by_name(series_name)
         
         if not seasons:
@@ -147,7 +160,7 @@ def register_conversation_handlers(app: Client):
         keyboard = []
         
         for season in seasons:
-            callback_data = f'series_select|{series_name}|{season}' # BUG FIX: was season_select, changed to series_select
+            callback_data = f'season_select|{series_name}|{season}'
             button_text = f"Season {season}"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
@@ -173,6 +186,7 @@ def register_conversation_handlers(app: Client):
     async def show_episode_menu(query, series_name: str, season: int):
         """Displays a menu with buttons for all episodes in the selected season."""
         
+        # Uses the short series_name (e.g., "Heart Beat") and relies on database.py's regex to find all variants.
         files = await get_all_files_by_season(series_name, season)
         
         if not files:
