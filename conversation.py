@@ -1,4 +1,4 @@
-# conversation.py - MODIFIED TO DIRECTLY SEND FILES ON QUALITY SELECTION
+# conversation.py - MODIFIED to remove extra buttons
 
 import asyncio
 import re
@@ -84,7 +84,7 @@ def register_conversation_handlers(app: Client):
         await query.answer()
 
     @app.on_callback_query(filters.regex(r"quality_select")) 
-    async def quality_select_handler(app, query): # <-- MODIFIED HANDLER
+    async def quality_select_handler(app, query):
         """
         Retrieves all files for the selected season/quality and sends them 
         directly to the user's private messages.
@@ -158,17 +158,9 @@ def register_conversation_handlers(app: Client):
             parse_mode=enums.ParseMode.MARKDOWN
         )
 
-    # Note: send_single_episode_handler and show_episode_menu are REMOVED/UNUSED
-    
-    # ... (Other handler definitions remain the same)
-    # The remaining functions in conversation.py are kept as they were:
-    
     @app.on_callback_query(filters.regex(r"send_single_episode"))
     async def send_single_episode_handler(app, query):
-        """
-        Kept in case this is needed for manual forward. 
-        It is NOT used in the quality selection flow anymore.
-        """
+        """Kept in case this is needed for manual forward, but unused in the main flow."""
         data = query.data.split('|')
         channel_id = int(data[1])
         message_id = int(data[2])
@@ -202,9 +194,6 @@ def register_conversation_handlers(app: Client):
             await query.answer("❌ Failed to send file. It might be inaccessible.", show_alert=True)
 
 
-    # The following non-handler functions MUST be kept in conversation.py
-    # (show_season_menu, show_quality_menu are necessary for the UI flow)
-    
     async def show_season_menu(query, series_name: str):
         seasons = await get_unique_seasons_by_name(series_name)
         
@@ -229,12 +218,8 @@ def register_conversation_handlers(app: Client):
             button_text = f"Season {season}"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
-        keyboard.append([InlineKeyboardButton("🚨 Re Fetch Again 🚨", callback_data='go_back_to_search')])
-        
-        keyboard.append([
-            InlineKeyboardButton("🕹️ Browse Series 🕹️", callback_data='go_back_to_search'),
-            InlineKeyboardButton("IMDb Trailer ↗️", url="https://www.imdb.com/find?q=" + series_name.replace(" ", "%20"))
-        ])
+        # REMOVED: Re Fetch Again button
+        # REMOVED: Browse Series and IMDb Trailer buttons
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         caption = (
@@ -261,7 +246,6 @@ def register_conversation_handlers(app: Client):
             
         keyboard = []
         for quality in qualities:
-            # Note: This callback now goes directly to the quality_select_handler to trigger file sending
             callback_data = f'quality_select|{series_name}|{season}|{quality}'
             button_text = f"💾 {quality}"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
@@ -279,6 +263,8 @@ def register_conversation_handlers(app: Client):
         except MessageNotModified:
             pass
 
+
+    # Removed show_episode_menu function
 
     @app.on_callback_query(filters.regex(r"go_back_to_search"))
     async def go_back_to_search_handler(_, query):
