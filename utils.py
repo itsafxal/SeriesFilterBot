@@ -21,9 +21,10 @@ def parse_series_info(file_name: str):
         season = int(match.group(1))
         episode = int(match.group(2))
         
+        # 1. Remove SXXEXX pattern first
         normalized_name = re.sub(r"([. _-]+)?[sS]\d+[. _-]*[eE]\d+([. _-]+)?", " ", file_name).strip()
         
-        # 1. Clean common garbage terms, quality, language, AND YEAR tags.
+        # 2. Clean common garbage terms, quality, language, AND YEAR tags.
         common_terms = [
             "4K", "1080P", "720P", "HDRIP", "WEB-DL", "WEBRIP", "BLURAY", "HDTV", 
             "AMZN", "NETFLIX", "HULU", "DDP5.1", "X265", "x264", "10BIT", "MKV", 
@@ -41,22 +42,32 @@ def parse_series_info(file_name: str):
             normalized_name = re.sub(term, " ", normalized_name, flags=flags).strip()
 
 
-        # 2. Aggressively remove bracketed/parenthesized tags AND @channel tags
+        # 3. Aggressively remove bracketed/parenthesized tags AND @channel tags
         normalized_name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", normalized_name).strip()
         
-        # 3. ENHANCED CLEANING: Remove common channel/group tags (e.g., "CK The Flash")
+        # 4. ENHANCED CLEANING: Remove common channel/group tags (e.g., "CK The Flash")
         channel_tags = ["CK", "UB", "TG", "MOVIE HUB", "FILM"] 
         for tag in channel_tags:
             tag_regex = rf"^\s*{re.escape(tag)}[\s._-]*|[\s._-]*{re.escape(tag)}\s*$"
             normalized_name = re.sub(tag_regex, " ", normalized_name, flags=re.IGNORECASE).strip()
             
-        # 4. Final cleaning: collapse multiple separators, then title case it
-        normalized_name = re.sub(r"[. _]+", " ", normalized_name).title().strip()
+        # 5. Final cleaning: collapse multiple separators
+        normalized_name = re.sub(r"[. _]+", " ", normalized_name).strip()
         
-        # 5. LAST STEP: Truncate after the first strong separator (like a stray hyphen)
+        # --- NEW LOGIC FOR LOKI UNIFICATION ---
+        # Convert to lowercase for reliable matching
+        temp_name = normalized_name.lower()
+        
+        # Check for "loki the king" or "loki last" or just "loki" followed by a space
+        if re.match(r"loki\s(the\s|last\s)?(king|last)?", temp_name):
+            normalized_name = "Loki"
+        # --- END NEW LOGIC ---
+        
+        # 6. LAST STEP: Truncate after the first strong separator (like a stray hyphen)
         if ' - ' in normalized_name:
             normalized_name = normalized_name.split(' - ')[0].strip()
         
+        # 7. Final Title Casing
         normalized_name = normalized_name.title().strip()
         
         return normalized_name, season, episode
