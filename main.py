@@ -1,5 +1,3 @@
-# bot_main.py (Complete Code for Real-time Series Indexing Bot - Final Version)
-
 import re
 import os
 import asyncio
@@ -20,11 +18,11 @@ CHANNELS = [-1001996538290]
 
 # --- Bulk Indexing Placeholders (REPLACE THESE) ---
 # Ensure all ADMINS IDs are valid integers.
-ADMINS = [123456789]  # <-- REPLACE WITH YOUR ADMIN USER ID(s)
-# 
+ADMINS = [5483128891]  # <-- REPLACE WITH YOUR ADMIN USER ID(s)
+#
 # FIX APPLIED: LOG_CHANNEL is a single integer, not a list.
-# 
-LOG_CHANNEL = -1001234567890 # <-- REPLACE WITH YOUR LOG CHANNEL ID (NO BRACKETS [])
+#
+LOG_CHANNEL = -1001996538290 # <-- REPLACE WITH YOUR LOG CHANNEL ID (NO BRACKETS [])
 lock = asyncio.Lock()
 class Temp:
     CURRENT = 1
@@ -411,12 +409,12 @@ async def show_season_menu(query, series_name: str):
 @app.on_callback_query(filters.regex(r"go_back_to_search"))
 async def go_back_to_search_handler(_, query):
      try:
-        await query.message.edit_text(
+         await query.message.edit_text(
              "Send a new series name to search for files."
-         )
-        await query.answer()
+           )
+         await query.answer()
      except Exception:
-        await query.answer("Cannot go back to search results.", show_alert=True)
+         await query.answer("Cannot go back to search results.", show_alert=True)
 
 @app.on_callback_query(filters.regex(r"close"))
 async def close_menu_handler(_, query):
@@ -560,7 +558,7 @@ async def send_for_index(bot, message):
         buttons = [
             [
                 InlineKeyboardButton('Yes',
-                                    callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')
+                                     callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')
             ],
             [
                 InlineKeyboardButton('close', callback_data='close_data'),
@@ -583,11 +581,11 @@ async def send_for_index(bot, message):
     buttons = [
         [
             InlineKeyboardButton('Accept Index',
-                                callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')
+                                 callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')
         ],
         [
             InlineKeyboardButton('Reject Index',
-                                callback_data=f'index#reject#{chat_id}#{message.id}#{message.from_user.id}'),
+                                 callback_data=f'index#reject#{chat_id}#{message.id}#{message.from_user.id}'),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
