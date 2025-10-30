@@ -7,20 +7,8 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified, ChannelInvalid, UsernameInvalid, UsernameNotModified, ChatAdminRequired
 from pyrogram.errors.exceptions.flood_420 import FloodWait
 from pymongo import MongoClient, TEXT, DESCENDING
+from config import API_ID, API_HASH, BOT_TOKEN, CHANNELS, ADMINS, LOG_CHANNEL
 
-# --- Configuration Placeholders (Your actual values) ---
-API_ID = 28643132
-API_HASH = "510c3009ea589830a89e045bf8aae656"
-BOT_TOKEN = "8163888122:AAEuGzXZDxKlcehE2b5Yj4kpayBUo1VaZWs"
-MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-
-# List of channel IDs (integers or strings) where files are posted and should be indexed.
-CHANNELS = [-1001996538290]
-
-# --- Bulk Indexing Placeholders (REPLACE THESE) ---
-# Ensure all ADMINS IDs are valid integers.
-ADMINS = [5483128891] # <-- REPLACE WITH YOUR ADMIN USER ID(s)
-LOG_CHANNEL = -1001996538290 # <-- REPLACE WITH YOUR LOG CHANNEL ID
 lock = asyncio.Lock()
 class Temp:
     CURRENT = 1
