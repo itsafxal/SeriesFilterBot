@@ -1,4 +1,4 @@
-# conversation.py - MODIFIED to remove extra buttons
+# conversation.py - FINAL VERSION
 
 import asyncio
 import re
@@ -29,42 +29,48 @@ def register_conversation_handlers(app: Client):
 
     @app.on_message(filters.text & filters.private & ~filters.command("start"))
     async def search_handler(_, message):
-        """Handles user text search queries."""
+        """
+        Handles user text search queries, unifying similar results to display only 
+        one button for the core series name (e.g., only "Loki" instead of "Loki 4K").
+        """
         query = message.text.strip()
         unique_names = await search_series(query) 
         
         if unique_names:
-            unified_map = {}
+            normalized_query = clean_series_name(query).lower()
+            series_to_display = None
+            
+            # 1. Look for the best, most generic name that matches the query
             for db_name in unique_names:
-                cleaned_name = clean_series_name(db_name) 
+                cleaned_db_name = clean_series_name(db_name)
                 
-                name_parts = cleaned_name.split()
-                root_word_count = 1 
-                if len(name_parts) >= 2:
-                    root_word_count = 2
-                    if len(name_parts) >= 3 and name_parts[1].lower() in ['of', 'and', 'the', 'a']:
-                        root_word_count = 3
+                # Check for an exact match of the cleaned name or a clear prefix match
+                if cleaned_db_name.lower() == normalized_query:
+                    series_to_display = cleaned_db_name
+                    break # Found an exact match (e.g., query "Loki" matches DB entry "Loki")
                 
-                final_root_name = " ".join(name_parts[:root_word_count]).strip()
+                # If the search query is a prefix of the result (e.g., query "Loki" finds "Loki Hindi")
+                # and we haven't set a candidate yet, use the result as the display name.
+                # The shortest name that starts with the query is generally the best core name.
+                if series_to_display is None and cleaned_db_name.lower().startswith(normalized_query):
+                     series_to_display = cleaned_db_name
+                     
+            # 2. Fallback: if no clear candidate found, use the shortest cleaned name as the primary button
+            if series_to_display is None:
+                 series_to_display = clean_series_name(min(unique_names, key=len)) if unique_names else None
 
-                if len(final_root_name) < 2:
-                    final_root_name = cleaned_name
+            # 3. Display the single button
+            if series_to_display:
+                keyboard = [
+                    [InlineKeyboardButton(series_to_display, callback_data=f'series_select|{series_to_display}')]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
 
-                if final_root_name:
-                     unified_map[final_root_name] = final_root_name
-
-            final_display_names = sorted(list(unified_map.keys()))
-
-            keyboard = []
-            for unified_name in final_display_names:
-                callback_data = f'series_select|{unified_name}' 
-                button_text = unified_name[:50] + '...' if len(unified_name) > 50 else unified_name 
-                keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-                
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            response = f"🔎 Found {len(final_display_names)} matching series. Please select one:"
-            await message.reply_text(response, reply_markup=reply_markup)
+                response = f"🔎 Found **{series_to_display}**. Select the series:"
+                await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            else:
+                 await message.reply_text(f"❌ No single series name could be isolated from files matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
+                 
         else:
             await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
 
@@ -86,7 +92,7 @@ def register_conversation_handlers(app: Client):
     @app.on_callback_query(filters.regex(r"quality_select")) 
     async def quality_select_handler(app, query):
         """
-        Retrieves all files for the selected season/quality and sends them 
+        MODIFIED: Retrieves all files for the selected season/quality and sends them 
         directly to the user's private messages.
         """
         data = query.data.split('|')
@@ -97,14 +103,12 @@ def register_conversation_handlers(app: Client):
         
         await query.answer(f"📦 Sending all {quality} files for Season {season}...", cache_time=0)
         
-        # 1. Get all file entries
         files = await get_all_files_by_season_and_quality(series_name, season, quality) 
         
         if not files:
             await app.send_message(user_chat_id, f"❌ No episodes found for **{series_name}** Season {season} in **{quality}**.", parse_mode=enums.ParseMode.MARKDOWN)
             return
             
-        # 2. Update the menu to confirm action and provide back button
         try:
              await query.message.edit_text(
                 f"📤 **Sending {len(files)} files to your PM:**\n\n"
@@ -119,7 +123,6 @@ def register_conversation_handlers(app: Client):
         except MessageNotModified:
             pass
             
-        # 3. Iterate and send files one by one
         total_sent = 0
         for file_entry in files:
             channel_id = file_entry.get('channel_id')
@@ -146,11 +149,10 @@ def register_conversation_handlers(app: Client):
                     parse_mode=enums.ParseMode.MARKDOWN 
                 )
                 total_sent += 1
-                await asyncio.sleep(1) # Delay to respect Telegram rate limits
+                await asyncio.sleep(1) # Delay for rate limits
                 
             except Exception as e:
                 logger.error(f"Failed to copy file {message_id} from {channel_id}: {e}")
-                # Continue loop even if one file fails
                 
         await app.send_message(
             user_chat_id, 
@@ -160,7 +162,7 @@ def register_conversation_handlers(app: Client):
 
     @app.on_callback_query(filters.regex(r"send_single_episode"))
     async def send_single_episode_handler(app, query):
-        """Kept in case this is needed for manual forward, but unused in the main flow."""
+        """Placeholder for manual forward if needed, otherwise unused in main flow."""
         data = query.data.split('|')
         channel_id = int(data[1])
         message_id = int(data[2])
@@ -218,8 +220,7 @@ def register_conversation_handlers(app: Client):
             button_text = f"Season {season}"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
-        # REMOVED: Re Fetch Again button
-        # REMOVED: Browse Series and IMDb Trailer buttons
+        # REMOVED: Re Fetch Again, Browse Series, and IMDb Trailer buttons as requested.
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         caption = (
@@ -263,9 +264,7 @@ def register_conversation_handlers(app: Client):
         except MessageNotModified:
             pass
 
-
-    # Removed show_episode_menu function
-
+    # Note: go_back_to_search_handler is kept for historical context/error handling but its button is removed.
     @app.on_callback_query(filters.regex(r"go_back_to_search"))
     async def go_back_to_search_handler(_, query):
         try:
