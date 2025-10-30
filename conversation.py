@@ -86,7 +86,7 @@ def register_conversation_handlers(app: Client):
 
 
     async def show_season_menu(query, series_name: str):
-        """Displays buttons for all unique seasons of the selected series in the 'Season X' format."""
+        """Displays buttons for all unique seasons of the selected series in the 'Season X' format (Image 1)."""
         seasons = await get_unique_seasons_by_name(series_name)
         
         if not seasons:
@@ -107,6 +107,9 @@ def register_conversation_handlers(app: Client):
             button_text = f"Season {season}"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
+        # Add the 'Re Fetch Again' button and search buttons
+        keyboard.append([InlineKeyboardButton("🚨 Re Fetch Again 🚨", callback_data='go_back_to_search')])
+        
         keyboard.append([
             InlineKeyboardButton("🕹️ Browse Series 🕹️", callback_data='go_back_to_search'),
             InlineKeyboardButton("IMDb Trailer ↗️", url="https://www.imdb.com/find?q=" + series_name.replace(" ", "%20"))
@@ -125,7 +128,7 @@ def register_conversation_handlers(app: Client):
             pass
 
     async def show_episode_menu(query, series_name: str, season: int):
-        """Displays a menu with buttons for all episodes in the selected season."""
+        """Displays a menu with buttons for all episodes in the selected season (Image 3)."""
         
         files = await get_all_files_by_season(series_name, season)
         
@@ -139,6 +142,7 @@ def register_conversation_handlers(app: Client):
             channel_id = file_entry.get('channel_id')
             message_id = file_entry.get('message_id')
             
+            # Use file_name, which is fetched from DB, for the button text
             full_episode_name = file_entry.get('file_name', f"S{season:02d}E{file_entry.get('episode', 99)}") 
             
             callback_data = f'send_single_episode|{channel_id}|{message_id}'
@@ -146,6 +150,7 @@ def register_conversation_handlers(app: Client):
             
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
+        # Button to go back to the season list
         keyboard.append([InlineKeyboardButton(f"⬅️ {series_name}", callback_data=f'series_select|{series_name}')])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
