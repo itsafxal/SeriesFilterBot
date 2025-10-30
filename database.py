@@ -114,3 +114,30 @@ async def save_file_to_db(file_doc: dict):
             return False
             
     return await asyncio.to_thread(sync_insert_one)
+
+# database.py
+
+# ... (Previous imports and setup)
+# ...
+
+async def save_bot_state(chat_id, last_msg_id):
+    """Saves the last processed message ID for a given chat to resume later."""
+    def sync_save():
+        state_collection.update_one(
+            {"_id": chat_id},
+            {"$set": {"last_indexed_id": last_msg_id}},
+            upsert=True
+        )
+        logger.info(f"DB: Updated state for {chat_id} to ID {last_msg_id}")
+
+    await asyncio.to_thread(sync_save)
+
+async def get_bot_state(chat_id):
+    """Retrieves the last processed message ID for a given chat."""
+    def sync_get():
+        doc = state_collection.find_one({"_id": chat_id})
+        # Important: Return the value or None if the document doesn't exist
+        return doc.get("last_indexed_id") if doc else None
+
+    return await asyncio.to_thread(sync_get)
+
