@@ -4,7 +4,7 @@ from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
 from database import search_series, get_unique_seasons_by_name, get_all_files_by_season, logger
-from config import logger
+from config import logger # Assuming config also provides logger
 
 def register_conversation_handlers(app: Client):
 
@@ -22,33 +22,22 @@ def register_conversation_handlers(app: Client):
     @app.on_message(filters.text & filters.private & ~filters.command("start"))
     async def search_handler(_, message):
         """
-        Handles user text search queries and post-filters for unification.
+        Handles user text search queries. The series names returned are already unified 
+        by the new logic in utils.py.
         """
         query = message.text.strip()
         
+        # unique_names now contains the clean, unified names (e.g., ['The Flash', 'Loki'])
         unique_names = await search_series(query) 
         
         if unique_names:
-            # --- POST-FILTERING LOGIC (Keep as is) ---
-            base_series_names = {}
-            for name in unique_names:
-                base_name = re.sub(r'[:—\-].*$', '', name).strip()
-                base_name = re.sub(r'\s{3,}.*$', '', base_name).strip()
-
-                if name.lower().startswith('the witcher'):
-                    base_name = 'The Witcher'
-                elif name.lower().startswith('loki'):
-                    base_name = 'Loki'
-                
-                if base_name not in base_series_names or len(name) < len(base_series_names[base_name]):
-                    base_series_names[base_name] = name 
+            # --- SIMPLIFIED LOGIC: Use names directly as they are already unified ---
+            final_display_names = sorted(list(set(unique_names)))
             
-            final_display_names = list(base_series_names.keys())
-            # --- END POST-FILTERING LOGIC ---
-
             keyboard = []
-            for unified_name in sorted(final_display_names):
-                original_db_name = base_series_names[unified_name]
+            for unified_name in final_display_names:
+                # The unified name is used for both display and callback, as the DB name is now clean.
+                original_db_name = unified_name
                 callback_data = f'series_select|{original_db_name}' 
                 button_text = unified_name[:50] + '...' if len(unified_name) > 50 else unified_name 
                 keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
@@ -91,14 +80,13 @@ def register_conversation_handlers(app: Client):
                 from_chat_id=channel_id,
                 message_id=message_id
             )
-            # await query.answer("✅ File sent!", show_alert=False) # Answered above to avoid delay
         except Exception as e:
             logger.error(f"Failed to copy single message {message_id} from {channel_id}: {e}")
             await query.answer("❌ Failed to send file. It might be inaccessible.", show_alert=True)
 
 
     async def show_season_menu(query, series_name: str):
-        """Displays buttons for all unique seasons of the selected series."""
+        """Displays buttons for all unique seasons of the selected series in the 'Season X' format."""
         seasons = await get_unique_seasons_by_name(series_name)
         
         if not seasons:
@@ -112,18 +100,13 @@ def register_conversation_handlers(app: Client):
         all_season_files = await asyncio.gather(*tasks)
         total_files = sum(len(files_list) for files_list in all_season_files)
         
-        # --- Single Column Season List (Matching Image) ---
         keyboard = []
         
         for season in seasons:
             callback_data = f'season_select|{series_name}|{season}'
-            button_text = f"Season {season}" # Text format matching the image
+            button_text = f"Season {season}"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
-        # Add the 'Re Fetch Again' button and search buttons
-        keyboard.append([InlineKeyboardButton("🚨 Re Fetch Again 🚨", callback_data='go_back_to_search')])
-        
-        # Mimic the 'Browse' and 'IMDb' buttons
         keyboard.append([
             InlineKeyboardButton("🕹️ Browse Series 🕹️", callback_data='go_back_to_search'),
             InlineKeyboardButton("IMDb Trailer ↗️", url="https://www.imdb.com/find?q=" + series_name.replace(" ", "%20"))
@@ -137,13 +120,12 @@ def register_conversation_handlers(app: Client):
         )
         
         try:
-            # NOTE: To fully replicate the image, you would send a photo here instead of editing text.
             await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
         except MessageNotModified:
             pass
 
     async def show_episode_menu(query, series_name: str, season: int):
-        """Displays a menu with buttons for all episodes in the selected season (Matching Image 3)."""
+        """Displays a menu with buttons for all episodes in the selected season."""
         
         files = await get_all_files_by_season(series_name, season)
         
@@ -157,19 +139,13 @@ def register_conversation_handlers(app: Client):
             channel_id = file_entry.get('channel_id')
             message_id = file_entry.get('message_id')
             
-            # Use file_name to get the full episode title for the button text
             full_episode_name = file_entry.get('file_name', f"S{season:02d}E{file_entry.get('episode', 99)}") 
             
-            # Simple button text to mimic the image (e.g., 'Season 01 Episode 01 - Winter Is Coming')
-            # You might need to clean the file_name further here if it's too long/ugly
-            
-            # The button triggers sending the single file
             callback_data = f'send_single_episode|{channel_id}|{message_id}'
-            button_text = full_episode_name[:60].strip() # Truncate for button size
+            button_text = full_episode_name[:60].strip()
             
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
-        # Add the final button to go back to the season list
         keyboard.append([InlineKeyboardButton(f"⬅️ {series_name}", callback_data=f'series_select|{series_name}')])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
