@@ -5,6 +5,7 @@ import logging
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified, ChannelInvalid, UsernameInvalid, UsernameNotModified, ChatAdminRequired
+from pyrogram.errors.exceptions.flood_420 import FloodWait # Import FloodWait specifically
 from pymongo import MongoClient, TEXT, DESCENDING 
 
 # --- Configuration Placeholders (Your actual values) ---
@@ -625,22 +626,18 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
             temp.CANCEL = False
             current_processed_count = 0
             
-            # --- FIX FOR BOT_METHOD_INVALID: Use while loop + get_messages ---
             while True:
                 if temp.CANCEL:
                     await msg.edit(f"Successfully Cancelled!!\n\nSaved <code>{total_files}</code> files to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>")
                     break
 
-                # Fetch a batch of 100 messages backward from the last processed ID
-                # NOTE: get_messages with message_ids=range() is safer for history, 
-                # but we'll use a direct limit-based iteration for simplicity
+                # Determine the message IDs to fetch in this batch (100 messages)
+                start_id = max(1, current_offset_id - 100)
                 
-                # Fetch messages from 1 (inclusive) up to the current_offset_id (exclusive)
-                # Ensure the offset is greater than 1
+                # Fetch messages using a range of message IDs (Bot-safe history retrieval)
                 messages = await bot.get_messages(
                     chat_id=chat, 
-                    message_ids=list(range(max(1, current_offset_id - 100), current_offset_id)),
-                    # Using message_ids list is the most reliable bot-safe way to get history
+                    message_ids=list(range(start_id, current_offset_id)),
                 )
                 
                 if not messages:
@@ -664,14 +661,9 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
                             reply_markup=reply)
 
                     # --- Skipping/Resuming Logic ---
-                    # If a skip number is set, we skip messages until we pass the set number
-                    # This logic uses 'message.id <= temp.CURRENT' because we are iterating backward.
-                    # We are only interested in messages with an ID lower than the last processed ID.
                     if temp.CURRENT > 1 and message.id > temp.CURRENT:
-                        # Skip messages with IDs higher than the last processed ID
                         continue
 
-                    # Once we pass the last indexed ID, reset temp.CURRENT for the next index run
                     temp.CURRENT = 1
                     
                     # --- START: Series Indexing Logic ---
@@ -695,10 +687,6 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
                         errors += 1
                     # --- END: Series Indexing Logic ---
                     
-                    # Store the ID of the last message successfully processed (for resuming)
-                    # We only update current_offset_id AFTER all messages in the batch are processed
-                    # This ensures the next batch starts from the correct point.
-                    
                 # Break if canceled during message processing
                 if temp.CANCEL:
                     break
@@ -706,15 +694,28 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
                 # Set the offset for the next batch to the lowest ID in the current batch
                 current_offset_id = messages[-1].id if messages else 0
                 
+                # --- FIX: Add a small delay to avoid FloodWait ---
+                await asyncio.sleep(0.5) # Wait half a second after processing a batch of up to 100 messages
+                # --- END FIX ---
+                
                 # Check if we have processed all messages (message ID 1 is the first)
                 if current_offset_id <= 1:
                     break
 
         except Exception as e:
+            # --- FIX: Handle FloodWait explicitly ---
+            if isinstance(e, FloodWait):
+                logger.error(f"Hit FloodWait: Waiting for {e.value} seconds.")
+                # Report to the user and wait the required time + 1 second buffer
+                await msg.edit(f'⚠️ FloodWait hit! Pausing indexing for **{e.value}** seconds to comply with Telegram API limits.')
+                await asyncio.sleep(e.value + 1)
+                continue # Continue the outer while loop to fetch the next batch
+            
+            # Handle other errors
             logger.exception(e)
             await msg.edit(f'Error: {e}')
         else:
-            await msg.edit(f'Succesfully saved <code>{total_files}</code> to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>')
+            await msg.edit(f'✅ Succesfully saved <code>{total_files}</code> to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>')
 
 
 ###################################################
