@@ -1,136 +1,127 @@
-import asyncio
-from pymongo import MongoClient, TEXT, DESCENDING
-from pyrogram.errors import MessageNotModified
-from config import MONGO_URI, logger
-
-# --- Database Setup (Synchronous PyMongo) ---
-mongo_client = MongoClient(MONGO_URI)
-db = mongo_client["SeriesBotDB"]
-files_collection = db["files"]
-state_collection = db["bot_state"]
-
-# Ensure indices are created (PyMongo needs this done once)
-try:
-    # 1. Compound index for fast unique checks and sorting
-    files_collection.create_index([("normalized_name", 1), ("season", 1)], background=True)
-    
-    # 2. Ensure the required TEXT INDEX for fuzzy search is created
-    files_collection.create_index(
-        [("normalized_name", TEXT)], 
-        name="series_name_text_index", 
-        default_language='english',
-        background=True, 
-        unique=False
-    )
-    # 3. Ensure index for bot state is created (new collection)
-    state_collection.create_index([("_id", 1)], unique=True)
-    
-    logger.info("✅ MongoDB Indexes ensured/created successfully.")
-except Exception as e:
-    logger.error(f"❌ Error creating MongoDB Indexes. The bot may fail to search: {e}")
-
+import re
+from pyrogram import types
+from database import save_file_to_db
 
 ###################################################
-## DATABASE WRAPPER FUNCTIONS (PyMongo via asyncio.to_thread) ##
+## UTILITY & PARSING (Name Unification Logic) ##
 ###################################################
 
-async def save_bot_state(chat_id, last_msg_id):
-    """Saves the last processed message ID for a given chat to resume later."""
-    def sync_save():
-        state_collection.update_one(
-            {"_id": chat_id},
-            {"$set": {"last_indexed_id": last_msg_id}},
-            upsert=True
-        )
-        logger.info(f"DB: Updated state for {chat_id} to ID {last_msg_id}")
-
-    await asyncio.to_thread(sync_save)
-
-async def get_bot_state(chat_id):
-    """Retrieves the last processed message ID for a given chat."""
-    def sync_get():
-        doc = state_collection.find_one({"_id": chat_id})
-        return doc.get("last_indexed_id") if doc else None
-
-    return await asyncio.to_thread(sync_get)
-
-
-async def search_series(query: str):
+def parse_series_info(file_name: str):
     """
-    Searches MongoDB for unique series names matching the query. 
-    Prioritizes text index for better fuzzy matching.
+    Attempts to extract Series Name, Season (SXX), and Episode (EXX) from a filename.
+    Includes enhanced cleaning logic to ensure a pure series name.
     """
-    import re # Local import for regex fallback
-    def sync_search():
-        # 1. Text Search 
-        pipeline_text_search = [
-            {"$match": {"$text": {"$search": query}}},
-            {"$project": {
-                "normalized_name": 1,
-                "search_score": {"$meta": "textScore"} 
-            }},
-            {"$sort": {"search_score": DESCENDING}}, 
-            {"$group": {"_id": "$normalized_name"}},
-            {"$project": {"_id": 0, "name": "$_id"}}
-        ]
+    if not file_name:
+        return "", 0, 0
         
-        try:
-            results = list(files_collection.aggregate(pipeline_text_search))
-            if results:
-                return results
-        except Exception as e:
-            logger.warning(f"Text search failed (Index issue likely): {e}. Falling back to Regex.")
-        
-        # 2. Fallback to the original regex search
-        regex_query = re.escape(query).replace(" ", ".*") 
-        pipeline_regex_search = [
-            {"$match": {"normalized_name": {"$regex": regex_query, "$options": "i"}}},
-            {"$group": {"_id": "$normalized_name"}},
-            {"$project": {"_id": 0, "name": "$_id"}}
-        ]
-        return list(files_collection.aggregate(pipeline_regex_search))
-        
-    results = await asyncio.to_thread(sync_search)
-    return [doc["name"] for doc in results]
-
-async def get_unique_seasons_by_name(series_name: str):
-    """Gets unique season numbers for a given series."""
-    def sync_get_seasons():
-        seasons = files_collection.distinct("season", {"normalized_name": series_name})
-        seasons = sorted([s for s in seasons if s > 0])
-        return seasons
-        
-    return await asyncio.to_thread(sync_get_seasons)
-
-async def get_all_files_by_season(series_name: str, season: int):
-    """Gets file details (channel_id, message_id) for a specific season."""
-    def sync_get_files():
-        files = files_collection.find(
-            {"normalized_name": series_name, "season": season},
-            {"channel_id": 1, "message_id": 1, "_id": 0}
-        ).sort("episode", 1)
-        return list(files)
-        
-    return await asyncio.to_thread(sync_get_files)
+    # Match SXXEXX patterns
+    match = re.search(r"[sS](\d+)[. _-]*[eE](\d+)", file_name)
     
-async def save_file_to_db(file_doc: dict):
-    """Inserts/updates a single file document into MongoDB. Returns True if saved/modified."""
-    def sync_insert_one():
-        try:
-            result = files_collection.update_one(
-                {"channel_id": file_doc["channel_id"], "message_id": file_doc["message_id"]},
-                {"$set": file_doc},
-                upsert=True
-            )
-            
-            if result.upserted_id or result.modified_count > 0:
-                logger.info(f"DB: INSERTED/UPDATED file. Msg ID: {file_doc['message_id']}")
-                return True
-            else:
-                logger.debug(f"DB: SKIPPED (Duplicate unchanged). Msg ID: {file_doc['message_id']}")
-                return False # False means duplicate/no change
-        except Exception as e:
-            logger.error(f"Failed to insert/update file doc: {e}")
-            return False # False means error
-            
-    return await asyncio.to_thread(sync_insert_one)
+    # If no SXXEXX, we assume it's not a standard series file
+    if not match:
+        return file_name.title().strip(), 0, 0 
+
+    season = int(match.group(1))
+    episode = int(match.group(2))
+    
+    # 1. Remove SXXEXX pattern first
+    normalized_name = re.sub(r"([. _-]+)?[sS]\d+[. _-]*[eE]\d+([. _-]+)?", " ", file_name).strip()
+    
+    # 2. Clean common garbage terms, quality, language, AND YEAR tags.
+    common_terms = [
+        "4K", "1080P", "720P", "HDRIP", "WEB-DL", "WEBRIP", "BLURAY", "HDTV", 
+        "AMZN", "NETFLIX", "HULU", "DDP5.1", "X265", "x264", "10BIT", "MKV", 
+        "MULTISUB", "AAC", "PSA", "DUB", "SUB", "MULTI", "REPACK", "COMPLETE", 
+        "ENG", "SPA", "ITA", "FRE", "GER", "DUAL", "AUDIO", 
+        r"(19|20)\d{2}",  # Year tag
+        "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10"  
+    ]
+    
+    for term in common_terms:
+        flags = re.IGNORECASE
+        if r"(19|20)\d{2}" not in term:
+            term = r"\b" + term + r"\b"
+        
+        normalized_name = re.sub(term, " ", normalized_name, flags=flags).strip()
+
+
+    # 3. Aggressively remove bracketed/parenthesized tags AND @channel tags
+    normalized_name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", normalized_name).strip()
+    
+    # 4. ENHANCED CLEANING: Remove common channel/group tags
+    channel_tags = ["CK", "UB", "TG", "MOVIE HUB", "FILM"] 
+    for tag in channel_tags:
+        tag_regex = rf"^\s*{re.escape(tag)}[\s._-]*|[\s._-]*{re.escape(tag)}\s*$"
+        normalized_name = re.sub(tag_regex, " ", normalized_name, flags=re.IGNORECASE).strip()
+        
+    # 5. Final cleaning: collapse multiple separators
+    normalized_name = re.sub(r"[. _]+", " ", normalized_name).strip()
+    
+    # --- NEW LOGIC FOR SUBTITLE UNIFICATION (e.g., The Witcher) ---
+    temp_name = normalized_name.lower()
+    
+    words = normalized_name.split()
+    
+    if len(words) > 1:
+        # Check for very common series names and aggressively unify them
+        if temp_name.startswith('the witcher'):
+            normalized_name = "The Witcher"
+        elif temp_name.startswith('loki'):
+            normalized_name = "Loki"
+        # Add more common series checks here if needed
+        
+        # If the name is still long (likely an episode title), truncate at a likely separator
+        elif len(words) > 4 and (' ' in normalized_name or '-' in normalized_name):
+             # Try to keep only the first few words as the actual series name
+             normalized_name = " ".join(words[:4]) 
+             
+    # --- END NEW LOGIC ---
+    
+    # 6. LAST STEP: Truncate after the first strong separator (like a stray hyphen)
+    if ' - ' in normalized_name:
+        normalized_name = normalized_name.split(' - ')[0].strip()
+    
+    # 7. Final Title Casing
+    normalized_name = normalized_name.title().strip()
+    
+    return normalized_name, season, episode
+    
+
+async def save_series_file_for_bulk_index(message: types.Message):
+    """
+    Helper function to integrate series parsing/saving into the bulk indexer.
+    Returns (True if new file saved, status_code)
+    status_code: 1=new, 0=duplicate/skipped (non-series), 2=error.
+    """
+    file_name = ""
+    if message.document:
+        file_name = message.document.file_name or ""
+    elif message.video:
+        file_name = message.video.file_name or ""
+    else: 
+        file_name = getattr(message.audio, "file_name", "")
+
+    normalized_name, season, episode = parse_series_info(file_name)
+    
+    if season > 0:
+        file_doc = {
+            "channel_id": message.chat.id,
+            "message_id": message.id,
+            "file_name": file_name,
+            "normalized_name": normalized_name,
+            "season": season,
+            "episode": episode,
+            "timestamp": message.date
+        }
+        
+        # This calls the MongoDB upsert function
+        saved = await save_file_to_db(file_doc)
+        
+        if saved:
+            return True, 1  # New file indexed
+        else:
+            # False from save_file_to_db means duplicate/no change
+            return False, 0 
+    else:
+        # File is media, but not a series (no SXXEXX pattern)
+        return False, 0
