@@ -15,11 +15,10 @@ def clean_series_name(name: str) -> str:
     common_terms = [
         "4K", "1080P", "720P", "HDRIP", "WEB-DL", "WEBRIP", "BLURAY", "HDTV", 
         "AMZN", "NETFLIX", "HULU", "DDP5.1", "X265", "x264", "10BIT", "HEVC", 
-        "MKV", "AAC", "PSA", "DUB", "SUB", "MULTI", "REPACK", "COMPLETE", 
+        "MKV", "AAC", "PSA", "DUB", "SUB", "MULTI", "REPACK", "COMPLETE", "WEB", # Added WEB
         "ENG", "SPA", "ITA", "FRE", "GER", "DUAL", "AUDIO", "2CH",
         r"(19|20)\d{2}",  # Year tag
-        # Ensure season markers are cleaned up if they are still present
-        "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10",
+        "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", # Clean up stray SXX
     ]
     
     for term in common_terms:
@@ -72,20 +71,19 @@ def parse_series_info(file_name: str):
     # 3. ENHANCED UNIFICATION: Force specific series to a single name
     temp_name = normalized_name.lower()
     
+    # Custom unification for files like "The Flash 2ch Hevc" -> "The Flash"
     if temp_name.startswith('the flash'):
-        # Forcibly unify all "The Flash..." to "The Flash"
         normalized_name = 'The Flash'
     elif temp_name.startswith('the witcher'):
         normalized_name = 'The Witcher'
     elif temp_name.startswith('loki'):
         normalized_name = 'Loki'
 
-    # If you need a fallback to truncate long names not covered above:
+    # Fallback to truncate names that are still too long (often episode titles)
     elif len(normalized_name.split()) > 5:
-        # Truncate if it looks like an episode title was left in
         normalized_name = " ".join(normalized_name.split()[:5]) 
 
-    return normalized_name.title(), season, episode # Ensure final title casing
+    return normalized_name.title(), season, episode
     
 
 async def save_series_file_for_bulk_index(message: types.Message):
