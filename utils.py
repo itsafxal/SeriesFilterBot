@@ -2,6 +2,7 @@
 
 import re
 from pyrogram import types
+# Assumes database.py has been imported and save_file_to_db is available
 from database import save_file_to_db 
 
 ###################################################
@@ -28,7 +29,6 @@ def clean_series_name(name: str) -> str:
 
     name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", name).strip()
     
-    # FIXED: Simplified channel tag removal for robustness
     channel_tags = ["CK", "UB", "TG", "MOVIE HUB", "FILM"] 
     for tag in channel_tags:
         # Regex to match the tag followed or preceded by non-word chars, at start/end
