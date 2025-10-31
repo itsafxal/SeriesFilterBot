@@ -27,9 +27,12 @@ def clean_series_name(name: str) -> str:
         name = re.sub(term, " ", name, flags=flags).strip()
 
     name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", name).strip()
+    
+    # FIXED: Simplified channel tag removal for robustness
     channel_tags = ["CK", "UB", "TG", "MOVIE HUB", "FILM"] 
     for tag in channel_tags:
-        tag_regex = rf"^\s*{re.escape(tag)}[\s._-]*|[\s._-]*{re.escape(tag)}\s*$"
+        # Regex to match the tag followed or preceded by non-word chars, at start/end
+        tag_regex = rf"(?:^|[\W_]+){re.escape(tag)}(?:$|[\W_]+)"
         name = re.sub(tag_regex, " ", name, flags=re.IGNORECASE).strip()
         
     name = re.sub(r"\s+", " ", name).strip()
