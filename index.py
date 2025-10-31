@@ -1,19 +1,20 @@
+# index.py
 import asyncio
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message
+# Assumes config.py exists
 from config import INDEX_CHANNELS, ADMIN_USERS, logger
+# Assumes database.py and utils.py exist
 from database import save_file_to_db, get_bot_state, save_bot_state
 from utils import save_series_file_for_bulk_index
 
 def register_media_handler(app: Client):
 
     # FIX: Corrected filter precedence using parentheses.
-    # The handler now correctly targets (Document OR Video OR Audio) AND (in a Channel).
     @app.on_message((filters.document | filters.video | filters.audio) & filters.channel)
     async def media_handler(_, message: Message):
         """
-        Handles single file posts in indexed channels.
-        This is primarily for real-time indexing of new posts (RTI).
+        Handles single file posts in indexed channels (Real-Time Indexing).
         """
         if message.chat.id in INDEX_CHANNELS and message.media:
             # save_series_file_for_bulk_index handles analysis and saving.
@@ -37,16 +38,25 @@ def register_bulk_index_handlers(app: Client):
 
             # 1. Get starting message ID from DB (to resume indexing)
             last_indexed_id = await get_bot_state(channel_id)
-            start_id = last_indexed_id if last_indexed_id else 1
+            # We start processing from the message *after* the last indexed ID.
+            start_id = last_indexed_id if last_indexed_id else 0 
 
-            await message.reply_text(f"Processing channel `{channel_id}` from message ID `{start_id}`...", parse_mode=enums.ParseMode.MARKDOWN)
+            await message.reply_text(f"Processing channel `{channel_id}` from message ID `{start_id + 1}`...", parse_mode=enums.ParseMode.MARKDOWN)
 
             indexed_count = 0
             current_id = 0
 
             try:
-                # 2. Iterate through messages from the starting ID up to the latest
-                async for msg in app.get_chat_history(channel_id, offset_id=start_id, reverse=True):
+                # 2. Iterate through all messages (newest to oldest is default).
+                # The logic inside the loop will handle the 'resume' part.
+                async for msg in app.get_chat_history(channel_id):
+
+                    current_id = msg.id
+
+                    # FIX: Stop and break if we reach a message ID that was already processed.
+                    if current_id <= start_id:
+                        logger.info(f"INDEX: Reached last indexed message ID {start_id} for {channel_id}. Stopping iteration.")
+                        break
 
                     # Check for media types that we care about
                     if not (msg.document or msg.video or msg.audio):
@@ -58,17 +68,15 @@ def register_bulk_index_handlers(app: Client):
                         indexed_count += count
                         total_indexed += count
 
-                    current_id = msg.id
-
                     # 4. Save state every 500 messages to ensure resumption capability
-                    if current_id % 500 == 0:
+                    if indexed_count > 0 and indexed_count % 500 == 0:
+                        # Save the ID of the message we just processed (current_id)
                         await save_bot_state(channel_id, current_id)
                         await asyncio.sleep(1) # Be polite to Telegram API
-                        # Using logger.debug for less console clutter during heavy indexing
                         logger.debug(f"INDEX: Checkpoint saved for {channel_id} at ID {current_id}")
 
-                # 5. Final state save after processing the entire channel
-                if current_id > 0:
+                # 5. Final state save after processing the remaining messages up to the break point.
+                if current_id > start_id:
                     await save_bot_state(channel_id, current_id)
 
                 await message.reply_text(f"✅ Finished indexing `{channel_id}`. Indexed {indexed_count} new files.", parse_mode=enums.ParseMode.MARKDOWN)
