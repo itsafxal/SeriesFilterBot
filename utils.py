@@ -1,7 +1,7 @@
 # utils.py
 
 import re
-from pyrogram import types
+from pyrogram import types, enums
 # Assumes database.py has been imported and save_file_to_db is available
 from database import save_file_to_db 
 
@@ -88,14 +88,35 @@ def parse_series_info(file_name: str):
 async def save_series_file_for_bulk_index(message: types.Message):
     """
     Helper function to integrate series parsing/saving into the bulk indexer.
+    FIX: Ensure file_name is extracted correctly, especially for forwarded files.
     """
     file_name = ""
-    if message.document:
-        file_name = message.document.file_name or ""
-    elif message.video:
-        file_name = message.video.file_name or ""
-    else: 
-        file_name = getattr(message.audio, "file_name", "")
+    
+    # Prioritize accessing media via the .media property which is robust
+    if message.media:
+        if message.media == enums.MessageMediaType.DOCUMENT and message.document:
+            file_name = message.document.file_name or ""
+        elif message.media == enums.MessageMediaType.VIDEO and message.video:
+            file_name = message.video.file_name or ""
+        elif message.media == enums.MessageMediaType.AUDIO and message.audio:
+            file_name = message.audio.file_name or ""
+    
+    # Fallback to the original structure just in case, though message.media is preferred
+    # This block is functionally redundant with the above but kept for existing code structure.
+    # elif message.document:
+    #     file_name = message.document.file_name or ""
+    # elif message.video:
+    #     file_name = message.video.file_name or ""
+    # else: 
+    #     file_name = getattr(message.audio, "file_name", "")
+
+    # If file_name is still empty, and there's a caption, sometimes the file name is in the caption for some forwarded/old files.
+    # This is an optional heuristic.
+    if not file_name and message.caption:
+        file_name = message.caption.split('\n')[0].strip() # Takes the first line of the caption as a potential filename
+
+    if not file_name:
+        return False, 0 # Skip if no identifiable filename
 
     normalized_name, season, episode, quality = parse_series_info(file_name) 
     
@@ -103,7 +124,7 @@ async def save_series_file_for_bulk_index(message: types.Message):
         file_doc = {
             "channel_id": message.chat.id,
             "message_id": message.id,
-            "file_name": file_name,
+            "file_name": file_name, # Use the extracted file_name
             "normalized_name": normalized_name, 
             "season": season,
             "episode": episode,
