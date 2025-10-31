@@ -48,7 +48,6 @@ def register_bulk_index_handlers(app: Client):
 
             try:
                 # 2. Iterate through all messages (newest to oldest is default).
-                # The logic inside the loop will handle the 'resume' part.
                 async for msg in app.get_chat_history(channel_id):
 
                     current_id = msg.id
@@ -59,10 +58,13 @@ def register_bulk_index_handlers(app: Client):
                         break
 
                     # Check for media types that we care about
-                    if not (msg.document or msg.video or msg.audio):
-                        continue
+                    # FIX: Use msg.media directly, which is more reliable for all media types, including forwarded ones.
+                    # We check for the specific media types inside save_series_file_for_bulk_index.
+                    if not msg.media or msg.media not in [enums.MessageMediaType.DOCUMENT, enums.MessageMediaType.VIDEO, enums.MessageMediaType.AUDIO]:
+                         continue
 
                     # 3. Save the file and increment count
+                    # The utils function is now more robust at extracting file info from forwarded messages.
                     saved, count = await save_series_file_for_bulk_index(msg)
                     if saved:
                         indexed_count += count
@@ -76,6 +78,7 @@ def register_bulk_index_handlers(app: Client):
                         logger.debug(f"INDEX: Checkpoint saved for {channel_id} at ID {current_id}")
 
                 # 5. Final state save after processing the remaining messages up to the break point.
+                # Only save if we actually processed *new* messages (i.e., current_id is greater than start_id)
                 if current_id > start_id:
                     await save_bot_state(channel_id, current_id)
 
