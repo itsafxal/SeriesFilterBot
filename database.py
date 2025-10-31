@@ -3,6 +3,7 @@
 import asyncio
 import re
 from pymongo import MongoClient, TEXT, DESCENDING
+# Assumes config.py exists
 from config import MONGO_URI, logger 
 
 mongo_client = MongoClient(MONGO_URI)
@@ -132,6 +133,7 @@ async def save_file_to_db(file_doc: dict):
     """Inserts/updates a single file document into MongoDB."""
     def sync_insert_one():
         try:
+            # Use channel_id and message_id as a unique compound key for upsert
             result = files_collection.update_one(
                 {"channel_id": file_doc["channel_id"], "message_id": file_doc["message_id"]},
                 {"$set": file_doc},
