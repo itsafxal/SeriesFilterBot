@@ -1,13 +1,30 @@
-# main.py
+# main.py - MODIFIED for SQL DB Initialization
 
+import asyncio
 from pyrogram import Client
+# Assumes 'index' module exists with necessary imports
 from index import register_media_handler, register_bulk_index_handlers
 from conversation import register_conversation_handlers
+from database import initialize_sql_db # Import the new initialization function
 from config import API_ID, API_HASH, BOT_TOKEN, logger
 
 def main():
-    """Initializes and runs the Pyrogram client."""
+    """Initializes and runs the Pyrogram client, including SQL setup."""
     
+    # --- SQL DB Initialization and Migration ---
+    # This must run before the bot starts to ensure the SQL DB is ready.
+    logger.info("Initializing and migrating data to SQL database...")
+    try:
+        # Since initialize_sql_db performs blocking I/O, we run it sync or 
+        # use a dedicated loop/thread if needed. For a simple setup, running it sync here is typical.
+        initialize_sql_db()
+        logger.info("✅ SQL database is ready.")
+    except Exception as e:
+        logger.error(f"❌ Critical failure during SQL DB initialization/migration: {e}")
+        # Depending on criticality, you might want to sys.exit(1) here
+        return
+        
+    # --- Pyrogram Client Setup ---
     app = Client(
         "SeriesBot",
         api_id=API_ID,
@@ -16,11 +33,8 @@ def main():
     )
 
     # Register handlers
-    
     # 1. Conversation handlers (Search, Menus, Quality Filter)
-    conversation_handlers = register_conversation_handlers(app)
-    # The handlers are registered via decorators inside the function, 
-    # but the return is used if needed by a specific main loop structure.
+    register_conversation_handlers(app)
 
     # 2. Indexing handlers (RTI, Bulk Index)
     register_media_handler(app)
