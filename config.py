@@ -10,15 +10,14 @@ BOT_TOKEN = "7661197159:AAEmRKjX-3pDsuG7QZpStO5yYKLy4ip0uVA"
 MONGO_URI = "mongodb+srv://ss:<db_password>@seriesfilterbot.p88od4y.mongodb.net/?appName=SeriesFilterBOT"
 
 # --- Indexing Configuration ---
-INDEX_CHANNELS = [-1001996538290] 
+INDEX_CHANNELS = [-1003108543216] 
 ADMIN_USERS = [5483128891] # ⚠️ REPLACE ME: Your Telegram User ID(s)
 
 # --- Custom Caption Configuration ---
 CUSTOM_CAPTION_TEXT = """
-🎬 **File Sent!**
 `{file_name}`
 
-🔗 **Join our channel for more:**
+🔗 **Please Use Our Bot **
 @{bot_username}
 """
 
