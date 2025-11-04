@@ -56,20 +56,23 @@ def register_conversation_handlers(app: Client):
             # Logic to find the best, most generic series name
             for db_name in unique_names:
                 cleaned_db_name = clean_series_name(db_name)
+                # 1. Exact match with cleaned query
                 if cleaned_db_name.lower() == normalized_query:
                     series_to_display = cleaned_db_name
                     break 
-                if series_to_display is None and cleaned_db_name.lower().startswith(normalized_query):
-                    series_to_display = cleaned_db_name
-                    
+            
+            # 2. If no exact match, fall back to the shortest name found in the DB results. 
+            # This avoids using file names like 'Wednesday Call Of The Woe'.
             if series_to_display is None:
                 series_to_display = clean_series_name(min(unique_names, key=len)) if unique_names else None
+
 
             if series_to_display:
                 
                 # --- Get IMDB Data asynchronously ---
                 imdb_data = None
                 try:
+                    # Using the isolated 'series_to_display' for IMDB lookup
                     imdb_data = await asyncio.get_event_loop().run_in_executor(
                         None, get_imdb_data, series_to_display
                     )
