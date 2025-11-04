@@ -151,6 +151,7 @@ def register_conversation_handlers(app: Client):
             file_name = file_entry.get('file_name', f"S{season:02d}E{file_entry.get('episode', 99)}")
             
             try:
+                # Get the message to copy for file name and custom caption formatting
                 message_to_copy = await app.get_messages(chat_id=channel_id, message_ids=message_id)
                 bot_username = (await app.get_me()).username
                 custom_caption = CUSTOM_CAPTION_TEXT.format(
