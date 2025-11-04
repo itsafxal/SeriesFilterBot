@@ -1,3 +1,4 @@
+conversation.py
 import asyncio
 import re
 from pyrogram import Client, filters, enums
@@ -166,7 +167,6 @@ def register_conversation_handlers(app: Client):
 
     @app.on_callback_query(filters.regex(r"^ss\|"))
     async def season_select_handler(_, query):
-        """Shows available languages for the selected season."""
         data = query.data.split('|')
         series_name = data[1]
         season = int(data[2])
@@ -175,7 +175,6 @@ def register_conversation_handlers(app: Client):
 
     @app.on_callback_query(filters.regex(r"^ls\|"))
     async def language_select_handler(_, query):
-        """Shows available qualities for the selected season and language."""
         data = query.data.split('|')
         series_name = data[1]
         season = int(data[2]) 
@@ -183,24 +182,54 @@ def register_conversation_handlers(app: Client):
         await show_quality_menu(query, series_name, language, season)
         await query.answer()
 
-    # --- HANDLER: Quality selection (qs) -> MOVES TO FILE LIST MENU ---
+    # ⬇⬇⬇ CHANGED THIS ONE ONLY — QUALITY → SEND ALL FILES
     @app.on_callback_query(filters.regex(r"^qs\|")) 
     async def quality_select_handler(app, query):
-        """Prepares and displays the clickable file list menu (CTD)."""
+        """QUALITY CLICK = SEND ALL FILES DIRECTLY"""
         data = query.data.split('|')
         series_name = data[1]
         season = int(data[2]) 
         language = data[3] 
         quality = data[4]
-        
-        await query.answer(f"Loading {quality}/{language} episodes for S{season}...", cache_time=0)
-        
-        await show_file_menu(query, series_name, season, language, quality)
 
-    # --- HANDLER: File Selection (fs) -> Sends the actual file via copy (NEW) ---
+        await query.answer(f"Sending {quality}/{language} episodes for S{season}...", cache_time=0)
+
+        files = await get_all_files_by_season_and_quality(series_name, season, quality, language)
+
+        if not files:
+            await query.answer("❌ No files found.", show_alert=True)
+            return
+
+        bot_username = (await app.get_me()).username
+
+        sent_count = 0
+        for file_entry in files:
+            channel_id = file_entry["channel_id"]
+            message_id = file_entry["message_id"]
+            file_name = file_entry.get("file_name", f"S{file_entry.get('season',0)}E{file_entry.get('episode',99)}")
+
+            custom_caption = CUSTOM_CAPTION_TEXT.format(
+                file_name=file_name,
+                bot_username=bot_username
+            )
+
+            try:
+                await app.copy_message(
+                    chat_id=query.from_user.id,
+                    from_chat_id=channel_id,
+                    message_id=message_id,
+                    caption=custom_caption,
+                    parse_mode=enums.ParseMode.MARKDOWN
+                )
+                sent_count += 1
+            except Exception as e:
+                logger.error(f"copy fail {message_id} : {e}")
+
+        await query.answer(f"✅ Sent {sent_count} files to DM!", show_alert=True)
+
     @app.on_callback_query(filters.regex(r"^fs\|")) 
     async def file_select_handler(app, query):
-        """Responds to a file button click by copying the file to the user's DM."""
+        """(NOT used now but kept for future)"""
         data = query.data.split('|')
         series_name = data[1]
         channel_id = int(data[2])
@@ -244,7 +273,6 @@ def register_conversation_handlers(app: Client):
         data = query.data.split('|')
         series_name = data[1]
          
-        # Recalculate summary and rebuild the initial season menu (Logic simplified for brevity, assumes data fetch is robust)
         imdb_poster_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
         imdb_data = None
         if imdb_poster_enabled:
@@ -364,7 +392,8 @@ def register_conversation_handlers(app: Client):
              
         caption = (
             f"🎬 **{series_name} - S{season}** {display_language}\n"
-            f"Select the desired **video quality** to **browse episodes**:"
+            f"Select the desired **video quality**\n\n"
+            f"▶️ After click — bot will auto-send all episodes"
         )
          
         try:
@@ -376,71 +405,6 @@ def register_conversation_handlers(app: Client):
             pass
         except Exception as e:
             logger.warning(f"Error editing menu (show_quality_menu): {e}. Falling back to edit_text.")
-            try:
-                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            except MessageNotModified:
-                pass
-
-    # --- MENU FUNCTION: File Selection (The Click-to-Download Browser) ---
-    async def show_file_menu(query, series_name: str, season: int, language: str, quality: str):
-        """Generates a clickable menu of individual episode files."""
-        
-        # This retrieves all files for the selected criteria
-        files = await get_all_files_by_season_and_quality(series_name, season, quality, language)
-        
-        if not files:
-            await query.answer("❌ No files found for this quality.", show_alert=True)
-            return
-            
-        keyboard = []
-        row = [] # For buttons in rows of 3
-        
-        for file_entry in files:
-            channel_id = file_entry.get('channel_id')
-            message_id = file_entry.get('message_id')
-            episode_num = file_entry.get('episode', 0)
-            
-            button_text = f"⬇️ E{episode_num:02d}" if episode_num > 0 else f"⬇️ {file_entry.get('file_name', 'File')[:15]}..."
-            
-            # Callback format: fs|series_name|channel_id|message_id
-            callback_data = f'fs|{series_name[:MAX_CALLBACK_LENGTH]}|{channel_id}|{message_id}'
-            
-            row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
-            
-            if len(row) == 3:
-                keyboard.append(row)
-                row = []
-        
-        if row:
-            keyboard.append(row)
-
-        # Back button leads back to the Quality menu
-        callback_data_back = f'ls|{series_name[:MAX_CALLBACK_LENGTH]}|{season}|{language}'
-        keyboard.append([InlineKeyboardButton(f"⬅️ Back to Quality Selection", callback_data=callback_data_back)])
-        keyboard.append([InlineKeyboardButton("🗑️ Close Menu", callback_data='close')])
-
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        display_language = f"({language})"
-        if language == "Unknown":
-            display_language = f"(❓ Files)"
-             
-        caption = (
-            f"📥 **{series_name} - S{season} ({quality}, {language})**\n\n"
-            f"**Total Files:** `{len(files)}`\n"
-            f"Click any episode button below to receive the file instantly in this chat."
-        )
-         
-        try:
-            if query.message.photo:
-                await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            else:
-                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.warning(f"Error editing menu (show_file_menu): {e}. Falling back to edit_text.")
             try:
                 await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             except MessageNotModified:
