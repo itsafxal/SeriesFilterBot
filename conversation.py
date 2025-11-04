@@ -41,11 +41,18 @@ def register_conversation_handlers(app: Client):
     async def search_handler(_, message):
         """
         Handles user text search queries, fetches IMDB poster, and shows the menu.
+        Includes "Please Wait" messages for responsiveness.
         """
         query = message.text.strip()
         
         if query.startswith('/') and query.lower() not in ["/index"]: 
-             return
+            return
+
+        # 1. SEND: Send a "Please wait/Searching" message immediately
+        initial_message = await message.reply_text(
+            f"🔍 **Searching** for series matching '`{query}`' in the database. Please wait...",
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
 
         unique_names = await search_series(query) 
         
@@ -62,13 +69,21 @@ def register_conversation_handlers(app: Client):
                     break 
             
             # 2. If no exact match, fall back to the shortest name found in the DB results. 
-            # This avoids using file names like 'Wednesday Call Of The Woe'.
             if series_to_display is None:
                 series_to_display = clean_series_name(min(unique_names, key=len)) if unique_names else None
 
 
             if series_to_display:
                 
+                # 2. EDIT: Update the message to indicate IMDB search is starting
+                try:
+                    await initial_message.edit_text(
+                        f"✅ Found **{series_to_display}** in the database. Now fetching IMDB data and poster... 🖼️",
+                        parse_mode=enums.ParseMode.MARKDOWN
+                    )
+                except MessageNotModified:
+                    pass # Ignore if the message text hasn't changed
+
                 # --- Get IMDB Data asynchronously ---
                 imdb_data = None
                 try:
@@ -87,7 +102,8 @@ def register_conversation_handlers(app: Client):
                 summary = await get_series_summary(series_to_display)
 
                 if not summary['languages']:
-                    await message.reply_text(f"❌ Found series **{series_to_display}**, but no index data is available.", parse_mode=enums.ParseMode.MARKDOWN)
+                    # 3. EDIT: Update the initial message with the failure notice
+                    await initial_message.edit_text(f"❌ Found series **{series_to_display}**, but no index data is available.", parse_mode=enums.ParseMode.MARKDOWN)
                     return
                     
                 # --- CUSTOM DISPLAY FOR UNKNOWN LANGUAGES ---
@@ -126,7 +142,8 @@ def register_conversation_handlers(app: Client):
                 if poster_url:
                     logger.info(f"Attempting to send poster for {series_to_display}. URL: {poster_url}")
                     try:
-                        # Send the photo directly from URL with the full response and keyboard
+                        # 4. DELETE & REPLY: Delete the initial message and send the new photo message
+                        await initial_message.delete() 
                         await message.reply_photo(
                             photo=poster_url, 
                             caption=response,
@@ -136,21 +153,24 @@ def register_conversation_handlers(app: Client):
                     except Exception as e:
                         # Fallback to text message if photo sending fails (e.g., blocked URL)
                         logger.error(f"FATAL: Photo sending failed for {series_to_display}. Error: {type(e).__name__}: {e}") 
-                        await message.reply_text(
+                        # 5. EDIT: Edit the initial message with the final text menu
+                        await initial_message.edit_text(
                             f"⚠️ **Could not load poster image.**\n\n{response}", 
                             reply_markup=reply_markup, 
                             parse_mode=enums.ParseMode.MARKDOWN
                         )
                 else:
                     logger.info(f"No poster URL found for {series_to_display}.")
-                    # Send text message if no poster URL was found
-                    await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+                    # 6. EDIT: Edit the initial message with the final text menu
+                    await initial_message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             
             else:
-                await message.reply_text(f"❌ No series name could be isolated matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
+                # 7. EDIT: Edit the initial message with the failure notice
+                await initial_message.edit_text(f"❌ No series name could be isolated matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
                 
         else:
-            await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
+            # 8. EDIT: Edit the initial message with the final failure notice
+            await initial_message.edit_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
 
 
     # HANDLER: Language selection (Prefix: 'ls') -> moves to season menu
@@ -305,7 +325,7 @@ def register_conversation_handlers(app: Client):
 
         try:
             # Use edit_media to ensure the photo is updated/retained
-            if poster_url:
+            if poster_url and query.message.photo:
                 await query.message.edit_media(
                     # InputMediaPhoto is needed to pass both the photo (URL) and the caption
                     media=InputMediaPhoto(poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
@@ -320,7 +340,7 @@ def register_conversation_handlers(app: Client):
             # Fallback for errors like trying to edit a photo that was previously edited to text
             logger.warning(f"Failed to edit media on back_to_search: {e}. Attempting edit_text fallback.")
             try:
-                 await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+                await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             except MessageNotModified:
                 pass
         await query.answer()
