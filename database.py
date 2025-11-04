@@ -1,9 +1,8 @@
-# database.py
-
 import asyncio
 import re
 import sqlite3
 from pymongo import MongoClient, TEXT, DESCENDING
+# Assuming config.py contains MONGO_URI and logger
 from config import MONGO_URI, logger 
 
 # --- MONGODB CONFIG & STATE ---
@@ -113,6 +112,32 @@ async def get_bot_state(chat_id):
     def sync_get():
         doc = state_collection.find_one({"_id": chat_id})
         return doc.get("last_indexed_id") if doc else None
+    return await asyncio.to_thread(sync_get)
+
+
+# --- NEW STATE MANAGEMENT FOR GLOBAL SETTINGS ---
+
+async def set_global_setting(key: str, value):
+    """Sets a global bot configuration setting."""
+    # Use a fixed document ID for global settings
+    GLOBAL_DOC_ID = "GLOBAL_CONFIG"
+    def sync_set():
+        state_collection.update_one(
+            {"_id": GLOBAL_DOC_ID},
+            {"$set": {key: value}},
+            upsert=True
+        )
+    await asyncio.to_thread(sync_set)
+    logger.info(f"💾 Global setting '{key}' set to: {value}")
+
+
+async def get_global_setting(key: str, default_value=None):
+    """Retrieves a global bot configuration setting."""
+    # Use a fixed document ID for global settings
+    GLOBAL_DOC_ID = "GLOBAL_CONFIG"
+    def sync_get():
+        doc = state_collection.find_one({"_id": GLOBAL_DOC_ID})
+        return doc.get(key, default_value) if doc else default_value
     return await asyncio.to_thread(sync_get)
 
 
