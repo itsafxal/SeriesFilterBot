@@ -258,7 +258,65 @@ async def get_all_files_by_season_and_quality(series_name: str, season: int, qua
             conn.close()
             return files
         return await asyncio.to_thread(sync_get_files)
-    
+
+# database.py (Add or ensure these functions exist in the 'SEARCH AND RETRIEVAL FUNCTIONS' section)
+
+async def get_unique_languages_by_season(series_name: str, season: int):
+    """Gets unique language strings for a given series and season from SQLITE."""
+    async with sql_db_lock:
+        def sync_get_languages_by_season():
+            conn = sqlite3.connect(SQLITE_DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT language FROM files 
+                WHERE normalized_name = ? AND season = ?
+                ORDER BY language ASC
+            """, (series_name, season))
+            languages = [row[0] for row in cursor.fetchall()]
+            conn.close()
+            return languages
+        return await asyncio.to_thread(sync_get_languages_by_season)
+
+
+async def get_unique_qualities_by_lang_season(series_name: str, language: str, season: int):
+    """Gets unique quality strings for a given series, language, and season from SQLITE."""
+    async with sql_db_lock:
+        def sync_get_qualities():
+            conn = sqlite3.connect(SQLITE_DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT DISTINCT quality FROM files WHERE normalized_name = ? AND language = ? AND season = ?", 
+                (series_name, language, season)
+            )
+            qualities = [row[0] for row in cursor.fetchall()]
+            conn.close()
+
+            # Apply custom sort order to qualities
+            sort_order = ["4K", "1080P", "720P", "480P", "360P", "UNKNOWN"]
+            sorted_qualities = sorted(
+                [q for q in qualities if q in sort_order], 
+                key=lambda x: sort_order.index(x)
+            )
+            return sorted_qualities
+        return await asyncio.to_thread(sync_get_qualities)
+
+# --- NEW FUNCTION for Click-to-Download ---
+async def get_file_by_message_id_and_channel_id(channel_id: int, message_id: int):
+    """Retrieves a single file document based on its message and channel IDs."""
+    async with sql_db_lock:
+        def sync_get_file():
+            conn = sqlite3.connect(SQLITE_DB_PATH)
+            conn.row_factory = sqlite3.Row 
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM files
+                WHERE channel_id = ? AND message_id = ?
+            """, (channel_id, message_id))
+            file_entry = cursor.fetchone()
+            conn.close()
+            return dict(file_entry) if file_entry else None
+        return await asyncio.to_thread(sync_get_file)
+        
 async def save_file_to_db(file_doc: dict):
     """Inserts/updates a single file document into BOTH MongoDB and SQLITE."""
     def sync_save():
