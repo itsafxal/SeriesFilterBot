@@ -1,5 +1,3 @@
-# conversation.py
-
 import asyncio
 import re
 from pyrogram import Client, filters, enums
@@ -15,11 +13,13 @@ from database import (
     get_unique_seasons_by_name, 
     get_unique_qualities_by_season, 
     get_all_files_by_season_and_quality,
-    get_series_summary 
+    get_series_summary,
+    get_global_setting, 
+    set_global_setting 
 ) 
-from config import logger, CUSTOM_CAPTION_TEXT 
+# --- IMPORTANT: ADMIN_USERS must be defined in config.py as a list/tuple of user IDs ---
+from config import logger, CUSTOM_CAPTION_TEXT, ADMIN_USERS 
 from utils import clean_series_name 
-# --- CRITICAL FIX: Import from the renamed file ---
 from movie_fetcher import get_imdb_data 
 
 def register_conversation_handlers(app: Client):
@@ -37,18 +37,37 @@ def register_conversation_handlers(app: Client):
         )
         await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
-    @app.on_message(filters.text & filters.private & ~filters.command("start"))
+    # --- NEW ADMIN COMMAND: /poster_toggle ---
+    @app.on_message(filters.command("poster_toggle") & filters.user(ADMIN_USERS) & filters.private)
+    async def poster_toggle_command(_, message):
+        """Allows admin to turn the IMDB poster feature on or off."""
+        # Default to True for backward compatibility
+        current_state = await get_global_setting("IMDB_POSTER_ENABLED", True) 
+        new_state = not current_state
+        await set_global_setting("IMDB_POSTER_ENABLED", new_state)
+
+        status = "✅ **ON**" if new_state else "❌ **OFF**"
+        await message.reply_text(
+            f"🖼️ IMDB Poster feature is now set to: {status}",
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+
+    @app.on_message(filters.text & filters.private & ~filters.command(["start", "poster_toggle"]))
     async def search_handler(_, message):
         """
-        Handles user text search queries, fetches IMDB poster, and shows the menu.
-        Includes "Please Wait" messages for responsiveness.
+        Handles user text search queries.
+        Initial 'Please wait' message is now simplified and reused, as requested.
         """
         query = message.text.strip()
         
         if query.startswith('/') and query.lower() not in ["/index"]: 
             return
 
+        # --- GET SETTING ---
+        imdb_poster_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
+        
         # 1. SEND: Send a "Please wait/Searching" message immediately
+        # (This message replaces the "initial_message" that was requested to be disabled/deleted later)
         initial_message = await message.reply_text(
             f"🔍 **Searching** for series matching '`{query}`' in the database. Please wait...",
             parse_mode=enums.ParseMode.MARKDOWN
@@ -75,25 +94,26 @@ def register_conversation_handlers(app: Client):
 
             if series_to_display:
                 
-                # 2. EDIT: Update the message to indicate IMDB search is starting
-                try:
-                    await initial_message.edit_text(
-                        f"✅ Found **{series_to_display}** in the database. Now fetching IMDB data and poster... 🖼️",
-                        parse_mode=enums.ParseMode.MARKDOWN
-                    )
-                except MessageNotModified:
-                    pass # Ignore if the message text hasn't changed
+                # 2. EDIT: Update the message to indicate IMDB search is starting (ONLY if posters are enabled)
+                if imdb_poster_enabled:
+                    try:
+                        await initial_message.edit_text(
+                            f"✅ Found **{series_to_display}** in the database. Now fetching IMDB data and poster... 🖼️",
+                            parse_mode=enums.ParseMode.MARKDOWN
+                        )
+                    except MessageNotModified:
+                        pass 
 
-                # --- Get IMDB Data asynchronously ---
+                # --- Get IMDB Data asynchronously (Conditional) ---
                 imdb_data = None
-                try:
-                    # Using the isolated 'series_to_display' for IMDB lookup
-                    imdb_data = await asyncio.get_event_loop().run_in_executor(
-                        None, get_imdb_data, series_to_display
-                    )
-                except Exception as e:
-                    logger.error(f"IMDB data fetch failed for {series_to_display}: {e}")
-                
+                if imdb_poster_enabled:
+                    try:
+                        imdb_data = await asyncio.get_event_loop().run_in_executor(
+                            None, get_imdb_data, series_to_display
+                        )
+                    except Exception as e:
+                        logger.error(f"IMDB data fetch failed for {series_to_display}: {e}")
+                    
                 poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
                 imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
                 # --------------------------------------
@@ -138,8 +158,8 @@ def register_conversation_handlers(app: Client):
                 
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
-                # --- Robust Photo Sending Logic ---
-                if poster_url:
+                # --- Robust Photo Sending Logic (Conditional based on setting) ---
+                if imdb_poster_enabled and poster_url:
                     logger.info(f"Attempting to send poster for {series_to_display}. URL: {poster_url}")
                     try:
                         # 4. DELETE & REPLY: Delete the initial message and send the new photo message
@@ -160,7 +180,7 @@ def register_conversation_handlers(app: Client):
                             parse_mode=enums.ParseMode.MARKDOWN
                         )
                 else:
-                    logger.info(f"No poster URL found for {series_to_display}.")
+                    logger.info(f"No poster URL found or feature disabled for {series_to_display}.")
                     # 6. EDIT: Edit the initial message with the final text menu
                     await initial_message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             
@@ -276,14 +296,18 @@ def register_conversation_handlers(app: Client):
         data = query.data.split('|')
         series_name = data[1]
         
-        # --- Get IMDB Data asynchronously ---
+        # --- GET SETTING ---
+        imdb_poster_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
+        
+        # --- Get IMDB Data asynchronously (Conditional) ---
         imdb_data = None
-        try:
-            imdb_data = await asyncio.get_event_loop().run_in_executor(
-                None, get_imdb_data, series_name
-            )
-        except Exception as e:
-            logger.error(f"IMDB data fetch failed on back_to_search for {series_name}: {e}")
+        if imdb_poster_enabled:
+            try:
+                imdb_data = await asyncio.get_event_loop().run_in_executor(
+                    None, get_imdb_data, series_name
+                )
+            except Exception as e:
+                logger.error(f"IMDB data fetch failed on back_to_search for {series_name}: {e}")
         
         poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
         imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
@@ -324,8 +348,8 @@ def register_conversation_handlers(app: Client):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         try:
-            # Use edit_media to ensure the photo is updated/retained
-            if poster_url and query.message.photo:
+            # Use edit_media to ensure the photo is updated/retained (Conditional)
+            if imdb_poster_enabled and poster_url and query.message.photo:
                 await query.message.edit_media(
                     # InputMediaPhoto is needed to pass both the photo (URL) and the caption
                     media=InputMediaPhoto(poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
@@ -447,7 +471,7 @@ def register_conversation_handlers(app: Client):
 
     # Return all handler functions
     return [
-        start_command, search_handler,
+        start_command, poster_toggle_command, search_handler,
         language_select_handler, season_select_handler, 
         quality_select_handler, back_to_search_handler, 
         close_menu_handler
