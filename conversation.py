@@ -1,4 +1,5 @@
 # conversation.py
+
 import asyncio
 import re
 from pyrogram import Client, filters, enums
@@ -36,11 +37,17 @@ def register_conversation_handlers(app: Client):
     # --- NEW HELPER FUNCTION FOR AUTO-DELETION ---
     async def delete_message_later(app: Client, chat_id, message_id, delay):
         """Schedules the deletion of a message after a given delay."""
+        # Ensure delay is positive before sleeping
+        if delay <= 0:
+            return
+            
         await asyncio.sleep(delay)
         try:
+            # We target the specific message ID that was passed, which should be the last edited menu message.
             await app.delete_messages(chat_id, message_id)
-            logger.info(f"Auto-deleted message {message_id} in chat {chat_id} after {delay}s.")
+            logger.info(f"Auto-deleted menu message {message_id} in chat {chat_id} after {delay}s.")
         except Exception as e:
+            # MessageNotModified is fine, but deletion errors should be logged
             logger.warning(f"Failed to auto-delete message {message_id} in chat {chat_id}: {e}")
             
     @app.on_message(filters.command("start") & filters.private)
@@ -78,18 +85,18 @@ def register_conversation_handlers(app: Client):
                 await set_global_setting("AUTO_DELETE_TIMER", timer)
                 
                 if timer > 0:
-                    status = f"✅ **ON**: Auto-delete timer set to **{timer} seconds**."
+                    status = f"✅ **ON**: Menu auto-delete timer set to **{timer} seconds**."
                 else:
-                    status = "❌ **OFF**: Auto-delete is disabled."
+                    status = "❌ **OFF**: Menu auto-delete is disabled."
                     
                 await message.reply_text(
-                    f"🗑️ File Auto-Deletion feature is now set to: {status}\n\n"
+                    f"🗑️ Menu Auto-Deletion feature is now set to: {status}\n\n"
                     f"Set to 0 to disable.",
                     parse_mode=enums.ParseMode.MARKDOWN
                 )
             else:
                 current_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
-                status = f"Current auto-delete timer is: **{current_timer} seconds**."
+                status = f"Current menu auto-delete timer is: **{current_timer} seconds**."
                 await message.reply_text(
                     f"Usage: `/autodel <seconds>` (e.g., `/autodel 300`)\n"
                     f"{status}",
@@ -183,11 +190,14 @@ def register_conversation_handlers(app: Client):
                     keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
                  
                 reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                # --- Get the auto-delete timer for Menus ---
+                auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
                 if imdb_poster_enabled and poster_url:
                     try:
                         await initial_message.delete() 
-                        await message.reply_photo(
+                        sent_message = await message.reply_photo( # ⬅ Capture the message
                             photo=poster_url, 
                             caption=response,
                             reply_markup=reply_markup, 
@@ -195,13 +205,19 @@ def register_conversation_handlers(app: Client):
                         )
                     except Exception as e:
                         logger.error(f"FATAL: Photo sending failed for {series_to_display}. Error: {type(e).__name__}: {e}") 
-                        await initial_message.edit_text(
+                        sent_message = await initial_message.edit_text( # ⬅ Capture the message
                             f"⚠️ **Could not load poster image.**\n\n{response}", 
                             reply_markup=reply_markup, 
                             parse_mode=enums.ParseMode.MARKDOWN
                         )
                 else:
-                    await initial_message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+                    sent_message = await initial_message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN) # ⬅ Capture the message
+
+                # --- Schedule deletion of the initial menu ---
+                if auto_delete_timer > 0:
+                    asyncio.create_task(
+                        delete_message_later(app, sent_message.chat.id, sent_message.id, auto_delete_timer)
+                    )
              
             else:
                 await initial_message.edit_text(f"❌ No series name could be isolated matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
@@ -227,7 +243,7 @@ def register_conversation_handlers(app: Client):
         await show_quality_menu(query, series_name, language, season)
         await query.answer()
 
-    # ⬇⬇⬇ MODIFIED: quality_select_handler (for auto-delete)
+    # ⬇⬇⬇ MODIFIED: quality_select_handler (REMOVED auto-delete for files)
     @app.on_callback_query(filters.regex(r"^qs\|")) 
     async def quality_select_handler(app, query):
         """QUALITY CLICK = SEND ALL FILES DIRECTLY"""
@@ -246,9 +262,6 @@ def register_conversation_handlers(app: Client):
             return
 
         bot_username = (await app.get_me()).username
-        
-        # --- NEW: Get the auto-delete timer ---
-        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
         sent_count = 0
         for file_entry in files:
@@ -262,7 +275,8 @@ def register_conversation_handlers(app: Client):
             )
 
             try:
-                sent_message = await app.copy_message(
+                # We no longer capture sent_message or schedule deletion here.
+                await app.copy_message( 
                     chat_id=query.from_user.id,
                     from_chat_id=channel_id,
                     message_id=message_id,
@@ -270,13 +284,6 @@ def register_conversation_handlers(app: Client):
                     parse_mode=enums.ParseMode.MARKDOWN
                 )
                 sent_count += 1
-                
-                # --- NEW: Schedule deletion if the timer is set ---
-                if auto_delete_timer > 0:
-                    asyncio.create_task(
-                        delete_message_later(app, query.from_user.id, sent_message.id, auto_delete_timer)
-                    )
-                
             except Exception as e:
                 logger.error(f"copy fail {message_id} : {e}")
 
@@ -284,6 +291,7 @@ def register_conversation_handlers(app: Client):
 
     @app.on_callback_query(filters.regex(r"^fs\|")) 
     async def file_select_handler(app, query):
+        # ... (remains the same) ...
         """(NOT used now but kept for future)"""
         data = query.data.split('|')
         series_name = data[1]
@@ -322,6 +330,7 @@ def register_conversation_handlers(app: Client):
             await query.answer("❌ Failed to send file. Please ensure the bot is an admin in the source channel.", show_alert=True)
             
 
+    # ⬇⬇⬇ MODIFIED: back_to_search_handler (for menu auto-delete)
     @app.on_callback_query(filters.regex(r"back_to_search"))
     async def back_to_search_handler(_, query):
         """Returns to the initial summary/Season selection menu."""
@@ -362,6 +371,9 @@ def register_conversation_handlers(app: Client):
          
         reply_markup = InlineKeyboardMarkup(keyboard)
 
+        # --- Get the auto-delete timer for Menus ---
+        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+
         try:
             if imdb_poster_enabled and poster_url and query.message.photo:
                 await query.message.edit_media(
@@ -378,9 +390,17 @@ def register_conversation_handlers(app: Client):
                 await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             except MessageNotModified:
                 pass
+        
+        # --- Schedule deletion of the current menu state ---
+        if auto_delete_timer > 0:
+            asyncio.create_task(
+                delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer)
+            )
+            
         await query.answer()
 
 
+    # ⬇⬇⬇ MODIFIED: show_language_menu (for menu auto-delete)
     async def show_language_menu(query, series_name: str, season: int):
         """Presents languages available for the specified season."""
         languages = await get_unique_languages_by_season(series_name, season)
@@ -407,6 +427,9 @@ def register_conversation_handlers(app: Client):
             f"Select the **Language**:"
         )
          
+        # --- Get the auto-delete timer for Menus ---
+        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+        
         try:
             if query.message.photo:
                 await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
@@ -420,7 +443,14 @@ def register_conversation_handlers(app: Client):
                 await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             except MessageNotModified:
                 pass
+        
+        # --- Schedule deletion of the current menu state ---
+        if auto_delete_timer > 0:
+            asyncio.create_task(
+                delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer)
+            )
              
+    # ⬇⬇⬇ MODIFIED: show_quality_menu (for menu auto-delete)
     async def show_quality_menu(query, series_name: str, language: str, season: int):
         """Presents qualities available for the specified season and language."""
         qualities = await get_unique_qualities_by_lang_season(series_name, language, season)
@@ -451,6 +481,9 @@ def register_conversation_handlers(app: Client):
             f"▶️ After click — bot will auto-send all episodes"
         )
          
+        # --- Get the auto-delete timer for Menus ---
+        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+        
         try:
             if query.message.photo:
                 await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
@@ -464,6 +497,12 @@ def register_conversation_handlers(app: Client):
                 await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             except MessageNotModified:
                 pass
+        
+        # --- Schedule deletion of the current menu state ---
+        if auto_delete_timer > 0:
+            asyncio.create_task(
+                delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer)
+            )
 
 
     @app.on_callback_query(filters.regex(r"close"))
