@@ -38,7 +38,7 @@ def register_conversation_handlers(app: Client):
         await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
     # --- NEW ADMIN COMMAND: /poster_toggle ---
-    @app.on_message(filters.command("poster_toggle") & filters.user(ADMIN_USERS) & filters.private)
+    @app.on_message(filters.command("imdb") & filters.user(ADMIN_USERS) & filters.private)
     async def poster_toggle_command(_, message):
         """Allows admin to turn the IMDB poster feature on or off."""
         # Default to True for backward compatibility
