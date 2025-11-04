@@ -1,4 +1,4 @@
-#serve.py
+# conversation.py
 import asyncio
 import re
 from pyrogram import Client, filters, enums
@@ -141,11 +141,22 @@ def register_conversation_handlers(app: Client):
             await app.send_message(user_chat_id, f"❌ No episodes found for **{series_name}** S{season} ({quality}, {language}).", parse_mode=enums.ParseMode.MARKDOWN)
             return
             
+        # --- MODIFIED: Compile and display list of files to be sent (showing original file_name) ---
+        file_list_display = ""
+        for i, file_entry in enumerate(files, 1):
+            # Show original file_name from the database entry
+            file_list_display += f"{i}. **E{file_entry.get('episode', 99):02d}**: `{file_entry.get('file_name', 'Unknown File Name')}`\n"
+            if i >= 10 and len(files) > 10: # Only show max 10 files if list is long
+                file_list_display += f"...and {len(files) - i} more files.\n"
+                break
+        
         try:
             # Edit menu to show sending status
             await query.message.edit_text(
                 f"📤 **Sending {len(files)} files to your PM:**\n\n"
-                f"🎬 **{series_name} - S{season} ({quality}, {language})**",
+                f"🎬 **{series_name} - S{season} ({quality}, {language})**\n\n"
+                f"**Files to be Sent:**\n"
+                f"{file_list_display}",
                 reply_markup=InlineKeyboardMarkup([
                     # Back to initial summary/language list
                     [InlineKeyboardButton(f"⬅️ Back to Languages", callback_data=f'back_to_search|{series_name}')], 
@@ -160,6 +171,7 @@ def register_conversation_handlers(app: Client):
         for file_entry in files:
             channel_id = file_entry.get('channel_id')
             message_id = file_entry.get('message_id')
+            # Use original file_name for caption formatting, falling back to episode number
             file_name = file_entry.get('file_name', f"S{season:02d}E{file_entry.get('episode', 99)}")
             
             try:
