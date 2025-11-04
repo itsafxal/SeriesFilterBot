@@ -64,8 +64,17 @@ def register_conversation_handlers(app: Client):
                     await message.reply_text(f"❌ Found series **{series_to_display}**, but no index data is available.", parse_mode=enums.ParseMode.MARKDOWN)
                     return
                 
-                # Build the initial summary text
-                languages_list = ", ".join(summary['languages'])
+                # --- FIX: CUSTOM DISPLAY FOR UNKNOWN LANGUAGES ---
+                display_languages = []
+                for lang in summary['languages']:
+                    if lang == "Unknown":
+                        # Replace "Unknown" with the series name for display
+                        display_languages.append(f"❓ {series_to_display} Files")
+                    else:
+                        display_languages.append(f"🗣️ {lang}")
+                
+                # Create languages_list for the response text without emojis
+                languages_list = ", ".join([lang.replace('🗣️ ', '').replace('❓ ', '') for lang in display_languages])
                 seasons_count = len(summary['seasons'])
                 qualities_list = ", ".join(summary['qualities'])
 
@@ -78,10 +87,12 @@ def register_conversation_handlers(app: Client):
                 
                 keyboard = []
                 series_name_short = series_to_display[:MAX_CALLBACK_LENGTH]
-                for lang in summary['languages']:
+                
+                # Build buttons using the original language string for callback data, but custom text
+                for i, lang in enumerate(summary['languages']):
                     # Prefix 'ls' for Language Select
                     callback_data = f'ls|{series_name_short}|{lang}'
-                    button_text = f"🗣️ {lang}"
+                    button_text = display_languages[i] 
                     keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
                 
                 reply_markup = InlineKeyboardMarkup(keyboard)
@@ -186,7 +197,16 @@ def register_conversation_handlers(app: Client):
         
         # Recalculate summary for the response
         summary = await get_series_summary(series_name)
-        languages_list = ", ".join(summary['languages'])
+
+        # --- FIX: CUSTOM DISPLAY FOR UNKNOWN LANGUAGES ---
+        display_languages = []
+        for lang in summary['languages']:
+            if lang == "Unknown":
+                display_languages.append(f"❓ {series_name} Files")
+            else:
+                display_languages.append(f"🗣️ {lang}")
+        
+        languages_list = ", ".join([lang.replace('🗣️ ', '').replace('❓ ', '') for lang in display_languages])
         seasons_count = len(summary['seasons'])
         qualities_list = ", ".join(summary['qualities'])
         
@@ -199,9 +219,9 @@ def register_conversation_handlers(app: Client):
         
         keyboard = []
         series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for lang in summary['languages']:
+        for i, lang in enumerate(summary['languages']):
             callback_data = f'ls|{series_name_short}|{lang}'
-            button_text = f"🗣️ {lang}"
+            button_text = display_languages[i]
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
         try:
@@ -231,8 +251,13 @@ def register_conversation_handlers(app: Client):
         keyboard.append([InlineKeyboardButton(f"⬅️ Back to Languages", callback_data=f'back_to_search|{series_name_short}')])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        display_language = f"({language})"
+        if language == "Unknown":
+            display_language = f"(❓ {series_name} Files)"
+            
         caption = (
-            f"🎬 **{series_name} ({language})**\n"
+            f"🎬 **{series_name}** {display_language}\n"
             "Select a **Season**:"
         )
         
@@ -262,8 +287,13 @@ def register_conversation_handlers(app: Client):
         keyboard.append([InlineKeyboardButton(f"⬅️ Back to Seasons", callback_data=callback_data_back)])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        display_language = f"({language})"
+        if language == "Unknown":
+            display_language = f"(❓ {series_name} Files)"
+            
         caption = (
-            f"🎬 **{series_name} - S{season} ({language})**\n"
+            f"🎬 **{series_name} - S{season}** {display_language}\n"
             f"Select the desired **video quality** to **start downloading all episodes**:"
         )
         
