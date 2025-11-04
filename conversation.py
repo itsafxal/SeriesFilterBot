@@ -1,4 +1,4 @@
-#conversation.py
+# conversation.py
 import asyncio
 import re
 from pyrogram import Client, filters, enums
@@ -33,6 +33,16 @@ def register_conversation_handlers(app: Client):
     # Utility constant for shorter callback data prefixes
     MAX_CALLBACK_LENGTH = 50
 
+    # --- NEW HELPER FUNCTION FOR AUTO-DELETION ---
+    async def delete_message_later(app: Client, chat_id, message_id, delay):
+        """Schedules the deletion of a message after a given delay."""
+        await asyncio.sleep(delay)
+        try:
+            await app.delete_messages(chat_id, message_id)
+            logger.info(f"Auto-deleted message {message_id} in chat {chat_id} after {delay}s.")
+        except Exception as e:
+            logger.warning(f"Failed to auto-delete message {message_id} in chat {chat_id}: {e}")
+            
     @app.on_message(filters.command("start") & filters.private)
     async def start_command(_, message):
         """Handles the /start command."""
@@ -56,7 +66,42 @@ def register_conversation_handlers(app: Client):
             parse_mode=enums.ParseMode.MARKDOWN
         )
 
-    @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb"]))
+    @app.on_message(filters.command("autodel") & filters.user(ADMIN_USERS) & filters.private)
+    async def autodel_command(_, message):
+        """Allows admin to set the auto-delete timer for sent files."""
+        try:
+            if len(message.command) > 1:
+                timer = int(message.command[1])
+                if timer < 0:
+                    timer = 0
+                
+                await set_global_setting("AUTO_DELETE_TIMER", timer)
+                
+                if timer > 0:
+                    status = f"✅ **ON**: Auto-delete timer set to **{timer} seconds**."
+                else:
+                    status = "❌ **OFF**: Auto-delete is disabled."
+                    
+                await message.reply_text(
+                    f"🗑️ File Auto-Deletion feature is now set to: {status}\n\n"
+                    f"Set to 0 to disable.",
+                    parse_mode=enums.ParseMode.MARKDOWN
+                )
+            else:
+                current_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+                status = f"Current auto-delete timer is: **{current_timer} seconds**."
+                await message.reply_text(
+                    f"Usage: `/autodel <seconds>` (e.g., `/autodel 300`)\n"
+                    f"{status}",
+                    parse_mode=enums.ParseMode.MARKDOWN
+                )
+                
+        except ValueError:
+            await message.reply_text("❌ Invalid number provided. Please use an integer for seconds.", parse_mode=enums.ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"Error in autodel_command: {e}")
+
+    @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel"]))
     async def search_handler(_, message):
         """Handles user text search queries and starts the Season menu."""
         query = message.text.strip()
@@ -182,7 +227,7 @@ def register_conversation_handlers(app: Client):
         await show_quality_menu(query, series_name, language, season)
         await query.answer()
 
-    # ⬇⬇⬇ CHANGED THIS ONE ONLY — QUALITY → SEND ALL FILES
+    # ⬇⬇⬇ MODIFIED: quality_select_handler (for auto-delete)
     @app.on_callback_query(filters.regex(r"^qs\|")) 
     async def quality_select_handler(app, query):
         """QUALITY CLICK = SEND ALL FILES DIRECTLY"""
@@ -201,6 +246,9 @@ def register_conversation_handlers(app: Client):
             return
 
         bot_username = (await app.get_me()).username
+        
+        # --- NEW: Get the auto-delete timer ---
+        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
         sent_count = 0
         for file_entry in files:
@@ -214,7 +262,7 @@ def register_conversation_handlers(app: Client):
             )
 
             try:
-                await app.copy_message(
+                sent_message = await app.copy_message(
                     chat_id=query.from_user.id,
                     from_chat_id=channel_id,
                     message_id=message_id,
@@ -222,6 +270,13 @@ def register_conversation_handlers(app: Client):
                     parse_mode=enums.ParseMode.MARKDOWN
                 )
                 sent_count += 1
+                
+                # --- NEW: Schedule deletion if the timer is set ---
+                if auto_delete_timer > 0:
+                    asyncio.create_task(
+                        delete_message_later(app, query.from_user.id, sent_message.id, auto_delete_timer)
+                    )
+                
             except Exception as e:
                 logger.error(f"copy fail {message_id} : {e}")
 
@@ -421,7 +476,7 @@ def register_conversation_handlers(app: Client):
 
 
     return [
-        start_command, poster_toggle_command, search_handler,
+        start_command, poster_toggle_command, autodel_command, search_handler,
         language_select_handler, season_select_handler, 
         quality_select_handler, file_select_handler, 
         back_to_search_handler, 
