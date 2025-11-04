@@ -225,7 +225,7 @@ async def get_all_files_by_season_and_quality(series_name: str, season: int, qua
             conn.row_factory = sqlite3.Row 
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT channel_id, message_id, file_name, episode FROM files 
+                SELECT * FROM files 
                 WHERE normalized_name = ? AND season = ? AND quality = ? AND language = ?
                 ORDER BY episode ASC
             """, (series_name, season, quality, language))
