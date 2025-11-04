@@ -6,6 +6,7 @@ from pyrogram import Client
 from index import register_media_handler, register_bulk_index_handlers
 from conversation import register_conversation_handlers
 from database import initialize_sql_db # Import the new initialization function
+from state_manager import get_bot_state, save_bot_state
 from config import API_ID, API_HASH, BOT_TOKEN, logger
 
 def main():
