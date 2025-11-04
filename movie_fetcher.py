@@ -33,6 +33,6 @@ def get_imdb_data(query):
         return {"title": title, "poster": poster, "link": link}
 
     except Exception as e:
-        # Logging here helps confirm if cinemagoer failed to find the data
+        # Using print here as logger is not defined in this standalone file
         print(f"IMDB data fetch failed using cinemagoer for '{query}': {e}")
         return None
