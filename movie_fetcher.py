@@ -3,36 +3,39 @@
 
 # Ensure you have installed this: pip install cinemagoer
 
-from imdb import IMDb 
+from imdb import IMDb
 
-# Initialize the cinemagoer interface once
 ia = IMDb()
 
-def get_imdb_data(query):
-    """
-    Fetches IMDB data (title, poster URL, link) using the cinemagoer library.
-    """
+def get_imdb_data(query: str):
     try:
-        # Search for the series/title
-        search_results = ia.search_for_title(query)
-        
-        if not search_results:
+        res = ia.search_movie(query)              # better than search_for_title
+
+        if not res:
             return None
-            
-        # Get the top result
-        top_result = search_results[0]
-        
-        # Fetch the complete data for the movie/series
-        ia.update(top_result, ['main', 'plot'])
-        
-        title = top_result.get('title')
-        # Prioritize 'full-size poster', fallback to 'cover url'
-        poster = top_result.get('full-size poster') or top_result.get('cover url')
-        link = f"https://www.imdb.com/title/tt{top_result.movieID}/"
-        
-        return {"title": title, "poster": poster, "link": link}
+
+        mid = res[0].movieID                      # first result id
+        m = ia.get_movie(mid)                     # FULL fetch
+
+        title  = m.get('title') or query
+
+        poster = (
+            m.get('full-size cover url')
+            or m.get('full-size poster')
+            or m.get('cover url')
+            or m.get('poster')
+        )
+
+        link = f"https://www.imdb.com/title/tt{mid}/"
+
+        # if still None → return None OR empty string
+        return {
+            "title": title,
+            "poster": poster or "",
+            "link": link
+        }
 
     except Exception as e:
-        # Using print here as logger is not defined in this standalone file
-        print(f"IMDB data fetch failed using cinemagoer for '{query}': {e}")
+        print("cinemagoer fail:", e)
         return None
+
