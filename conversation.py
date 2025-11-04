@@ -31,7 +31,7 @@ def register_conversation_handlers(app: Client):
         await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
     # FIX: Exclude ALL commands from the search handler to prevent "/index" from being treated as a query.
-    @app.on_message(filters.text & filters.private & ~filters.command())
+    @app.on_message(filters.text & filters.private & ~filters.command("start"))
     async def search_handler(_, message):
         """
         Handles user text search queries, finds the primary series name, 
