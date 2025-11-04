@@ -9,14 +9,14 @@ from database import (
     get_unique_seasons_by_name, 
     get_unique_qualities_by_season, 
     get_all_files_by_season_and_quality,
-    get_series_summary # NEW dependency
+    get_series_summary 
 ) 
 from config import logger, CUSTOM_CAPTION_TEXT 
 from utils import clean_series_name 
 
 def register_conversation_handlers(app: Client):
 
-    # Utility function for shorter callback data prefixes
+    # Utility constant for shorter callback data prefixes
     MAX_CALLBACK_LENGTH = 50
 
     @app.on_message(filters.command("start") & filters.private)
@@ -56,7 +56,7 @@ def register_conversation_handlers(app: Client):
 
             if series_to_display:
                 
-                # NEW: Get summary data (languages, seasons, qualities)
+                # Get summary data (languages, seasons, qualities)
                 summary = await get_series_summary(series_to_display)
 
                 if not summary['languages']:
@@ -78,7 +78,7 @@ def register_conversation_handlers(app: Client):
                 keyboard = []
                 series_name_short = series_to_display[:MAX_CALLBACK_LENGTH]
                 for lang in summary['languages']:
-                    # Use 'ls' for Language Select
+                    # Prefix 'ls' for Language Select
                     callback_data = f'ls|{series_name_short}|{lang}'
                     button_text = f"🗣️ {lang}"
                     keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
@@ -86,14 +86,12 @@ def register_conversation_handlers(app: Client):
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             else:
-                await message.reply_text(f"❌ No single series name could be isolated from files matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
+                await message.reply_text(f"❌ No series name could be isolated matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
                 
         else:
             await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
 
-    # Note: 'language_menu' handler from previous version is merged/removed since search_handler now directly shows languages.
-
-    # HANDLER: Handles language selection and moves to season menu (Prefix: 'ls')
+    # HANDLER: Language selection (Prefix: 'ls') -> moves to season menu
     @app.on_callback_query(filters.regex(r"ls\|"))
     async def language_select_handler(_, query):
         data = query.data.split('|')
@@ -102,7 +100,7 @@ def register_conversation_handlers(app: Client):
         await show_season_menu(query, series_name, language)
         await query.answer()
 
-    # HANDLER: Handles season selection and moves to quality menu (Prefix: 'ss')
+    # HANDLER: Season selection (Prefix: 'ss') -> moves to quality menu
     @app.on_callback_query(filters.regex(r"ss\|"))
     async def season_select_handler(_, query):
         data = query.data.split('|')
@@ -112,7 +110,7 @@ def register_conversation_handlers(app: Client):
         await show_quality_menu(query, series_name, language, season) 
         await query.answer()
 
-    # HANDLER: Handles quality selection and sends files (Prefix: 'qs')
+    # HANDLER: Quality selection (Prefix: 'qs') -> sends files
     @app.on_callback_query(filters.regex(r"qs\|")) 
     async def quality_select_handler(app, query):
         """Retrieves all files for the selected season/quality/language and sends them."""
@@ -127,17 +125,18 @@ def register_conversation_handlers(app: Client):
         
         files = await get_all_files_by_season_and_quality(series_name, season, quality, language) 
         
-        # ... (File sending logic remains the same) ...
         if not files:
             await app.send_message(user_chat_id, f"❌ No episodes found for **{series_name}** S{season} ({quality}, {language}).", parse_mode=enums.ParseMode.MARKDOWN)
             return
             
         try:
+            # Edit menu to show sending status
             await query.message.edit_text(
                 f"📤 **Sending {len(files)} files to your PM:**\n\n"
                 f"🎬 **{series_name} - S{season} ({quality}, {language})**",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton(f"⬅️ Back to Languages", callback_data=f'back_to_search|{series_name}')], # Go back to the initial summary/language list
+                    # Back to initial summary/language list
+                    [InlineKeyboardButton(f"⬅️ Back to Languages", callback_data=f'back_to_search|{series_name}')], 
                     [InlineKeyboardButton("🗑️ Close Menu", callback_data='close')]
                 ]),
                 parse_mode=enums.ParseMode.MARKDOWN
@@ -151,8 +150,8 @@ def register_conversation_handlers(app: Client):
             message_id = file_entry.get('message_id')
             file_name = file_entry.get('file_name', f"S{season:02d}E{file_entry.get('episode', 99)}")
             
-            # ... (Copy message logic omitted for brevity) ...
             try:
+                message_to_copy = await app.get_messages(chat_id=channel_id, message_ids=message_id)
                 bot_username = (await app.get_me()).username
                 custom_caption = CUSTOM_CAPTION_TEXT.format(
                     file_name=file_name,
@@ -177,14 +176,14 @@ def register_conversation_handlers(app: Client):
             parse_mode=enums.ParseMode.MARKDOWN
         )
 
-    # NEW HANDLER: For the back button from Quality Selection (goes back to initial summary/language list)
+    # HANDLER: Back button from deep in the menu structure -> goes back to initial summary/language list
     @app.on_callback_query(filters.regex(r"back_to_search"))
     async def back_to_search_handler(_, query):
         data = query.data.split('|')
         series_name = data[1]
         
+        # Recalculate summary for the response
         summary = await get_series_summary(series_name)
-        
         languages_list = ", ".join(summary['languages'])
         seasons_count = len(summary['seasons'])
         qualities_list = ", ".join(summary['qualities'])
@@ -209,14 +208,12 @@ def register_conversation_handlers(app: Client):
             pass
         await query.answer()
 
-    # REMOVED: show_language_menu (Logic is now in search_handler and back_to_search_handler)
 
-    # MODIFIED MENU FUNCTION: Season Selection
+    # MENU FUNCTION: Season Selection
     async def show_season_menu(query, series_name: str, language: str):
         seasons = await get_unique_seasons_by_name(series_name, language)
         
         if not seasons:
-            # Error message on the current menu if no seasons found
             await query.answer(f"❌ No seasons found for {series_name} ({language}).", show_alert=True)
             return
 
@@ -242,7 +239,7 @@ def register_conversation_handlers(app: Client):
         except MessageNotModified:
             pass
             
-    # MODIFIED MENU FUNCTION: Quality Selection
+    # MENU FUNCTION: Quality Selection
     async def show_quality_menu(query, series_name: str, language: str, season: int):
         qualities = await get_unique_qualities_by_season(series_name, language, season)
         
@@ -258,7 +255,7 @@ def register_conversation_handlers(app: Client):
             button_text = f"💾 {quality}"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
             
-        # Back button leads to the Season menu (using 'ls' prefix)
+        # Back button leads to the Season menu, preserving language context (using 'ls' prefix)
         callback_data_back = f'ls|{series_name_short}|{language}'
         keyboard.append([InlineKeyboardButton(f"⬅️ Back to Seasons", callback_data=callback_data_back)])
         
@@ -286,6 +283,6 @@ def register_conversation_handlers(app: Client):
     return [
         start_command, search_handler, 
         language_select_handler, season_select_handler, 
-        quality_select_handler, back_to_search_handler, # NEW/MODIFIED
+        quality_select_handler, back_to_search_handler, 
         close_menu_handler
     ]
