@@ -121,6 +121,7 @@ def extract_language(file_name: str) -> str:
 def parse_series_info(file_name: str):
     """
     Extracts Series Name, Season (SXX), Episode (EXX), Quality, AND Language.
+    **MODIFIED: Returns original name part instead of normalized name.**
     """
     if not file_name:
         return "", 0, 0, "", ""
@@ -130,18 +131,21 @@ def parse_series_info(file_name: str):
     language = extract_language(file_name) 
     
     if not match:
-        return clean_series_name(file_name), 0, 0, quality, language
+        # Use the whole file_name as the series identifier if no SXXEXX pattern is found
+        # This will be stored in the 'file_name_for_search' field in the DB.
+        return file_name.strip(), 0, 0, quality, language 
 
     season = int(match.group(1))
     episode = int(match.group(2))
     
+    # Remove SXXEXX portion to get the name part
     name_part = re.sub(r"([. _-]+)?[sS]\d+[. _-]*[eE]\d+([. _-]+)?", " ", file_name).strip()
-    normalized_name = clean_series_name(name_part)
     
-    if len(normalized_name.split()) > 5:
-        normalized_name = " ".join(normalized_name.split()[:5]) 
-
-    return normalized_name.title(), season, episode, quality, language
+    # Use a simpler name portion, but NO aggressive cleaning
+    # We will use this as the primary search/grouping identifier
+    series_name_for_search = name_part 
+    
+    return series_name_for_search, season, episode, quality, language
 
 
 async def save_series_file_for_bulk_index(message: types.Message):
@@ -160,14 +164,16 @@ async def save_series_file_for_bulk_index(message: types.Message):
     if not file_name:
         return False, 0 
 
-    normalized_name, season, episode, quality, language = parse_series_info(file_name) 
+    # NOTE: The first return value (series_name_for_search) is no longer aggressively cleaned
+    series_name_for_search, season, episode, quality, language = parse_series_info(file_name) 
     
     if season > 0:
         file_doc = {
             "channel_id": message.chat.id,
             "message_id": message.id,
             "file_name": file_name, 
-            "normalized_name": normalized_name, 
+            # Storing the un-normalized name for grouping/searching
+            "file_name_for_search": series_name_for_search, 
             "season": season,
             "episode": episode,
             "quality": quality, 
