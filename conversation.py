@@ -17,7 +17,7 @@ from database import (
 ) 
 from config import logger, CUSTOM_CAPTION_TEXT 
 from utils import clean_series_name 
-from imdb import get_imdb_data # Import the IMDB function
+from poster import get_imdb_data # Import the IMDB function
 
 def register_conversation_handlers(app: Client):
 
