@@ -5,3 +5,5 @@ pymongo
 dnspython
 tgcrypto
 aiosqlite
+git+https://github.com/Joelkb/cinemagoer
+requests
