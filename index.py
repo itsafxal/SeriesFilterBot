@@ -5,7 +5,8 @@ from pyrogram.types import Message
 # Assumes config.py exists
 from config import INDEX_CHANNELS, ADMIN_USERS, logger
 # Assumes database.py and utils.py exist
-from database import save_file_to_db, get_bot_state, save_bot_state
+from database import save_file_to_db
+from state_manager import get_bot_state, save_bot_state
 from utils import save_series_file_for_bulk_index
 
 def register_media_handler(app: Client):
