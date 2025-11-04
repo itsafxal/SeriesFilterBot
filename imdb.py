@@ -1,30 +1,46 @@
-import requests
-from bs4 import BeautifulSoup
+# imdb.py
+
+# git+https://github.com/Joelkb/cinemagoer
+
+# Removed: import requests
+# Removed: from bs4 import BeautifulSoup
+from imdb import IMDb # Import the official cinemagoer library
+
+# Initialize the cinemagoer interface outside the function for performance
+ia = IMDb()
 
 def get_imdb_data(query):
     """
-    Fetches IMDB data (title, poster URL, link) for a given query.
-    Note: This is a synchronous function and should be run in an executor 
-    in an async environment like Pyrogram.
+    Fetches IMDB data (title, poster URL, link) using the cinemagoer library.
     """
-    search_url = f"https://www.imdb.com/find?q={query.replace(' ', '+')}&s=tt"
-    r = requests.get(search_url)
-    soup = BeautifulSoup(r.text, "html.parser")
-    # Tries to find the first search result link
-    result = soup.select_one(".findResult a")
-    if not result:
-        return None
+    try:
+        # Search for the series/title
+        search_results = ia.search_for_title(query)
         
-    link = "https://www.imdb.com" + result.get("href")
-    page = requests.get(link)
-    psoup = BeautifulSoup(page.text, "html.parser")
-    
-    # Extract Title (h1)
-    title_element = psoup.find("h1")
-    title = title_element.text.strip() if title_element else "Unknown Title"
-    
-    # Extract Poster (using the common ipc-image selector)
-    poster_element = psoup.select_one(".ipc-image")
-    poster = poster_element["src"] if poster_element and "src" in poster_element.attrs else None
-    
-    return {"title": title, "poster": poster, "link": link}
+        if not search_results:
+            return None
+            
+        # Get the top result (usually the correct one)
+        top_result = search_results[0]
+        
+        # Fetch the complete data for the movie/series
+        ia.update(top_result, ['main', 'plot'])
+        
+        # Construct the necessary return data
+        title = top_result.get('title')
+        # Get the URL for the poster (uses 'full-size' image if available)
+        poster = top_result.get('full-size poster') or top_result.get('cover url')
+        # Construct the official IMDB link
+        link = f"https://www.imdb.com/title/tt{top_result.movieID}/"
+        
+        if not poster:
+             # Fallback if poster is missing, but data found
+            return {"title": title, "poster": None, "link": link}
+
+        return {"title": title, "poster": poster, "link": link}
+
+    except Exception as e:
+        # Log the error if the library fails to fetch data
+        # In a real bot, you'd log this with your config.logger
+        print(f"IMDB data fetch failed using cinemagoer for '{query}': {e}")
+        return None
