@@ -19,7 +19,7 @@ try:
         [("normalized_name", TEXT)], 
         name="series_name_text_index", 
         background=True, 
-        language_override="text_index_lang", # <--- FIX: Prevents using the 'language' field for text analysis
+        language_override="text_index_lang", # 🔥 FIX: Prevents MongoDB from using file_doc['language']
     )
     files_collection.create_index([("normalized_name", 1), ("season", 1), ("quality", 1), ("language", 1)], background=True)
     state_collection.create_index([("_id", 1)]) 
@@ -75,7 +75,7 @@ def migrate_data_from_mongo_to_sql():
         insert_data.append((
             doc.get("channel_id"), doc.get("message_id"), doc.get("file_name"), 
             doc.get("normalized_name"), doc.get("season", 0), doc.get("episode", 0), 
-            doc.get("quality"), doc.get("language", "Unknown") # Changed default from "Unknown Language" to "Unknown"
+            doc.get("quality"), doc.get("language", "Unknown") 
         ))
 
     if insert_data:
@@ -246,7 +246,7 @@ async def save_file_to_db(file_doc: dict):
             )
             mongo_success = True
         except Exception as e:
-            # The original error logging, now fixed by the index change
+            # This error should now be fixed by the index creation change
             logger.error(f"Failed to insert/update file doc in MongoDB: {e}")
 
         # --- 2. Save to SQLITE ---
