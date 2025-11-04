@@ -291,7 +291,6 @@ def register_conversation_handlers(app: Client):
 
     @app.on_callback_query(filters.regex(r"^fs\|")) 
     async def file_select_handler(app, query):
-        # ... (remains the same) ...
         """(NOT used now but kept for future)"""
         data = query.data.split('|')
         series_name = data[1]
@@ -330,9 +329,9 @@ def register_conversation_handlers(app: Client):
             await query.answer("❌ Failed to send file. Please ensure the bot is an admin in the source channel.", show_alert=True)
             
 
-    # ⬇⬇⬇ MODIFIED: back_to_search_handler (for menu auto-delete)
+    # ⬇⬇⬇ MODIFIED: back_to_search_handler (FIX for IMDB poster not showing)
     @app.on_callback_query(filters.regex(r"back_to_search"))
-    async def back_to_search_handler(_, query):
+    async def back_to_search_handler(app, query):
         """Returns to the initial summary/Season selection menu."""
         data = query.data.split('|')
         series_name = data[1]
@@ -375,18 +374,28 @@ def register_conversation_handlers(app: Client):
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
         try:
+            # Case 1: Photo exists AND we have a new poster URL, use edit_media to update the photo/caption
             if imdb_poster_enabled and poster_url and query.message.photo:
                 await query.message.edit_media(
                     media=InputMediaPhoto(poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
                     reply_markup=reply_markup
                 )
+            # Case 2: Photo exists but we are only editing the CAPTION (FIXED: Uses edit_caption here to keep the photo)
+            elif query.message.photo:
+                await query.message.edit_caption(
+                    caption=response,
+                    reply_markup=reply_markup,
+                    parse_mode=enums.ParseMode.MARKDOWN
+                )
+            # Case 3: Original message was text-only or fallback required, use edit_text
             else:
                 await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
         except MessageNotModified:
             pass
         except Exception as e:
-            logger.warning(f"Failed to edit media on back_to_search: {e}. Attempting edit_text fallback.")
+            logger.warning(f"Failed to edit media/caption on back_to_search: {e}. Attempting edit_text fallback.")
             try:
+                # Final fallback to edit_text, which removes the media if it was a photo
                 await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             except MessageNotModified:
                 pass
@@ -400,7 +409,7 @@ def register_conversation_handlers(app: Client):
         await query.answer()
 
 
-    # ⬇⬇⬇ MODIFIED: show_language_menu (for menu auto-delete)
+    # ⬇⬇⬇ show_language_menu (updated for auto-delete)
     async def show_language_menu(query, series_name: str, season: int):
         """Presents languages available for the specified season."""
         languages = await get_unique_languages_by_season(series_name, season)
@@ -450,7 +459,7 @@ def register_conversation_handlers(app: Client):
                 delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer)
             )
              
-    # ⬇⬇⬇ MODIFIED: show_quality_menu (for menu auto-delete)
+    # ⬇⬇⬇ show_quality_menu (updated for auto-delete)
     async def show_quality_menu(query, series_name: str, language: str, season: int):
         """Presents qualities available for the specified season and language."""
         qualities = await get_unique_qualities_by_lang_season(series_name, language, season)
