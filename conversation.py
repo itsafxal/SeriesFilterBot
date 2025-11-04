@@ -337,7 +337,7 @@ def register_conversation_handlers(app: Client):
 
     # Return all handler functions
     return [
-        start_command, search_handler, unknown_command_handler,
+        start_command, search_handler,
         language_select_handler, season_select_handler, 
         quality_select_handler, back_to_search_handler, 
         close_menu_handler
