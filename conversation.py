@@ -19,7 +19,8 @@ from database import (
 ) 
 from config import logger, CUSTOM_CAPTION_TEXT 
 from utils import clean_series_name 
-from movie_fetcher import get_imdb_data # Import from the renamed file
+# --- CRITICAL FIX: Import from the renamed file ---
+from movie_fetcher import get_imdb_data 
 
 def register_conversation_handlers(app: Client):
 
@@ -39,8 +40,7 @@ def register_conversation_handlers(app: Client):
     @app.on_message(filters.text & filters.private & ~filters.command("start"))
     async def search_handler(_, message):
         """
-        Handles user text search queries, finds the primary series name, 
-        fetches IMDB poster, and shows the summary followed by language buttons.
+        Handles user text search queries, fetches IMDB poster, and shows the menu.
         """
         query = message.text.strip()
         
@@ -119,26 +119,28 @@ def register_conversation_handlers(app: Client):
                 
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
-                # --- Send Photo if poster is available, otherwise use reply_text ---
+                # --- Robust Photo Sending Logic ---
                 if poster_url:
+                    logger.info(f"Attempting to send poster for {series_to_display}. URL: {poster_url}")
                     try:
-                        # 1. Send the photo directly from URL. This is most reliable for initial messages.
-                        sent_message = await message.reply_photo(
+                        # Send the photo directly from URL with the full response and keyboard
+                        await message.reply_photo(
                             photo=poster_url, 
                             caption=response,
-                            reply_markup=reply_markup, # Send keyboard here to reduce one API call
+                            reply_markup=reply_markup, 
                             parse_mode=enums.ParseMode.MARKDOWN
                         )
                     except Exception as e:
-                        logger.error(f"FATAL: Photo sending failed for {series_to_display}. URL: {poster_url}. Error: {e}")
-                        # 2. Fallback: Send text message if photo fails
+                        # Fallback to text message if photo sending fails (e.g., blocked URL)
+                        logger.error(f"FATAL: Photo sending failed for {series_to_display}. Error: {type(e).__name__}: {e}") 
                         await message.reply_text(
                             f"⚠️ **Could not load poster image.**\n\n{response}", 
                             reply_markup=reply_markup, 
                             parse_mode=enums.ParseMode.MARKDOWN
                         )
                 else:
-                    # 3. Send text message if no poster URL was found
+                    logger.info(f"No poster URL found for {series_to_display}.")
+                    # Send text message if no poster URL was found
                     await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             
             else:
@@ -299,7 +301,7 @@ def register_conversation_handlers(app: Client):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         try:
-            # CRITICAL: Use edit_media to ensure the photo is updated/retained
+            # Use edit_media to ensure the photo is updated/retained
             if poster_url:
                 await query.message.edit_media(
                     # InputMediaPhoto is needed to pass both the photo (URL) and the caption
