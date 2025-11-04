@@ -114,17 +114,6 @@ def register_conversation_handlers(app: Client):
             await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
 
 
-    # NEW HANDLER: Catches any command that is not /start (and is not /index if used by an admin)
-    @app.on_message(filters.command() & filters.private & ~filters.command("start", "index"))
-    async def unknown_command_handler(_, message):
-        """Sends a help message when an unrecognized command is sent."""
-        command = message.text.split()[0]
-        await message.reply_text(
-            f"❓ I don't recognize the command **{command}**.\n\n"
-            "To search, please send the **series name** directly (without a starting '/').\n"
-            "Use **/start** for a welcome message.", 
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
 
     # HANDLER: Language selection (Prefix: 'ls') -> moves to season menu
     @app.on_callback_query(filters.regex(r"ls\|"))
