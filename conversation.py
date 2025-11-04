@@ -1,8 +1,11 @@
-# conversation.py
-import asyncio
+import asyncio # New: Needed for running sync IMDB function
 import re
 from pyrogram import Client, filters, enums
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import (
+    InlineKeyboardMarkup, 
+    InlineKeyboardButton, 
+    InputMediaPhoto # New: Needed for editing media in back button
+)
 from pyrogram.errors import MessageNotModified
 from database import (
     search_series, 
@@ -14,6 +17,7 @@ from database import (
 ) 
 from config import logger, CUSTOM_CAPTION_TEXT 
 from utils import clean_series_name 
+from imdb import get_imdb_data # New: Import the IMDB function
 
 def register_conversation_handlers(app: Client):
 
@@ -30,20 +34,16 @@ def register_conversation_handlers(app: Client):
         )
         await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
-    # FIX: This filter prevents /start from being treated as a search query.
-    # Other valid commands like /index are handled in index.py.
     @app.on_message(filters.text & filters.private & ~filters.command("start"))
     async def search_handler(_, message):
         """
         Handles user text search queries, finds the primary series name, 
-        and shows the summary followed by language buttons.
+        fetches IMDB poster, and shows the summary followed by language buttons.
         """
         query = message.text.strip()
         
         # --- NEW LOGIC: Prevent messages starting with / (commands) from being processed as search queries ---
-        # Although the filters above should help, this acts as a final guard for any message starting with / 
-        # that wasn't /start and isn't handled by a specific command handler yet.
-        if query.startswith('/') and query.lower() not in ["/index"]: # Keep this guard check if a generic command handler is not used below
+        if query.startswith('/') and query.lower() not in ["/index"]: 
              return
         # -----------------------------------------------------------------------------------------------------
 
@@ -53,7 +53,7 @@ def register_conversation_handlers(app: Client):
             normalized_query = clean_series_name(query).lower()
             series_to_display = None
             
-            # Logic to find the best, most generic series name (same as before)
+            # Logic to find the best, most generic series name
             for db_name in unique_names:
                 cleaned_db_name = clean_series_name(db_name)
                 if cleaned_db_name.lower() == normalized_query:
@@ -67,13 +67,27 @@ def register_conversation_handlers(app: Client):
 
             if series_to_display:
                 
+                # --- NEW: Get IMDB Data asynchronously ---
+                imdb_data = None
+                try:
+                    # Run the synchronous function in an executor to avoid blocking the event loop
+                    imdb_data = await asyncio.get_event_loop().run_in_executor(
+                        None, get_imdb_data, series_to_display
+                    )
+                except Exception as e:
+                    logger.error(f"IMDB data fetch failed for {series_to_display}: {e}")
+                
+                poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
+                imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
+                # --------------------------------------
+
                 # Get summary data (languages, seasons, qualities)
                 summary = await get_series_summary(series_to_display)
 
                 if not summary['languages']:
                     await message.reply_text(f"❌ Found series **{series_to_display}**, but no index data is available.", parse_mode=enums.ParseMode.MARKDOWN)
                     return
-                
+                    
                 # --- FIX: CUSTOM DISPLAY FOR UNKNOWN LANGUAGES ---
                 display_languages = []
                 for lang in summary['languages']:
@@ -87,9 +101,12 @@ def register_conversation_handlers(app: Client):
                 languages_list = ", ".join([lang.replace('🗣️ ', '').replace('❓ ', '') for lang in display_languages])
                 seasons_count = len(summary['seasons'])
                 qualities_list = ", ".join(summary['qualities'])
+                
+                # Add IMDB Link to the response text if available
+                imdb_text = f" | 🔗 [IMDB]({imdb_link})" if imdb_link else ""
 
                 response = (
-                    f"🔎 Found **{series_to_display}**\n\n"
+                    f"🔎 **{series_to_display}**{imdb_text}\n\n"
                     f"🎬 Available Seasons: **{seasons_count}**\n"
                     f"💾 Available Qualities: **{qualities_list}**\n\n"
                     f"🗣️ Select **Language** (Available: {languages_list}):"
@@ -106,13 +123,35 @@ def register_conversation_handlers(app: Client):
                     keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
                 
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+
+                # --- NEW LOGIC: Send Photo if poster is available, otherwise use reply_text ---
+                if poster_url:
+                    try:
+                        # Send the photo first with a temporary caption
+                        sent_message = await message.reply_photo(
+                            photo=poster_url, 
+                            caption=f"Loading menu for **{series_to_display}**...",
+                            parse_mode=enums.ParseMode.MARKDOWN
+                        )
+                        # Edit the caption to include the response text and keyboard
+                        await sent_message.edit_caption(
+                            caption=response, 
+                            reply_markup=reply_markup, 
+                            parse_mode=enums.ParseMode.MARKDOWN
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send/edit photo for {series_to_display} ({poster_url}): {e}. Falling back to text.")
+                        # Fallback to simple text message if photo fails
+                        await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+                else:
+                    await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+                # ---------------------------------------------------------------------------------
+            
             else:
                 await message.reply_text(f"❌ No series name could be isolated matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
                 
         else:
             await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
-
 
 
     # HANDLER: Language selection (Prefix: 'ls') -> moves to season menu
@@ -164,7 +203,10 @@ def register_conversation_handlers(app: Client):
         
         try:
             # Edit menu to show sending status
-            await query.message.edit_text(
+            # Use edit_caption if the original message was a photo, edit_text otherwise
+            edit_function = query.message.edit_caption if query.message.photo else query.message.edit_text
+            
+            await edit_function(
                 f"📤 **Sending {len(files)} files to your PM:**\n\n"
                 f"🎬 **{series_name} - S{season} ({quality}, {language})**\n\n"
                 f"**Files to be Sent:**\n"
@@ -187,8 +229,6 @@ def register_conversation_handlers(app: Client):
             file_name = file_entry.get('file_name', f"S{season:02d}E{file_entry.get('episode', 99)}")
             
             try:
-                # Get the message to copy for file name and custom caption formatting
-                message_to_copy = await app.get_messages(chat_id=channel_id, message_ids=message_id)
                 bot_username = (await app.get_me()).username
                 custom_caption = CUSTOM_CAPTION_TEXT.format(
                     file_name=file_name,
@@ -219,6 +259,19 @@ def register_conversation_handlers(app: Client):
         data = query.data.split('|')
         series_name = data[1]
         
+        # --- NEW: Get IMDB Data asynchronously for the poster ---
+        imdb_data = None
+        try:
+            imdb_data = await asyncio.get_event_loop().run_in_executor(
+                None, get_imdb_data, series_name
+            )
+        except Exception as e:
+            logger.error(f"IMDB data fetch failed on back_to_search for {series_name}: {e}")
+        
+        poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
+        imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
+        # ------------------------------------------------------
+        
         # Recalculate summary for the response
         summary = await get_series_summary(series_name)
 
@@ -234,8 +287,11 @@ def register_conversation_handlers(app: Client):
         seasons_count = len(summary['seasons'])
         qualities_list = ", ".join(summary['qualities'])
         
+        # Add IMDB Link to the response text if available
+        imdb_text = f" | 🔗 [IMDB]({imdb_link})" if imdb_link else ""
+
         response = (
-            f"🔎 **{series_name}**\n\n"
+            f"🔎 **{series_name}**{imdb_text}\n\n"
             f"🎬 Available Seasons: **{seasons_count}**\n"
             f"💾 Available Qualities: **{qualities_list}**\n\n"
             f"🗣️ Select **Language** (Available: {languages_list}):"
@@ -248,10 +304,26 @@ def register_conversation_handlers(app: Client):
             button_text = display_languages[i]
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
         try:
-            await query.message.edit_text(response, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=enums.ParseMode.MARKDOWN)
+            # --- NEW LOGIC: Use edit_media to update photo and caption if poster is available ---
+            if poster_url and query.message.photo:
+                await query.message.edit_media(
+                    media=InputMediaPhoto(poster_url, caption=response),
+                    reply_markup=reply_markup
+                )
+            # If original message was text, or poster failed, use edit_text
+            else:
+                await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
         except MessageNotModified:
             pass
+        except Exception as e:
+            logger.warning(f"Failed to edit media on back_to_search: {e}. Falling back to edit_text.")
+            try:
+                 await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            except MessageNotModified:
+                pass
         await query.answer()
 
 
@@ -286,9 +358,17 @@ def register_conversation_handlers(app: Client):
         )
         
         try:
-            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            # Use edit_caption if the original message was a photo, edit_text otherwise
+            edit_function = query.message.edit_caption if query.message.photo else query.message.edit_text
+            await edit_function(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
         except MessageNotModified:
             pass
+        except Exception as e:
+            logger.warning(f"Failed to edit season menu: {e}. Falling back to edit_text.")
+            try:
+                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            except MessageNotModified:
+                pass
             
     # MENU FUNCTION: Quality Selection
     async def show_quality_menu(query, series_name: str, language: str, season: int):
@@ -322,9 +402,18 @@ def register_conversation_handlers(app: Client):
         )
         
         try:
-            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            # Use edit_caption if the original message was a photo, edit_text otherwise
+            edit_function = query.message.edit_caption if query.message.photo else query.message.edit_text
+            await edit_function(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
         except MessageNotModified:
             pass
+        except Exception as e:
+            logger.warning(f"Failed to edit quality menu: {e}. Falling back to edit_text.")
+            try:
+                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            except MessageNotModified:
+                pass
+
 
     @app.on_callback_query(filters.regex(r"close"))
     async def close_menu_handler(_, query):
