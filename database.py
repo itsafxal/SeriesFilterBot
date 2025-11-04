@@ -170,7 +170,6 @@ async def search_series(query: str):
 
 async def get_unique_languages_by_name(series_name: str):
     """Gets unique language strings for a given series from SQLITE."""
-    # Note: This function is still defined but is primarily replaced by get_series_summary
     async with sql_db_lock:
         def sync_get_languages():
             conn = sqlite3.connect(SQLITE_DB_PATH)
