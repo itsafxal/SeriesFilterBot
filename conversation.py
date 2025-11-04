@@ -26,7 +26,7 @@ from database import (
 ) 
 # --- IMPORTANT: ADMIN_USERS must be defined in config.py as a list/tuple of user IDs ---
 from config import logger, CUSTOM_CAPTION_TEXT, ADMIN_USERS 
-from utils import clean_series_name 
+# REMOVED: from utils import clean_series_name 
 from movie_fetcher import get_imdb_data 
 
 def register_conversation_handlers(app: Client):
@@ -126,17 +126,24 @@ def register_conversation_handlers(app: Client):
         unique_names = await search_series(query) 
          
         if unique_names:
-            normalized_query = clean_series_name(query).lower()
             series_to_display = None
              
+            # The search query might return multiple *uncleaned* names. We need to pick the best match.
+            # Since names are no longer cleaned, a simple match might be too strict.
+            # Using the shortest match is a heuristic, as the file name part is often the shortest in a list of partial/full filenames.
+            
+            # Find the best match by checking which result contains the query (case-insensitive)
+            # and picking the one that has the shortest name (as an approximation of the core series name)
+            best_match = None
+            min_len = float('inf')
+            
             for db_name in unique_names:
-                cleaned_db_name = clean_series_name(db_name)
-                if cleaned_db_name.lower() == normalized_query:
-                    series_to_display = cleaned_db_name
-                    break 
-             
-            if series_to_display is None:
-                series_to_display = clean_series_name(min(unique_names, key=len)) if unique_names else None
+                if query.lower() in db_name.lower():
+                    if len(db_name) < min_len:
+                        min_len = len(db_name)
+                        best_match = db_name
+                        
+            series_to_display = best_match if best_match else (min(unique_names, key=len) if unique_names else None)
 
             if series_to_display:
                  
@@ -152,6 +159,7 @@ def register_conversation_handlers(app: Client):
                 imdb_data = None
                 if imdb_poster_enabled:
                     try:
+                        # IMDB lookup still uses the uncleaned/un-normalized name for best results
                         imdb_data = await asyncio.get_event_loop().run_in_executor(
                             None, get_imdb_data, series_to_display
                         )
@@ -341,6 +349,7 @@ def register_conversation_handlers(app: Client):
         imdb_data = None
         if imdb_poster_enabled:
             try:
+                # IMDB lookup still uses the uncleaned/un-normalized name for best results
                 imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_name)
             except Exception:
                 pass
