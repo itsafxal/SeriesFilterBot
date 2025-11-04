@@ -30,7 +30,9 @@ def register_conversation_handlers(app: Client):
         )
         await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
-    # FIX: Exclude ALL commands from the search handler to prevent "/index" from being treated as a query.
+    # FIX: Corrected the filter. The command filter must have at least one argument.
+    # By using ~filters.command("start"), we exclude the local start command, 
+    # and other commands (like /index) are handled by their own specific handlers.
     @app.on_message(filters.text & filters.private & ~filters.command("start"))
     async def search_handler(_, message):
         """
