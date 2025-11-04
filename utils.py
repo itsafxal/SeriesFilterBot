@@ -1,288 +1,139 @@
-import asyncio
+# utils.py
+
 import re
-from pyrogram import Client, filters, enums
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import MessageNotModified
-from database import (
-    search_series, 
-    get_unique_languages_by_name, 
-    get_unique_seasons_by_name, 
-    get_unique_qualities_by_season, 
-    get_all_files_by_season_and_quality,
-    get_series_summary 
-) 
-from config import logger, CUSTOM_CAPTION_TEXT 
-from utils import clean_series_name 
+from pyrogram import types, enums
+# Assumes database.py has been imported and save_file_to_db is available
+from database import save_file_to_db 
 
-def register_conversation_handlers(app: Client):
+###################################################
+## UTILITY & PARSING (Name Unification Logic) ##
+###################################################
 
-    # Utility constant for shorter callback data prefixes
-    MAX_CALLBACK_LENGTH = 50
-
-    @app.on_message(filters.command("start") & filters.private)
-    async def start_command(_, message):
-        """Handles the /start command."""
-        welcome_text = (
-            "👋 <b>Welcome! I'm your Series File Filter Bot.</b>\n\n"
-            "Just send me the <b>name of a series</b> you are looking for. "
-            "I'll show you a summary and ask you to select the language."
-        )
-        await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
-
-    @app.on_message(filters.text & filters.private & ~filters.command("start"))
-    async def search_handler(_, message):
-        """
-        Handles user text search queries, finds the primary series name, 
-        and shows the summary followed by language buttons.
-        """
-        query = message.text.strip()
-        unique_names = await search_series(query) 
-        
-        if unique_names:
-            normalized_query = clean_series_name(query).lower()
-            series_to_display = None
-            
-            # Logic to find the best, most generic series name (same as before)
-            for db_name in unique_names:
-                cleaned_db_name = clean_series_name(db_name)
-                if cleaned_db_name.lower() == normalized_query:
-                    series_to_display = cleaned_db_name
-                    break 
-                if series_to_display is None and cleaned_db_name.lower().startswith(normalized_query):
-                    series_to_display = cleaned_db_name
-                    
-            if series_to_display is None:
-                series_to_display = clean_series_name(min(unique_names, key=len)) if unique_names else None
-
-            if series_to_display:
-                
-                # Get summary data (languages, seasons, qualities)
-                summary = await get_series_summary(series_to_display)
-
-                if not summary['languages']:
-                    await message.reply_text(f"❌ Found series **{series_to_display}**, but no index data is available.", parse_mode=enums.ParseMode.MARKDOWN)
-                    return
-                
-                # Build the initial summary text
-                languages_list = ", ".join(summary['languages'])
-                seasons_count = len(summary['seasons'])
-                qualities_list = ", ".join(summary['qualities'])
-
-                response = (
-                    f"🔎 Found **{series_to_display}**\n\n"
-                    f"🎬 Available Seasons: **{seasons_count}**\n"
-                    f"💾 Available Qualities: **{qualities_list}**\n\n"
-                    f"🗣️ Select **Language** (Available: {languages_list}):"
-                )
-                
-                keyboard = []
-                series_name_short = series_to_display[:MAX_CALLBACK_LENGTH]
-                for lang in summary['languages']:
-                    # Prefix 'ls' for Language Select
-                    callback_data = f'ls|{series_name_short}|{lang}'
-                    button_text = f"🗣️ {lang}"
-                    keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-                
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            else:
-                await message.reply_text(f"❌ No series name could be isolated matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
-                
-        else:
-            await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
-
-    # HANDLER: Language selection (Prefix: 'ls') -> moves to season menu
-    @app.on_callback_query(filters.regex(r"ls\|"))
-    async def language_select_handler(_, query):
-        data = query.data.split('|')
-        series_name = data[1]
-        language = data[2]
-        await show_season_menu(query, series_name, language)
-        await query.answer()
-
-    # HANDLER: Season selection (Prefix: 'ss') -> moves to quality menu
-    @app.on_callback_query(filters.regex(r"ss\|"))
-    async def season_select_handler(_, query):
-        data = query.data.split('|')
-        series_name = data[1]
-        language = data[2]
-        season = int(data[3])
-        await show_quality_menu(query, series_name, language, season) 
-        await query.answer()
-
-    # HANDLER: Quality selection (Prefix: 'qs') -> sends files
-    @app.on_callback_query(filters.regex(r"qs\|")) 
-    async def quality_select_handler(app, query):
-        """Retrieves all files for the selected season/quality/language and sends them."""
-        data = query.data.split('|')
-        series_name = data[1]
-        language = data[2] 
-        season = int(data[3])
-        quality = data[4]
-        user_chat_id = query.message.chat.id
-        
-        await query.answer(f"📦 Sending all {quality}/{language} files for S{season}...", cache_time=0)
-        
-        files = await get_all_files_by_season_and_quality(series_name, season, quality, language) 
-        
-        if not files:
-            await app.send_message(user_chat_id, f"❌ No episodes found for **{series_name}** S{season} ({quality}, {language}).", parse_mode=enums.ParseMode.MARKDOWN)
-            return
-            
-        try:
-            # Edit menu to show sending status
-            await query.message.edit_text(
-                f"📤 **Sending {len(files)} files to your PM:**\n\n"
-                f"🎬 **{series_name} - S{season} ({quality}, {language})**",
-                reply_markup=InlineKeyboardMarkup([
-                    # Back to initial summary/language list
-                    [InlineKeyboardButton(f"⬅️ Back to Languages", callback_data=f'back_to_search|{series_name}')], 
-                    [InlineKeyboardButton("🗑️ Close Menu", callback_data='close')]
-                ]),
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
-        except MessageNotModified:
-            pass
-            
-        total_sent = 0
-        for file_entry in files:
-            channel_id = file_entry.get('channel_id')
-            message_id = file_entry.get('message_id')
-            file_name = file_entry.get('file_name', f"S{season:02d}E{file_entry.get('episode', 99)}")
-            
-            try:
-                message_to_copy = await app.get_messages(chat_id=channel_id, message_ids=message_id)
-                bot_username = (await app.get_me()).username
-                custom_caption = CUSTOM_CAPTION_TEXT.format(
-                    file_name=file_name,
-                    bot_username=bot_username
-                )
-                
-                await app.copy_message(
-                    chat_id=user_chat_id,
-                    from_chat_id=channel_id,
-                    message_id=message_id,
-                    caption=custom_caption, 
-                    parse_mode=enums.ParseMode.MARKDOWN 
-                )
-                total_sent += 1
-                await asyncio.sleep(1) 
-            except Exception as e:
-                logger.error(f"Failed to copy file {message_id} from {channel_id}: {e}")
-                
-        await app.send_message(
-            user_chat_id, 
-            f"✅ **Transmission Complete!** Sent {total_sent} files for **{series_name}** S{season} ({quality}, {language}).", 
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-
-    # HANDLER: Back button from deep in the menu structure -> goes back to initial summary/language list
-    @app.on_callback_query(filters.regex(r"back_to_search"))
-    async def back_to_search_handler(_, query):
-        data = query.data.split('|')
-        series_name = data[1]
-        
-        # Recalculate summary for the response
-        summary = await get_series_summary(series_name)
-        languages_list = ", ".join(summary['languages'])
-        seasons_count = len(summary['seasons'])
-        qualities_list = ", ".join(summary['qualities'])
-        
-        response = (
-            f"🔎 **{series_name}**\n\n"
-            f"🎬 Available Seasons: **{seasons_count}**\n"
-            f"💾 Available Qualities: **{qualities_list}**\n\n"
-            f"🗣️ Select **Language** (Available: {languages_list}):"
-        )
-        
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for lang in summary['languages']:
-            callback_data = f'ls|{series_name_short}|{lang}'
-            button_text = f"🗣️ {lang}"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-        
-        try:
-            await query.message.edit_text(response, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=enums.ParseMode.MARKDOWN)
-        except MessageNotModified:
-            pass
-        await query.answer()
-
-
-    # MENU FUNCTION: Season Selection
-    async def show_season_menu(query, series_name: str, language: str):
-        seasons = await get_unique_seasons_by_name(series_name, language)
-        
-        if not seasons:
-            await query.answer(f"❌ No seasons found for {series_name} ({language}).", show_alert=True)
-            return
-
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for season in seasons:
-            # Callback data uses 'ss'
-            callback_data = f'ss|{series_name_short}|{language}|{season}' 
-            button_text = f"Season {season}"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-            
-        # Back button leads to the initial summary/language selection
-        keyboard.append([InlineKeyboardButton(f"⬅️ Back to Languages", callback_data=f'back_to_search|{series_name_short}')])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        caption = (
-            f"🎬 **{series_name} ({language})**\n"
-            "Select a **Season**:"
-        )
-        
-        try:
-            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        except MessageNotModified:
-            pass
-            
-    # MENU FUNCTION: Quality Selection
-    async def show_quality_menu(query, series_name: str, language: str, season: int):
-        qualities = await get_unique_qualities_by_season(series_name, language, season)
-        
-        if not qualities:
-            await query.answer(f"❌ No quality files found for S{season} ({language}).", show_alert=True)
-            return
-            
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for quality in qualities:
-            # Callback data uses 'qs'
-            callback_data = f'qs|{series_name_short}|{language}|{season}|{quality}'
-            button_text = f"💾 {quality}"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-            
-        # Back button leads to the Season menu, preserving language context (using 'ls' prefix)
-        callback_data_back = f'ls|{series_name_short}|{language}'
-        keyboard.append([InlineKeyboardButton(f"⬅️ Back to Seasons", callback_data=callback_data_back)])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        caption = (
-            f"🎬 **{series_name} - S{season} ({language})**\n"
-            f"Select the desired **video quality** to **start downloading all episodes**:"
-        )
-        
-        try:
-            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        except MessageNotModified:
-            pass
-
-    @app.on_callback_query(filters.regex(r"close"))
-    async def close_menu_handler(_, query):
-        try:
-            await query.message.delete()
-            await query.answer("Menu closed.")
-        except Exception:
-            await query.answer("Could not close the menu.")
-
-
-    # Return all handler functions
-    return [
-        start_command, search_handler, 
-        language_select_handler, season_select_handler, 
-        quality_select_handler, back_to_search_handler, 
-        close_menu_handler
+def clean_series_name(name: str) -> str:
+    """Aggressively cleans the series name by removing common tags and metadata."""
+    name = re.sub(r"[. _]+", " ", name).strip()
+    common_terms = [
+        "4K", "1080P", "720P", "HDRIP", "WEB-DL", "WEBRIP", "BLURAY", "HDTV", 
+        "AMZN", "NETFLIX", "HULU", "DDP5.1", "X265", "x264", "10BIT", "HEVC", 
+        "MKV", "AAC", "PSA", "REPACK", "COMPLETE", "WEB",
+        r"(19|20)\d{2}",  
+        "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", 
     ]
+    
+    for term in common_terms:
+        flags = re.IGNORECASE
+        if r"(19|20)\d{2}" not in term:
+            term = r"\b" + term + r"\b"
+        name = re.sub(term, " ", name, flags=flags).strip()
+
+    name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", name).strip()
+    
+    channel_tags = ["CK", "UB", "TG", "MOVIE HUB", "FILM"] 
+    for tag in channel_tags:
+        tag_regex = rf"(?:^|[\W_]+){re.escape(tag)}(?:$|[\W_]+)"
+        name = re.sub(tag_regex, " ", name, flags=re.IGNORECASE).strip()
+        
+    name = re.sub(r"\s+", " ", name).strip()
+    return name.title()
+
+def extract_quality(file_name: str) -> str:
+    """Extracts common quality tags from a filename."""
+    name = file_name.upper()
+    if "2160P" in name or "4K" in name:
+        return "4K"
+    if "1080P" in name:
+        return "1080P"
+    if "720P" in name:
+        return "720P"
+    if "480P" in name:
+        return "480P"
+    
+    return "UNKNOWN"
+
+
+def extract_language(file_name: str) -> str:
+    """Extracts common language tags from a filename."""
+    name = file_name.upper()
+    
+    if re.search(r"\bDUAL\b", name) or re.search(r"\bMULTI\b", name):
+        if "HINDI" in name and "ENGLISH" in name:
+            return "Dual Audio (HIN-ENG)"
+        return "Dual/Multi Audio"
+    
+    if "HINDI" in name or "HIN" in name or "DUB" in name:
+        return "Hindi"
+    if "TAMIL" in name or "TELUGU" in name:
+        return "Indian Regional"
+    
+    # Default to English if common tags are present (or if no language is specified)
+    if "ENGLISH" in name or "ENG" in name or re.search(r"\bSUB\b", name):
+        return "English"
+    
+    return "Unknown Language"
+
+
+def parse_series_info(file_name: str):
+    """
+    Extracts Series Name, Season (SXX), Episode (EXX), Quality, AND Language.
+    """
+    if not file_name:
+        return "", 0, 0, "", ""
+        
+    match = re.search(r"[sS](\d+)[. _-]*[eE](\d+)", file_name)
+    quality = extract_quality(file_name) 
+    language = extract_language(file_name) 
+    
+    if not match:
+        return clean_series_name(file_name), 0, 0, quality, language
+
+    season = int(match.group(1))
+    episode = int(match.group(2))
+    
+    name_part = re.sub(r"([. _-]+)?[sS]\d+[. _-]*[eE]\d+([. _-]+)?", " ", file_name).strip()
+    normalized_name = clean_series_name(name_part)
+    
+    if len(normalized_name.split()) > 5:
+        normalized_name = " ".join(normalized_name.split()[:5]) 
+
+    return normalized_name.title(), season, episode, quality, language
+
+
+async def save_series_file_for_bulk_index(message: types.Message):
+    """Helper function to integrate series parsing/saving into the bulk indexer."""
+    file_name = ""
+    
+    if message.media:
+        if message.media == enums.MessageMediaType.DOCUMENT and message.document:
+            file_name = message.document.file_name or ""
+        elif message.media == enums.MessageMediaType.VIDEO and message.video:
+            file_name = message.video.file_name or ""
+    
+    if not file_name and message.caption:
+        file_name = message.caption.split('\n')[0].strip()
+
+    if not file_name:
+        return False, 0 
+
+    normalized_name, season, episode, quality, language = parse_series_info(file_name) 
+    
+    if season > 0:
+        file_doc = {
+            "channel_id": message.chat.id,
+            "message_id": message.id,
+            "file_name": file_name, 
+            "normalized_name": normalized_name, 
+            "season": season,
+            "episode": episode,
+            "quality": quality, 
+            "language": language, 
+            "timestamp": message.date
+        }
+        
+        saved = await save_file_to_db(file_doc)
+        
+        if saved:
+            return True, 1
+        else:
+            return False, 0
+    else:
+        return False, 0
