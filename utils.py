@@ -69,7 +69,7 @@ def extract_language(file_name: str) -> str:
     if "ENGLISH" in name or "ENG" in name or re.search(r"\bSUB\b", name):
         return "English"
     
-    return "Unknown Language"
+    return "Unknown" # <--- CLEANUP: Changed from "Unknown Language" to "Unknown"
 
 
 def parse_series_info(file_name: str):
