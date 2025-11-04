@@ -9,6 +9,19 @@ from database import save_file_to_db
 ## UTILITY & PARSING (Name Unification Logic) ##
 ###################################################
 
+# Define common language terms and their full names for multi-audio parsing
+LANGUAGE_CODES = {
+    "HIN": "Hindi",
+    "ENG": "English",
+    "TAM": "Tamil",
+    "TEL": "Telugu",
+    "MALA": "Malayalam",
+    "DUB": "Hindi" # Often used alone to indicate Hindi dub
+}
+# Create a pattern string for the regex to match any of the known codes
+LANG_CODE_PATTERN = "|".join(LANGUAGE_CODES.keys())
+
+
 def clean_series_name(name: str) -> str:
     """Aggressively cleans the series name by removing common tags and metadata."""
     name = re.sub(r"[. _]+", " ", name).strip()
@@ -52,23 +65,56 @@ def extract_quality(file_name: str) -> str:
 
 
 def extract_language(file_name: str) -> str:
-    """Extracts common language tags from a filename."""
+    """
+    Extracts language tags from a filename, with enhanced multi-language parsing.
+    """
     name = file_name.upper()
     
-    if re.search(r"\bDUAL\b", name) or re.search(r"\bMULTI\b", name):
+    # --- 1. Enhanced Multi-Language Detection ---
+    if re.search(r"\bDUAL\b|\bMULTI\b", name):
+        
+        # Pattern to capture two distinct language codes near each other
+        # e.g., HIN.ENG, [TAMIL-TELUGU], MALA-ENG, etc.
+        pattern = rf"(?:{LANG_CODE_PATTERN})[._-]*({LANG_CODE_PATTERN})[._-]*({LANG_CODE_PATTERN})"
+        
+        match = re.search(pattern, name)
+        
+        if match:
+            # Group 1 is the first code, Group 2 is the second code
+            code1 = match.group(1).upper()
+            code2 = match.group(2).upper()
+            
+            lang1 = LANGUAGE_CODES.get(code1, code1)
+            lang2 = LANGUAGE_CODES.get(code2, code2)
+            
+            # Combine if they are different and meaningful
+            if lang1 != lang2:
+                # Format: Hindi-English
+                return f"{lang1}-{lang2}" 
+
+        # Fallback for general dual/multi tags when specific languages can't be paired
         if "HINDI" in name and "ENGLISH" in name:
-            return "Dual Audio (HIN-ENG)"
+            return "Dual Audio (Hindi-English)"
+        
+        # General fallback
         return "Dual/Multi Audio"
+
+    # --- 2. Single Language Detection ---
     
-    if "HINDI" in name or "HIN" in name or "DUB" in name:
+    # Priority for Indian languages (since they are often the DUB)
+    if any(tag in name for tag in ["HINDI", "HIN", "DUB"]):
         return "Hindi"
-    if "TAMIL" in name or "TELUGU" in name:
+    
+    if any(tag in name for tag in ["MALAYALAM", "MALA"]):
+        return "Malayalam"
+        
+    if any(tag in name for tag in ["TAMIL", "TAM", "TELUGU", "TEL"]):
         return "Indian Regional"
     
-    # Default to English if common tags are present (or if no language is specified)
-    if "ENGLISH" in name or "ENG" in name or re.search(r"\bSUB\b", name):
+    # English/Subtitles last
+    if any(tag in name for tag in ["ENGLISH", "ENG", "SUB"]):
         return "English"
-    
+        
     return "Unknown" # Cleaned default language
 
 
