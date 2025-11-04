@@ -1,12 +1,11 @@
-# imdb.py
+# movie_fetcher.py
+# (This file replaces imdb.py to avoid a circular import)
 
-# git+https://github.com/Joelkb/cinemagoer
+# Ensure you have installed this: pip install cinemagoer
 
-# Removed: import requests
-# Removed: from bs4 import BeautifulSoup
-from imdb import IMDb # Import the official cinemagoer library
+from imdb import IMDb 
 
-# Initialize the cinemagoer interface outside the function for performance
+# Initialize the cinemagoer interface once
 ia = IMDb()
 
 def get_imdb_data(query):
@@ -20,27 +19,20 @@ def get_imdb_data(query):
         if not search_results:
             return None
             
-        # Get the top result (usually the correct one)
+        # Get the top result
         top_result = search_results[0]
         
         # Fetch the complete data for the movie/series
         ia.update(top_result, ['main', 'plot'])
         
-        # Construct the necessary return data
         title = top_result.get('title')
-        # Get the URL for the poster (uses 'full-size' image if available)
+        # Prioritize 'full-size poster', fallback to 'cover url'
         poster = top_result.get('full-size poster') or top_result.get('cover url')
-        # Construct the official IMDB link
         link = f"https://www.imdb.com/title/tt{top_result.movieID}/"
         
-        if not poster:
-             # Fallback if poster is missing, but data found
-            return {"title": title, "poster": None, "link": link}
-
         return {"title": title, "poster": poster, "link": link}
 
     except Exception as e:
-        # Log the error if the library fails to fetch data
-        # In a real bot, you'd log this with your config.logger
+        # Logging here helps confirm if cinemagoer failed to find the data
         print(f"IMDB data fetch failed using cinemagoer for '{query}': {e}")
         return None
