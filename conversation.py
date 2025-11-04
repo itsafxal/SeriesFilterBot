@@ -30,9 +30,8 @@ def register_conversation_handlers(app: Client):
         )
         await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
-    # FIX: Corrected the filter. The command filter must have at least one argument.
-    # By using ~filters.command("start"), we exclude the local start command, 
-    # and other commands (like /index) are handled by their own specific handlers.
+    # FIX: This filter prevents /start from being treated as a search query.
+    # Other valid commands like /index are handled in index.py.
     @app.on_message(filters.text & filters.private & ~filters.command("start"))
     async def search_handler(_, message):
         """
@@ -40,6 +39,14 @@ def register_conversation_handlers(app: Client):
         and shows the summary followed by language buttons.
         """
         query = message.text.strip()
+        
+        # --- NEW LOGIC: Prevent messages starting with / (commands) from being processed as search queries ---
+        # Although the filters above should help, this acts as a final guard for any message starting with / 
+        # that wasn't /start and isn't handled by a specific command handler yet.
+        if query.startswith('/') and query.lower() not in ["/index"]: # Keep this guard check if a generic command handler is not used below
+             return
+        # -----------------------------------------------------------------------------------------------------
+
         unique_names = await search_series(query) 
         
         if unique_names:
@@ -105,6 +112,19 @@ def register_conversation_handlers(app: Client):
                 
         else:
             await message.reply_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
+
+
+    # NEW HANDLER: Catches any command that is not /start (and is not /index if used by an admin)
+    @app.on_message(filters.command() & filters.private & ~filters.command("start", "index"))
+    async def unknown_command_handler(_, message):
+        """Sends a help message when an unrecognized command is sent."""
+        command = message.text.split()[0]
+        await message.reply_text(
+            f"❓ I don't recognize the command **{command}**.\n\n"
+            "To search, please send the **series name** directly (without a starting '/').\n"
+            "Use **/start** for a welcome message.", 
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
 
     # HANDLER: Language selection (Prefix: 'ls') -> moves to season menu
     @app.on_callback_query(filters.regex(r"ls\|"))
@@ -328,7 +348,7 @@ def register_conversation_handlers(app: Client):
 
     # Return all handler functions
     return [
-        start_command, search_handler, 
+        start_command, search_handler, unknown_command_handler,
         language_select_handler, season_select_handler, 
         quality_select_handler, back_to_search_handler, 
         close_menu_handler
