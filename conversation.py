@@ -380,7 +380,7 @@ def register_conversation_handlers(app: Client):
                     media=InputMediaPhoto(poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
                     reply_markup=reply_markup
                 )
-            # Case 2: Photo exists but we are only editing the CAPTION (FIXED: Uses edit_caption here to keep the photo)
+            # Case 2: Photo exists but we are only editing the CAPTION (Keeps the original photo)
             elif query.message.photo:
                 await query.message.edit_caption(
                     caption=response,
@@ -409,7 +409,7 @@ def register_conversation_handlers(app: Client):
         await query.answer()
 
 
-    # ⬇⬇⬇ show_language_menu (updated for auto-delete)
+    # ⬇⬇⬇ MODIFIED: show_language_menu (Ensuring edit_caption when photo is present)
     async def show_language_menu(query, series_name: str, season: int):
         """Presents languages available for the specified season."""
         languages = await get_unique_languages_by_season(series_name, season)
@@ -440,6 +440,7 @@ def register_conversation_handlers(app: Client):
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
         
         try:
+            # Use edit_caption if a photo is present to keep the photo
             if query.message.photo:
                 await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             else:
@@ -459,7 +460,7 @@ def register_conversation_handlers(app: Client):
                 delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer)
             )
              
-    # ⬇⬇⬇ show_quality_menu (updated for auto-delete)
+    # ⬇⬇⬇ MODIFIED: show_quality_menu (Ensuring edit_caption when photo is present)
     async def show_quality_menu(query, series_name: str, language: str, season: int):
         """Presents qualities available for the specified season and language."""
         qualities = await get_unique_qualities_by_lang_season(series_name, language, season)
@@ -494,6 +495,7 @@ def register_conversation_handlers(app: Client):
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
         
         try:
+            # Use edit_caption if a photo is present to keep the photo
             if query.message.photo:
                 await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             else:
