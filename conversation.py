@@ -1,10 +1,12 @@
+# conversation.py
+
 import asyncio
 import re
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
     InlineKeyboardMarkup, 
     InlineKeyboardButton, 
-    InputMediaPhoto # CRITICAL for updating photo/caption on back button
+    InputMediaPhoto
 )
 from pyrogram.errors import MessageNotModified
 from database import (
@@ -17,7 +19,7 @@ from database import (
 ) 
 from config import logger, CUSTOM_CAPTION_TEXT 
 from utils import clean_series_name 
-from poster import get_imdb_data # Import the IMDB function
+from movie_fetcher import get_imdb_data # Import from the renamed file
 
 def register_conversation_handlers(app: Client):
 
@@ -120,22 +122,23 @@ def register_conversation_handlers(app: Client):
                 # --- Send Photo if poster is available, otherwise use reply_text ---
                 if poster_url:
                     try:
-                        # Send the photo first
+                        # 1. Send the photo directly from URL. This is most reliable for initial messages.
                         sent_message = await message.reply_photo(
                             photo=poster_url, 
-                            caption=f"Loading menu for **{series_to_display}**...",
-                            parse_mode=enums.ParseMode.MARKDOWN
-                        )
-                        # Edit the caption
-                        await sent_message.edit_caption(
-                            caption=response, 
-                            reply_markup=reply_markup, 
+                            caption=response,
+                            reply_markup=reply_markup, # Send keyboard here to reduce one API call
                             parse_mode=enums.ParseMode.MARKDOWN
                         )
                     except Exception as e:
-                        logger.warning(f"Failed to send/edit photo for {series_to_display} ({poster_url}): {e}. Falling back to text.")
-                        await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+                        logger.error(f"FATAL: Photo sending failed for {series_to_display}. URL: {poster_url}. Error: {e}")
+                        # 2. Fallback: Send text message if photo fails
+                        await message.reply_text(
+                            f"⚠️ **Could not load poster image.**\n\n{response}", 
+                            reply_markup=reply_markup, 
+                            parse_mode=enums.ParseMode.MARKDOWN
+                        )
                 else:
+                    # 3. Send text message if no poster URL was found
                     await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             
             else:
@@ -296,7 +299,7 @@ def register_conversation_handlers(app: Client):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         try:
-            # CRITICAL FIX: Use edit_media to ensure the photo is updated/retained
+            # CRITICAL: Use edit_media to ensure the photo is updated/retained
             if poster_url:
                 await query.message.edit_media(
                     # InputMediaPhoto is needed to pass both the photo (URL) and the caption
