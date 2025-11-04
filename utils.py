@@ -1,4 +1,4 @@
-# utils.py
+# utils.py - MODIFIED VERSION
 
 import re
 from pyrogram import types, enums
@@ -16,7 +16,8 @@ def clean_series_name(name: str) -> str:
         "4K", "1080P", "720P", "HDRIP", "WEB-DL", "WEBRIP", "BLURAY", "HDTV", 
         "AMZN", "NETFLIX", "HULU", "DDP5.1", "X265", "x264", "10BIT", "HEVC", 
         "MKV", "AAC", "PSA", "DUB", "SUB", "MULTI", "REPACK", "COMPLETE", "WEB",
-        "ENG", "SPA", "ITA", "FRE", "GER", "DUAL", "AUDIO", "2CH",
+        # REMOVING LANGUAGE TERMS FROM clean_series_name so they can be parsed separately
+        # "ENG", "SPA", "ITA", "FRE", "GER", "DUAL", "AUDIO", "2CH", 
         r"(19|20)\d{2}",  
         "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", 
     ]
@@ -55,18 +56,44 @@ def extract_quality(file_name: str) -> str:
     return "UNKNOWN"
 
 
+def extract_language(file_name: str) -> str:
+    """Extracts common language tags from a filename."""
+    name = file_name.upper()
+    
+    if re.search(r"\bDUAL\b", name) or re.search(r"\bMULTI\b", name):
+        # Specific check for Dual/Multi Audio files
+        if "HINDI" in name and "ENGLISH" in name:
+            return "Dual Audio (HIN-ENG)"
+        return "Dual/Multi Audio"
+    
+    # Prioritize specific language names
+    if "HINDI" in name or "HIN" in name:
+        return "Hindi"
+    if "TAMIL" in name or "TELUGU" in name or "KAN" in name:
+        return "Indian Regional"
+    if "SPANISH" in name or "SPA" in name:
+        return "Spanish"
+    
+    # Default to English if common tags are present
+    if "ENGLISH" in name or "ENG" in name or re.search(r"\bSUB\b", name):
+        return "English"
+    
+    return "Unknown Language" # Default fallback
+
+
 def parse_series_info(file_name: str):
     """
-    Extracts Series Name, Season (SXX), Episode (EXX), AND Quality from a filename.
+    Extracts Series Name, Season (SXX), Episode (EXX), Quality, AND Language.
     """
     if not file_name:
-        return "", 0, 0, "" 
+        return "", 0, 0, "", "" # Added language
         
     match = re.search(r"[sS](\d+)[. _-]*[eE](\d+)", file_name)
     quality = extract_quality(file_name) 
+    language = extract_language(file_name) # **NEW**
 
     if not match:
-        return clean_series_name(file_name), 0, 0, quality 
+        return clean_series_name(file_name), 0, 0, quality, language # Added language
 
     season = int(match.group(1))
     episode = int(match.group(2))
@@ -82,17 +109,15 @@ def parse_series_info(file_name: str):
     elif len(normalized_name.split()) > 5:
         normalized_name = " ".join(normalized_name.split()[:5]) 
 
-    return normalized_name.title(), season, episode, quality 
+    return normalized_name.title(), season, episode, quality, language # **Modified Return**
     
 
 async def save_series_file_for_bulk_index(message: types.Message):
     """
     Helper function to integrate series parsing/saving into the bulk indexer.
-    FIX: Ensure file_name is extracted correctly, especially for forwarded files.
     """
     file_name = ""
     
-    # Prioritize accessing media via the .media property which is robust
     if message.media:
         if message.media == enums.MessageMediaType.DOCUMENT and message.document:
             file_name = message.document.file_name or ""
@@ -100,25 +125,14 @@ async def save_series_file_for_bulk_index(message: types.Message):
             file_name = message.video.file_name or ""
         elif message.media == enums.MessageMediaType.AUDIO and message.audio:
             file_name = message.audio.file_name or ""
-    
-    # Fallback to the original structure just in case, though message.media is preferred
-    # This block is functionally redundant with the above but kept for existing code structure.
-    # elif message.document:
-    #     file_name = message.document.file_name or ""
-    # elif message.video:
-    #     file_name = message.video.file_name or ""
-    # else: 
-    #     file_name = getattr(message.audio, "file_name", "")
-
-    # If file_name is still empty, and there's a caption, sometimes the file name is in the caption for some forwarded/old files.
-    # This is an optional heuristic.
+            
     if not file_name and message.caption:
-        file_name = message.caption.split('\n')[0].strip() # Takes the first line of the caption as a potential filename
+        file_name = message.caption.split('\n')[0].strip()
 
     if not file_name:
-        return False, 0 # Skip if no identifiable filename
+        return False, 0 
 
-    normalized_name, season, episode, quality = parse_series_info(file_name) 
+    normalized_name, season, episode, quality, language = parse_series_info(file_name) # **MODIFIED: Added language**
     
     if season > 0:
         file_doc = {
@@ -129,6 +143,7 @@ async def save_series_file_for_bulk_index(message: types.Message):
             "season": season,
             "episode": episode,
             "quality": quality, 
+            "language": language, # **NEW FIELD**
             "timestamp": message.date
         }
         
