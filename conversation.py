@@ -1,4 +1,4 @@
-# conversation.py - MODIFIED (FULL FILE WITH PROXY POSTER FIX)
+# conversation.py (FINAL FIXED WITH IMDB POSTER PROXY + USER AGENT)
 
 import asyncio
 import re
@@ -6,23 +6,23 @@ import requests
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
     Message,
-    InlineKeyboardMarkup, 
-    InlineKeyboardButton, 
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
     InputMediaPhoto
 )
 from pyrogram.errors import MessageNotModified
 from database import (
-    search_series, 
-    get_all_files_by_season_and_quality, 
+    search_series,
+    get_all_files_by_season_and_quality,
     get_series_summary,
-    get_global_setting, 
-    get_unique_languages_by_season, 
+    get_global_setting,
+    get_unique_languages_by_season,
     get_unique_qualities_by_lang_season,
-    get_file_by_message_id_and_channel_id 
-) 
-from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS 
-from utils import clean_series_name, save_series_file_for_bulk_index 
-from movie_fetcher import get_imdb_data 
+    get_file_by_message_id_and_channel_id
+)
+from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS
+from utils import clean_series_name, save_series_file_for_bulk_index
+from movie_fetcher import get_imdb_data
 
 MAX_CALLBACK_LENGTH = 50
 
@@ -46,14 +46,18 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
     series_name_short = series_name[:MAX_CALLBACK_LENGTH]
     for lang in languages:
         callback_data = f'ls|{series_name_short}|{season}|{lang}'
-        keyboard.append([InlineKeyboardButton(f"🗣️ {lang}", callback_data=callback_data)])
-    keyboard.append([InlineKeyboardButton(f"⬅️ Back to All Seasons", callback_data=f'back_to_search|{series_name_short}')])
+        display_text = f"🗣️ {lang}"
+        keyboard.append([InlineKeyboardButton(display_text, callback_data=callback_data)])
+    keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data=f'back_to_search|{series_name_short}')])
     reply_markup = InlineKeyboardMarkup(keyboard)
+
     caption = (
-        f"🎬 **{series_name} - S{season}**"
+        f"🎬 **{series_name} - S{season}**\n"
         f"Select the **Language**:"
     )
+
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+
     try:
         if query.message.photo:
             await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
@@ -61,30 +65,36 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
             await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
     except:
         pass
+
     if auto_delete_timer > 0:
         asyncio.create_task(delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer))
 
 
+
 async def show_quality_menu(app: Client, query, series_name: str, language: str, season: int):
     qualities = await get_unique_qualities_by_lang_season(series_name, language, season)
+
     if not qualities:
         await query.answer(f"❌ No quality files found for S{season} ({language}).", show_alert=True)
         return
+
     keyboard = []
     series_name_short = series_name[:MAX_CALLBACK_LENGTH]
     for quality in qualities:
         callback_data = f'qs|{series_name_short}|{season}|{language}|{quality}'
         keyboard.append([InlineKeyboardButton(f"💾 {quality}", callback_data=callback_data)])
-    callback_data_back = f'ss|{series_name_short}|{season}' 
-    keyboard.append([InlineKeyboardButton(f"⬅️ Back to Languages for S{season}", callback_data=callback_data_back)])
+
+    keyboard.append([InlineKeyboardButton(f"⬅️ Back", callback_data=f'ss|{series_name_short}|{season}')])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    display_language = f"({language})"
+
     caption = (
-        f"🎬 **{series_name} - S{season}** {display_language}"
-        f"Select the desired **video quality**"
+        f"🎬 **{series_name} - S{season}** ({language})\n"
+        f"Select the desired **video quality**\n\n"
         f"▶️ After click — bot will auto-send all episodes"
     )
+
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+
     try:
         if query.message.photo:
             await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
@@ -92,12 +102,11 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
             await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
     except:
         pass
+
     if auto_delete_timer > 0:
         asyncio.create_task(delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer))
 
 
-
-# MAIN REG
 
 def register_conversation_handlers(app: Client):
 
@@ -109,112 +118,132 @@ def register_conversation_handlers(app: Client):
                 logger.info(f"RTI: Indexed {count} new file(s) from channel {message.chat.id}")
 
 
+
     @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel"]))
     async def search_handler(_, message: Message):
         query = message.text.strip()
         if query.startswith('/') and query.lower() not in ["/index"]:
             return
+
         imdb_poster_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
+
         initial_message = await message.reply_text(
-            f"🔍 **Searching** for series matching '`{query}`' ...",
+            f"🔍 **Searching** for `{query}` ...",
             parse_mode=enums.ParseMode.MARKDOWN
         )
-        unique_names = await search_series(query) 
-        if unique_names:
-            normalized_query = clean_series_name(query).lower()
-            series_to_display = None
-            for db_name in unique_names:
-                cleaned_db_name = clean_series_name(db_name)
-                if cleaned_db_name.lower() == normalized_query:
-                    series_to_display = cleaned_db_name
-                    break 
-            if series_to_display is None:
-                series_to_display = clean_series_name(min(unique_names, key=len)) if unique_names else None
-            if series_to_display:
-                try:
-                    await initial_message.edit_text(f"✅ Found **{series_to_display}**. Fetching IMDB ...", parse_mode=enums.ParseMode.MARKDOWN)
-                except: pass
-                imdb_data = None
-                if imdb_poster_enabled:
-                    try:
-                        imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_to_display)
-                    except:
-                        pass
-                poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
-                imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
-                summary = await get_series_summary(series_to_display)
-                if not summary['seasons']:
-                    await initial_message.edit_text(f"❌ Found series **{series_to_display}**, but no indexed season data.", parse_mode=enums.ParseMode.MARKDOWN)
-                    return
-                languages_list = ", ".join(summary['languages'])
-                seasons_count = len(summary['seasons'])
-                qualities_list = ", ".join(summary['qualities'])
-                imdb_text = f" | 🔗 [IMDB]({imdb_link})" if imdb_link else ""
-                response = (
-                    f"🔎 **{series_to_display}**{imdb_text}"
-                    f"🎬 Seasons: **{seasons_count}**"
-                    f"🗣️ Languages: **{languages_list}**"
-                    f"💾 Qualities: **{qualities_list}**"
-                    f"⬇️ Select Season:"
+
+        unique_names = await search_series(query)
+
+        if not unique_names:
+            await initial_message.edit_text(f"❌ No series found `<code>{query}</code>`", parse_mode=enums.ParseMode.HTML)
+            return
+
+        normalized_query = clean_series_name(query).lower()
+        series_to_display = None
+        for db_name in unique_names:
+            cleaned_db_name = clean_series_name(db_name)
+            if cleaned_db_name.lower() == normalized_query:
+                series_to_display = cleaned_db_name
+                break
+        if series_to_display is None:
+            series_to_display = clean_series_name(min(unique_names, key=len))
+
+        try:
+            await initial_message.edit_text(f"✅ Found **{series_to_display}**. Fetching IMDB ...", parse_mode=enums.ParseMode.MARKDOWN)
+        except:
+            pass
+
+        imdb_data = None
+        if imdb_poster_enabled:
+            try:
+                imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_to_display)
+            except:
+                pass
+
+        poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
+        imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
+
+        summary = await get_series_summary(series_to_display)
+
+        languages_list = ", ".join(summary['languages'])
+        seasons_count = len(summary['seasons'])
+        qualities_list = ", ".join(summary['qualities'])
+        imdb_text = f" | 🔗 [IMDB]({imdb_link})" if imdb_link else ""
+
+        response = (
+            f"🔎 **{series_to_display}**{imdb_text}\n\n"
+            f"🎬 Available Seasons: **{seasons_count}**\n"
+            f"🗣️ Available Languages: **{languages_list}**\n"
+            f"💾 Available Qualities: **{qualities_list}**\n\n"
+            f"⬇️ Select **Season** to continue:"
+        )
+
+        keyboard = []
+        series_name_short = series_to_display[:MAX_CALLBACK_LENGTH]
+        for season in summary['seasons']:
+            callback_data = f'ss|{series_name_short}|{season}'
+            keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+
+        sent_message = None
+
+        if imdb_poster_enabled and poster_url:
+            try:
+                r = requests.get(
+                    poster_url,
+                    timeout=8,
+                    headers={"User-Agent": "Mozilla/5.0"}
                 )
-                keyboard = []
-                series_name_short = series_to_display[:MAX_CALLBACK_LENGTH]
-                for season in summary['seasons']:
-                    callback_data = f'ss|{series_name_short}|{season}' 
-                    keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
-                sent_message = None
-                if imdb_poster_enabled and poster_url:
-                    try:
-                        r = requests.get(poster_url, timeout=10)
-                        if r.status_code == 200:
-                            tmp = f"/tmp/{series_to_display}.jpg"
-                            with open(tmp, "wb") as f:
-                                f.write(r.content)
-                            await initial_message.delete() 
-                            sent_message = await message.reply_photo(
-                                photo=tmp, 
-                                caption=response,
-                                reply_markup=reply_markup, 
-                                parse_mode=enums.ParseMode.MARKDOWN
-                            )
-                    except Exception as e:
-                        logger.warning(f"poster proxy fail: {e}")
-                if not sent_message:
-                    sent_message = await initial_message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-                if auto_delete_timer > 0:
-                    asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, auto_delete_timer))
-        else:
-            await initial_message.edit_text(f"❌ No series found '<code>{query}</code>'", parse_mode=enums.ParseMode.HTML)
+                if r.status_code == 200:
+                    tmp = f"{series_to_display}.jpg"
+                    with open(tmp, "wb") as f:
+                        f.write(r.content)
 
-    return []
+                    await initial_message.delete()
+                    sent_message = await message.reply_photo(
+                        photo=tmp,
+                        caption=response,
+                        reply_markup=reply_markup,
+                        parse_mode=enums.ParseMode.MARKDOWN
+                    )
 
-    @app.on_callback_query(filters.regex(r"^ss\|"))
-    async def season_select_handler(app, query): # ADD app argument
-        data = query.data.split('|')
+            except Exception as e:
+                logger.warning(f"poster proxy fail: {e}")
+
+        if not sent_message:
+            sent_message = await initial_message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+
+        if auto_delete_timer > 0:
+            asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, auto_delete_timer))
+
+
+    @app.on_callback_query(filters.regex(r"^ss\\|"))
+    async def season_select_handler(app, query):
+        data = query.data.split("|")
         series_name = data[1]
         season = int(data[2])
-        await show_language_menu(app, query, series_name, season) # PASS app argument
+        await show_language_menu(app, query, series_name, season)
         await query.answer()
 
-    @app.on_callback_query(filters.regex(r"^ls\|"))
-    async def language_select_handler(app, query): # ADD app argument
-        data = query.data.split('|')
+
+    @app.on_callback_query(filters.regex(r"^ls\\|"))
+    async def language_select_handler(app, query):
+        data = query.data.split("|")
         series_name = data[1]
-        season = int(data[2]) 
-        language = data[3] 
-        await show_quality_menu(app, query, series_name, language, season) # PASS app argument
+        season = int(data[2])
+        language = data[3]
+        await show_quality_menu(app, query, series_name, language, season)
         await query.answer()
 
-    @app.on_callback_query(filters.regex(r"^qs\|")) 
+
+    @app.on_callback_query(filters.regex(r"^qs\\|"))
     async def quality_select_handler(app, query):
-        """QUALITY CLICK = SEND ALL FILES DIRECTLY"""
-        # ... (function body remains the same as in original) ...
-        data = query.data.split('|')
+        data = query.data.split("|")
         series_name = data[1]
-        season = int(data[2]) 
-        language = data[3] 
+        season = int(data[2])
+        language = data[3]
         quality = data[4]
 
         await query.answer(f"Sending {quality}/{language} episodes for S{season}...", cache_time=0)
@@ -227,7 +256,6 @@ def register_conversation_handlers(app: Client):
 
         bot_username = (await app.get_me()).username
 
-        sent_count = 0
         for file_entry in files:
             channel_id = file_entry["channel_id"]
             message_id = file_entry["message_id"]
@@ -239,79 +267,71 @@ def register_conversation_handlers(app: Client):
             )
 
             try:
-                # We no longer capture sent_message or schedule deletion here.
-                await app.copy_message( 
+                await app.copy_message(
                     chat_id=query.from_user.id,
                     from_chat_id=channel_id,
                     message_id=message_id,
                     caption=custom_caption,
                     parse_mode=enums.ParseMode.MARKDOWN
                 )
-                sent_count += 1
             except Exception as e:
                 logger.error(f"copy fail {message_id} : {e}")
 
-        await query.answer(f"✅ Sent {sent_count} files to DM!", show_alert=True)
+        await query.answer("✅ Sent files!", show_alert=True)
 
-    @app.on_callback_query(filters.regex(r"^fs\|")) 
+
+    @app.on_callback_query(filters.regex(r"^fs\\|"))
     async def file_select_handler(app, query):
-        """(NOT used now but kept for future) Retrieves a single file document based on its message and channel IDs."""
-        # ... (function body remains the same as in original) ...
         data = query.data.split('|')
-        series_name = data[1]
         channel_id = int(data[2])
         message_id = int(data[3])
-        
-        await query.answer(f"Sending episode file...", cache_time=0)
+        await query.answer("Sending episode file...", cache_time=0)
 
         file_entry = await get_file_by_message_id_and_channel_id(channel_id, message_id)
-        
+
         if not file_entry:
-            await query.answer("❌ File link not found in database.", show_alert=True)
+            await query.answer("❌ File link not found.", show_alert=True)
             return
 
-        file_name = file_entry.get('file_name', f"S{file_entry.get('season', 0)}E{file_entry.get('episode', 99)}")
-        
+        file_name = file_entry.get('file_name', f"S{file_entry.get('season',0)}E{file_entry.get('episode',99)}")
+
         try:
             bot_username = (await app.get_me()).username
-            custom_caption = CUSTOM_CAPTION_TEXT.format(
-                file_name=file_name,
-                bot_username=bot_username
-            )
-            
+            custom_caption = CUSTOM_CAPTION_TEXT.format(file_name=file_name, bot_username=bot_username)
+
             await app.copy_message(
                 chat_id=query.from_user.id,
                 from_chat_id=channel_id,
                 message_id=message_id,
-                caption=custom_caption, 
-                parse_mode=enums.ParseMode.MARKDOWN 
+                caption=custom_caption,
+                parse_mode=enums.ParseMode.MARKDOWN
             )
-            
-            await query.answer(f"✅ Sent '{file_name}' to your PM!", show_alert=True)
-            
+
+            await query.answer(f"✅ Sent '{file_name}'!", show_alert=True)
+
         except Exception as e:
-            logger.error(f"Failed to copy file {message_id} from {channel_id} in file_select_handler: {e}")
-            await query.answer("❌ Failed to send file. Please ensure the bot is an admin in the source channel.", show_alert=True)
-            
+            logger.error(f"Failed to copy file {message_id} from {channel_id}: {e}")
+            await query.answer("❌ Failed to send file.\nMake sure bot is admin.", show_alert=True)
+
+
 
     @app.on_callback_query(filters.regex(r"back_to_search"))
-    async def back_to_search_handler(app, query): # ADD app argument
-        """Returns to the initial summary/Season selection menu."""
-        # ... (function body remains the same as in original) ...
+    async def back_to_search_handler(app, query):
         data = query.data.split('|')
         series_name = data[1]
-        
+
         imdb_poster_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
         imdb_data = None
+
         if imdb_poster_enabled:
             try:
                 imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_name)
-            except Exception:
+            except:
                 pass
-          
+
         poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
         imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
-          
+
         summary = await get_series_summary(series_name)
         languages_list = ", ".join(summary['languages'])
         seasons_count = len(summary['seasons'])
@@ -320,22 +340,20 @@ def register_conversation_handlers(app: Client):
 
         response = (
             f"🔎 **{series_name}**{imdb_text}\n\n"
-            f"🎬 Available Seasons: **{seasons_count}**\n"
-            f"🗣️ Available Languages: **{languages_list}**\n"
-            f"💾 Available Qualities: **{qualities_list}**\n\n"
-            f"⬇️ Select **Season** to continue:"
+            f"🎬 Seasons: **{seasons_count}**\n"
+            f"🗣️ Languages: **{languages_list}**\n"
+            f"💾 Qualities: **{qualities_list}**\n\n"
+            f"⬇️ Select Season:"
         )
-          
+
         keyboard = []
         series_name_short = series_name[:MAX_CALLBACK_LENGTH]
         for season in summary['seasons']:
             callback_data = f'ss|{series_name_short}|{season}'
-            button_text = f"Season {season}"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-          
+            keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
+
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # --- Get the auto-delete timer for Menus ---
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
         try:
@@ -346,41 +364,33 @@ def register_conversation_handlers(app: Client):
                 )
             else:
                 await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.warning(f"Failed to edit media on back_to_search: {e}. Attempting edit_text fallback.")
+        except:
             try:
                 await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            except MessageNotModified:
+            except:
                 pass
-        
-        # --- Schedule deletion of the current menu state ---
+
         if auto_delete_timer > 0:
-            asyncio.create_task(
-                delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer)
-            )
-            
+            asyncio.create_task(delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer))
+
         await query.answer()
 
 
     @app.on_callback_query(filters.regex(r"close"))
     async def close_menu_handler(_, query):
-        # ... (function body remains the same as in original) ...
         try:
             await query.message.delete()
-            await query.answer("Menu closed.")
-        except Exception:
-            await query.answer("Could not close the menu.")
-
+            await query.answer("Closed.")
+        except:
+            await query.answer("Can't close.")
 
     return [
         media_handler,
         search_handler,
-        language_select_handler, 
-        season_select_handler, 
-        quality_select_handler, 
-        file_select_handler, 
-        back_to_search_handler, 
+        season_select_handler,
+        language_select_handler,
+        quality_select_handler,
+        file_select_handler,
+        back_to_search_handler,
         close_menu_handler
     ]
