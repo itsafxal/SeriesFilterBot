@@ -2,7 +2,8 @@
 
 import asyncio
 from pyrogram import Client
-from conversation import register_conversation_handlers, register_media_handler, register_bulk_index_handlers
+from commands import register_command_handlers
+from conversation import register_conversation_handlers
 from database import initialize_sql_db # Import the new initialization function
 from config import API_ID, API_HASH, BOT_TOKEN, logger
 
@@ -30,13 +31,8 @@ def main():
         bot_token=BOT_TOKEN
     )
 
-    # Register handlers
-    # 1. Conversation handlers (Search, Menus, Quality Filter)
+    register_command_handlers(app)
     register_conversation_handlers(app)
-
-    # 2. Indexing handlers (RTI, Bulk Index)
-    register_media_handler(app)
-    register_bulk_index_handlers(app) 
     
     # Start the bot
     logger.info("Starting bot client...")
