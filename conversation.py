@@ -185,8 +185,9 @@ def register_conversation_handlers(app: Client):
             f"**○ Released On:** {imdb_released}\n"
             f"**○ Genre:** {imdb_genre}\n"
             f"**○ Rating:** {imdb_rating}\n"
-            f"**○ Language:** {lang_info}\n"
-            f"**○ Season:** {season_info}\n\n"
+            f"**○ Language:** {languages_list}\n"
+            f"**○ Season:** {seasons_count}\n"
+            f"**○ Quality:** {qualities_list}\n\n"
             f"**Select the <u>Season</u> to continue:**"
         )
         keyboard = []
