@@ -170,21 +170,16 @@ def register_command_handlers(app: Client):
             return
             
         user_id = message.from_user.id
-        
-        # --- FIX: Use forward_origin to avoid deprecation warnings and fix AttributeError ---
         origin = message.forward_origin
-        
-        # We must use enums.MessageOriginType.CHAT as enums.MessageOrigin is likely not a module/class
-        # This resolves the AttributeError: module 'pyrogram.enums' has no attribute 'MessageOrigin'
-        if not origin or origin.type != enums.MessageOriginType.CHAT:
-             await message.reply_text("Please forward a message from the channel *without* forwarding as a copy.", parse_mode=enums.ParseMode.MARKDOWN)
-             return
-             
-        # Extract the necessary IDs from the forward_origin object
+        if not origin or origin.type != enums.MessageOriginType.CHANNEL:
+            await message.reply_text(
+                "Please forward a message from the channel *without* forwarding as a copy.",
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+            return
+
         last_msg_id = origin.message_id
-        chat = origin.sender_chat # This is the chat object (Channel/Supergroup)
-        # --- END FIX ---
-        
+        chat = origin.sender_chat
         chat_id_input = chat.username if chat.username else chat.id
         
         if isinstance(chat_id_input, str):
