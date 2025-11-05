@@ -1,29 +1,31 @@
-# conversation.py - MODIFIED
-
 import asyncio
 import re
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
     Message,
-    InlineKeyboardMarkup, 
-    InlineKeyboardButton, 
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
     InputMediaPhoto
 )
 from pyrogram.errors import MessageNotModified
 from database import (
-    search_series, 
-    get_all_files_by_season_and_quality, 
+    search_series,
+    get_all_files_by_season_and_quality,
     get_series_summary,
-    get_global_setting, 
+    get_global_setting,
     # New imports for the Season -> Language -> Quality flow
-    get_unique_languages_by_season, 
+    get_unique_languages_by_season,
     get_unique_qualities_by_lang_season,
     # New import for Click-to-Download functionality
-    get_file_by_message_id_and_channel_id 
-) 
-from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS 
-from utils import clean_series_name, save_series_file_for_bulk_index 
-from movie_fetcher import get_imdb_data 
+    get_file_by_message_id_and_channel_id
+)
+from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS
+from utils import clean_series_name, save_series_file_for_bulk_index
+from movie_fetcher import get_imdb_data
+
+# --- New Import Required for the Requested Change ---
+import requests 
+import os # Also useful for cleanup, though not explicitly requested
 
 # Utility constant for shorter callback data prefixes
 MAX_CALLBACK_LENGTH = 50
@@ -44,13 +46,13 @@ async def delete_message_later(app: Client, chat_id, message_id, delay):
         # MessageNotModified is fine, but deletion errors should be logged
         logger.warning(f"Failed to auto-delete message {message_id} in chat {chat_id}: {e}")
 
-# ⬇⬇⬇ HELPER FUNCTIONS KEPT ⬇⬇⬇
+# ⬇⬇⬇ HELPER FUNCTIONS (NOT MODIFIED IN THIS SNIPPET) ⬇⬇⬇
 
 async def show_language_menu(app: Client, query, series_name: str, season: int):
     """Presents languages available for the specified season."""
     # ... (function body remains the same as in original) ...
     languages = await get_unique_languages_by_season(series_name, season)
-     
+      
     if not languages:
         await query.answer(f"❌ No languages found for {series_name} S{season}.", show_alert=True)
         return
@@ -63,16 +65,16 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
         if lang == "Unknown":
             button_text = f"❓ Unknown/Unlabeled Files"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-         
+        
     keyboard.append([InlineKeyboardButton(f"⬅️ Back to All Seasons", callback_data=f'back_to_search|{series_name_short}')])
-     
+      
     reply_markup = InlineKeyboardMarkup(keyboard)
-     
+      
     caption = (
         f"🎬 **{series_name} - S{season}**\n"
         f"Select the **Language**:"
     )
-     
+      
     # --- Get the auto-delete timer for Menus ---
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
     
@@ -101,33 +103,33 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
     """Presents qualities available for the specified season and language."""
     # ... (function body remains the same as in original) ...
     qualities = await get_unique_qualities_by_lang_season(series_name, language, season)
-     
+      
     if not qualities:
         await query.answer(f"❌ No quality files found for S{season} ({language}).", show_alert=True)
         return
-         
+          
     keyboard = []
     series_name_short = series_name[:MAX_CALLBACK_LENGTH]
     for quality in qualities:
         callback_data = f'qs|{series_name_short}|{season}|{language}|{quality}'
         button_text = f"💾 {quality}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-         
+          
     callback_data_back = f'ss|{series_name_short}|{season}' 
     keyboard.append([InlineKeyboardButton(f"⬅️ Back to Languages for S{season}", callback_data=callback_data_back)])
-     
+      
     reply_markup = InlineKeyboardMarkup(keyboard)
-     
+      
     display_language = f"({language})"
     if language == "Unknown":
         display_language = f"(❓ Files)"
-         
+          
     caption = (
         f"🎬 **{series_name} - S{season}** {display_language}\n"
         f"Select the desired **video quality**\n\n"
         f"▶️ After click — bot will auto-send all episodes"
     )
-     
+      
     # --- Get the auto-delete timer for Menus ---
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
     
@@ -151,7 +153,7 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
             delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer)
         )
 
-# ⬆⬆⬆ HELPER FUNCTIONS KEPT ⬆⬆⬆
+# ⬆⬆⬆ HELPER FUNCTIONS (NOT MODIFIED IN THIS SNIPPET) ⬆⬆⬆
 
 
 def register_conversation_handlers(app: Client):
@@ -173,117 +175,134 @@ def register_conversation_handlers(app: Client):
     async def search_handler(_, message: Message):
         """Handles user text search queries and starts the Season menu."""
         query = message.text.strip()
-         
+        
         # Additional check to prevent accidental non-registered command processing
         if query.startswith('/') and query.lower() not in ["/index"]: 
             return
 
         imdb_poster_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
-         
+        
         initial_message = await message.reply_text(
             f"🔍 **Searching** for series matching '`{query}`' in the database. Please wait...",
             parse_mode=enums.ParseMode.MARKDOWN
         )
 
         unique_names = await search_series(query) 
-         
+        
         if unique_names:
             normalized_query = clean_series_name(query).lower()
             series_to_display = None
-             
+            
             for db_name in unique_names:
                 cleaned_db_name = clean_series_name(db_name)
                 if cleaned_db_name.lower() == normalized_query:
                     series_to_display = cleaned_db_name
                     break 
-             
+            
             if series_to_display is None:
                 series_to_display = clean_series_name(min(unique_names, key=len)) if unique_names else None
 
             if series_to_display:
-                 
-                if imdb_poster_enabled:
-                    try:
-                        await initial_message.edit_text(
-                            f"✅ Found **{series_to_display}** in the database. Now fetching IMDB data and poster... 🖼️",
-                            parse_mode=enums.ParseMode.MARKDOWN
-                        )
-                    except MessageNotModified:
-                        pass 
+                
+                # --- START OF MODIFIED LOGIC ---
+                try:
+                    await initial_message.edit_text(f"✅ Found **{series_to_display}**. Fetching IMDB ...", parse_mode=enums.ParseMode.MARKDOWN)
+                except MessageNotModified:
+                    pass
 
                 imdb_data = None
                 if imdb_poster_enabled:
                     try:
-                        imdb_data = await asyncio.get_event_loop().run_in_executor(
-                            None, get_imdb_data, series_to_display
-                        )
+                        # Use executor for blocking call
+                        imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_to_display)
                     except Exception as e:
                         logger.error(f"IMDB data fetch failed for {series_to_display}: {e}")
-                     
+                        pass
+                        
                 poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
                 imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
 
                 summary = await get_series_summary(series_to_display)
 
                 if not summary['seasons']:
-                    await initial_message.edit_text(f"❌ Found series **{series_to_display}**, but no indexed season data is available.", parse_mode=enums.ParseMode.MARKDOWN)
+                    await initial_message.edit_text(f"❌ Found series **{series_to_display}**, but no indexed season data.", parse_mode=enums.ParseMode.MARKDOWN)
                     return
-                     
+                    
                 languages_list = ", ".join(summary['languages'])
                 seasons_count = len(summary['seasons'])
                 qualities_list = ", ".join(summary['qualities'])
-                 
+                
                 imdb_text = f" | 🔗 [IMDB]({imdb_link})" if imdb_link else ""
 
                 response = (
                     f"🔎 **{series_to_display}**{imdb_text}\n\n"
-                    f"🎬 Available Seasons: **{seasons_count}**\n"
-                    f"🗣️ Available Languages: **{languages_list}**\n"
-                    f"💾 Available Qualities: **{qualities_list}**\n\n"
-                    f"⬇️ Select **Season** to continue:"
+                    f"🎬 Seasons: **{seasons_count}**\n"
+                    f"🗣️ Languages: **{languages_list}**\n"
+                    f"💾 Qualities: **{qualities_list}**\n\n"
+                    f"⬇️ Select Season:"
                 )
-                 
+                
                 keyboard = []
                 series_name_short = series_to_display[:MAX_CALLBACK_LENGTH]
-                 
+                
                 for season in summary['seasons']:
-                    callback_data = f'ss|{series_name_short}|{season}' 
+                    callback_data = f'ss|{series_name_short}|{season}'
                     button_text = f"Season {season}"
                     keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-                 
+                
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
                 # --- Get the auto-delete timer for Menus ---
                 auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+                sent_message = None
 
                 if imdb_poster_enabled and poster_url:
+                    tmp = None # Define outside try block
                     try:
-                        await initial_message.delete() 
-                        sent_message = await message.reply_photo( # ⬅ Capture the message
-                            photo=poster_url, 
-                            caption=response,
-                            reply_markup=reply_markup, 
-                            parse_mode=enums.ParseMode.MARKDOWN
-                        )
+                        # Use executor for blocking call
+                        r = await asyncio.get_event_loop().run_in_executor(None, requests.get, poster_url, 10)
+                        
+                        if r.status_code == 200:
+                            tmp = f"/tmp/{series_to_display.replace(' ', '_')}.jpg" # Added replace to ensure a valid filename
+                            with open(tmp, "wb") as f:
+                                f.write(r.content)
+                                
+                            await initial_message.delete()
+                            sent_message = await message.reply_photo(
+                                photo=tmp,
+                                caption=response,
+                                reply_markup=reply_markup,
+                                parse_mode=enums.ParseMode.MARKDOWN
+                            )
+                        else:
+                            logger.warning(f"Poster download failed with status code: {r.status_code}")
+                            
                     except Exception as e:
-                        logger.error(f"FATAL: Photo sending failed for {series_to_display}. Error: {type(e).__name__}: {e}") 
-                        sent_message = await initial_message.edit_text( # ⬅ Capture the message
-                            f"⚠️ **Could not load poster image.**\n\n{response}", 
-                            reply_markup=reply_markup, 
-                            parse_mode=enums.ParseMode.MARKDOWN
-                        )
-                else:
-                    sent_message = await initial_message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN) # ⬅ Capture the message
+                        logger.warning(f"poster proxy fail: {e}")
+                    finally:
+                        # Clean up the temporary file if it was created
+                        if tmp and os.path.exists(tmp):
+                            try:
+                                os.remove(tmp)
+                                logger.debug(f"Removed temporary poster file: {tmp}")
+                            except Exception as e:
+                                logger.error(f"Failed to remove temporary file {tmp}: {e}")
+
+                if not sent_message:
+                    # Fallback or if poster is disabled/failed
+                    sent_message = await initial_message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
                 # --- Schedule deletion of the initial menu ---
                 if auto_delete_timer > 0:
                     asyncio.create_task(
                         delete_message_later(app, sent_message.chat.id, sent_message.id, auto_delete_timer)
                     )
-             
+                
+                # --- END OF MODIFIED LOGIC ---
+            
             else:
-                await initial_message.edit_text(f"❌ No series name could be isolated matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
-             
+                await initial_message.edit_text(f"❌ No series found matching '<code>{query}</code>'", parse_mode=enums.ParseMode.HTML)
+            
         else:
             await initial_message.edit_text(f"❌ No series files found matching '<code>{query}</code>'.", parse_mode=enums.ParseMode.HTML)
 
@@ -384,7 +403,7 @@ def register_conversation_handlers(app: Client):
                 caption=custom_caption, 
                 parse_mode=enums.ParseMode.MARKDOWN 
             )
-        
+            
             await query.answer(f"✅ Sent '{file_name}' to your PM!", show_alert=True)
             
         except Exception as e:
@@ -398,7 +417,7 @@ def register_conversation_handlers(app: Client):
         # ... (function body remains the same as in original) ...
         data = query.data.split('|')
         series_name = data[1]
-         
+        
         imdb_poster_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
         imdb_data = None
         if imdb_poster_enabled:
@@ -406,10 +425,10 @@ def register_conversation_handlers(app: Client):
                 imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_name)
             except Exception:
                 pass
-         
+          
         poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
         imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
-         
+          
         summary = await get_series_summary(series_name)
         languages_list = ", ".join(summary['languages'])
         seasons_count = len(summary['seasons'])
@@ -423,14 +442,14 @@ def register_conversation_handlers(app: Client):
             f"💾 Available Qualities: **{qualities_list}**\n\n"
             f"⬇️ Select **Season** to continue:"
         )
-         
+          
         keyboard = []
         series_name_short = series_name[:MAX_CALLBACK_LENGTH]
         for season in summary['seasons']:
             callback_data = f'ss|{series_name_short}|{season}'
             button_text = f"Season {season}"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-         
+          
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         # --- Get the auto-delete timer for Menus ---
