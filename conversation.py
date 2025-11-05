@@ -171,7 +171,7 @@ def register_conversation_handlers(app: Client):
         imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
 
         summary = await get_series_summary(series_to_display)
-        imdb_title = imdb_data.get('title') if imdb_data else series_name
+        imdb_title = imdb_data.get('title') if imdb_data else series_to_display
         imdb_released = imdb_data.get('year', 'N/A') if imdb_data else 'N/A'
         imdb_genre = imdb_data.get('genres', 'N/A') if imdb_data else 'N/A'
         imdb_rating = imdb_data.get('rating', 'N/A') if imdb_data else 'N/A'
