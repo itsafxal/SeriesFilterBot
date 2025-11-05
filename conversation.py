@@ -1,4 +1,4 @@
-# conversation.py
+# conversation.py - MODIFIED
 
 import asyncio
 import re
@@ -11,52 +11,155 @@ from pyrogram.types import (
 )
 from pyrogram.errors import MessageNotModified
 from database import (
-    save_bot_state, 
-    get_bot_state,
     search_series, 
-    # Kept old imports for summary functionality
-    get_unique_languages_by_name, 
-    get_unique_seasons_by_name, 
     get_all_files_by_season_and_quality, 
     get_series_summary,
     get_global_setting, 
-    set_global_setting,
     # New imports for the Season -> Language -> Quality flow
     get_unique_languages_by_season, 
     get_unique_qualities_by_lang_season,
     # New import for Click-to-Download functionality
     get_file_by_message_id_and_channel_id 
 ) 
-# --- IMPORTANT: ADMIN_USERS must be defined in config.py as a list/tuple of user IDs ---
-from config import logger, CUSTOM_CAPTION_TEXT, ADMIN_USERS, INDEX_CHANNELS 
-from utils import clean_series_name 
+from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS 
+from utils import clean_series_name, save_series_file_for_bulk_index 
 from movie_fetcher import get_imdb_data 
 
-def register_media_handler(app: Client):
-def register_bulk_index_handlers(app: Client):
-def register_conversation_handlers(app: Client):
+# Utility constant for shorter callback data prefixes
+MAX_CALLBACK_LENGTH = 50
 
-    # Utility constant for shorter callback data prefixes
-    MAX_CALLBACK_LENGTH = 50
+# --- NEW HELPER FUNCTION FOR AUTO-DELETION ---
+async def delete_message_later(app: Client, chat_id, message_id, delay):
+    """Schedules the deletion of a message after a given delay."""
+    # Ensure delay is positive before sleeping
+    if delay <= 0:
+        return
+        
+    await asyncio.sleep(delay)
+    try:
+        # We target the specific message ID that was passed, which should be the last edited menu message.
+        await app.delete_messages(chat_id, message_id)
+        logger.info(f"Auto-deleted menu message {message_id} in chat {chat_id} after {delay}s.")
+    except Exception as e:
+        # MessageNotModified is fine, but deletion errors should be logged
+        logger.warning(f"Failed to auto-delete message {message_id} in chat {chat_id}: {e}")
 
-    # --- NEW HELPER FUNCTION FOR AUTO-DELETION ---
-    async def delete_message_later(app: Client, chat_id, message_id, delay):
-        """Schedules the deletion of a message after a given delay."""
-        # Ensure delay is positive before sleeping
-        if delay <= 0:
-            return
-            
-        await asyncio.sleep(delay)
+# ⬇⬇⬇ HELPER FUNCTIONS KEPT ⬇⬇⬇
+
+async def show_language_menu(app: Client, query, series_name: str, season: int):
+    """Presents languages available for the specified season."""
+    # ... (function body remains the same as in original) ...
+    languages = await get_unique_languages_by_season(series_name, season)
+     
+    if not languages:
+        await query.answer(f"❌ No languages found for {series_name} S{season}.", show_alert=True)
+        return
+
+    keyboard = []
+    series_name_short = series_name[:MAX_CALLBACK_LENGTH]
+    for lang in languages:
+        callback_data = f'ls|{series_name_short}|{season}|{lang}' 
+        button_text = f"🗣️ {lang}"
+        if lang == "Unknown":
+            button_text = f"❓ Unknown/Unlabeled Files"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+         
+    keyboard.append([InlineKeyboardButton(f"⬅️ Back to All Seasons", callback_data=f'back_to_search|{series_name_short}')])
+     
+    reply_markup = InlineKeyboardMarkup(keyboard)
+     
+    caption = (
+        f"🎬 **{series_name} - S{season}**\n"
+        f"Select the **Language**:"
+    )
+     
+    # --- Get the auto-delete timer for Menus ---
+    auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+    
+    try:
+        if query.message.photo:
+            await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        else:
+            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+    except MessageNotModified:
+        pass
+    except Exception as e:
+        logger.warning(f"Error editing menu (show_language_menu): {e}. Falling back to edit_text.")
         try:
-            # We target the specific message ID that was passed, which should be the last edited menu message.
-            await app.delete_messages(chat_id, message_id)
-            logger.info(f"Auto-deleted menu message {message_id} in chat {chat_id} after {delay}s.")
-        except Exception as e:
-            # MessageNotModified is fine, but deletion errors should be logged
-            logger.warning(f"Failed to auto-delete message {message_id} in chat {chat_id}: {e}")
+            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        except MessageNotModified:
+            pass
+    
+    # --- Schedule deletion of the current menu state ---
+    if auto_delete_timer > 0:
+        asyncio.create_task(
+            delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer)
+        )
+
+
+async def show_quality_menu(app: Client, query, series_name: str, language: str, season: int):
+    """Presents qualities available for the specified season and language."""
+    # ... (function body remains the same as in original) ...
+    qualities = await get_unique_qualities_by_lang_season(series_name, language, season)
+     
+    if not qualities:
+        await query.answer(f"❌ No quality files found for S{season} ({language}).", show_alert=True)
+        return
+         
+    keyboard = []
+    series_name_short = series_name[:MAX_CALLBACK_LENGTH]
+    for quality in qualities:
+        callback_data = f'qs|{series_name_short}|{season}|{language}|{quality}'
+        button_text = f"💾 {quality}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+         
+    callback_data_back = f'ss|{series_name_short}|{season}' 
+    keyboard.append([InlineKeyboardButton(f"⬅️ Back to Languages for S{season}", callback_data=callback_data_back)])
+     
+    reply_markup = InlineKeyboardMarkup(keyboard)
+     
+    display_language = f"({language})"
+    if language == "Unknown":
+        display_language = f"(❓ Files)"
+         
+    caption = (
+        f"🎬 **{series_name} - S{season}** {display_language}\n"
+        f"Select the desired **video quality**\n\n"
+        f"▶️ After click — bot will auto-send all episodes"
+    )
+     
+    # --- Get the auto-delete timer for Menus ---
+    auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+    
+    try:
+        if query.message.photo:
+            await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        else:
+            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+    except MessageNotModified:
+        pass
+    except Exception as e:
+        logger.warning(f"Error editing menu (show_quality_menu): {e}. Falling back to edit_text.")
+        try:
+            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        except MessageNotModified:
+            pass
+    
+    # --- Schedule deletion of the current menu state ---
+    if auto_delete_timer > 0:
+        asyncio.create_task(
+            delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer)
+        )
+
+# ⬆⬆⬆ HELPER FUNCTIONS KEPT ⬆⬆⬆
+
+
+def register_conversation_handlers(app: Client):
+    """Registers all text search and callback query handlers."""
 
     @app.on_message((filters.document | filters.video | filters.audio) & filters.channel)
     async def media_handler(_, message: Message):
+        """Handler for Real-Time Indexing (RTI) from channels."""
         if message.chat.id in INDEX_CHANNELS and message.media:
 
             saved, count = await save_series_file_for_bulk_index(message)
@@ -64,132 +167,14 @@ def register_conversation_handlers(app: Client):
             if saved:
                 logger.info(f"RTI: Indexed {count} new file(s) from channel {message.chat.id}")
 
-    @app.on_message(filters.command("index") & filters.user(ADMIN_USERS) & filters.private)
-    async def index_command(_, message: Message):
 
-        await message.reply_text("Starting bulk indexing. This may take a while...")
-
-        total_indexed = 0
-
-        for channel_id in INDEX_CHANNELS:
-
-            last_indexed_id = await get_bot_state(channel_id)
-            start_id = last_indexed_id if last_indexed_id else 0
-
-            await message.reply_text(
-                f"Processing channel `{channel_id}` from message ID `{start_id + 1}`...",
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
-
-            indexed_count = 0
-            current_id = 0
-
-            try:
-                # *** IMPORTANT FIX ***
-                async for msg in app.get_chat_history(
-                        channel_id,
-                        offset_id=start_id,
-                        reverse=True):     # this fixes indexing stop bug
-
-                    current_id = msg.id
-
-                    if not (msg.document or msg.video or msg.audio):
-                        continue
-
-                    saved, count = await save_series_file_for_bulk_index(msg)
-                    if saved:
-                        indexed_count += count
-                        total_indexed += count
-
-                    if indexed_count > 0 and indexed_count % 500 == 0:
-                        await save_bot_state(channel_id, current_id)
-                        await asyncio.sleep(1)
-                        logger.debug(f"INDEX: Checkpoint saved for {channel_id} at ID {current_id}")
-
-                if current_id > start_id:
-                    await save_bot_state(channel_id, current_id)
-
-                await message.reply_text(
-                    f"✅ Finished indexing `{channel_id}`. Indexed {indexed_count} new files.",
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-
-            except Exception as e:
-                logger.error(f"Error indexing channel {channel_id}: {e}")
-                await message.reply_text(
-                    f"❌ Indexing failed for channel `{channel_id}`: `{e}`",
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-
-        await message.reply_text(
-            f"🥳 **BULK INDEXING COMPLETE.** Total new files indexed: **{total_indexed}**.",
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-            
-    @app.on_message(filters.command("start") & filters.private)
-    async def start_command(_, message):
-        """Handles the /start command."""
-        welcome_text = (
-            "👋 <b>Welcome! I'm your Series File Filter Bot.</b>\n\n"
-            "Just send me the <b>name of a series</b> you are looking for. "
-            "I'll show you a summary and ask you to select the **Season**."
-        )
-        await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
-
-    @app.on_message(filters.command("imdb") & filters.user(ADMIN_USERS) & filters.private)
-    async def poster_toggle_command(_, message):
-        """Allows admin to turn the IMDB poster feature on or off."""
-        current_state = await get_global_setting("IMDB_POSTER_ENABLED", True) 
-        new_state = not current_state
-        await set_global_setting("IMDB_POSTER_ENABLED", new_state)
-
-        status = "✅ **ON**" if new_state else "❌ **OFF**"
-        await message.reply_text(
-            f"🖼️ IMDB Poster feature is now set to: {status}",
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-
-    @app.on_message(filters.command("autodel") & filters.user(ADMIN_USERS) & filters.private)
-    async def autodel_command(_, message):
-        """Allows admin to set the auto-delete timer for sent files."""
-        try:
-            if len(message.command) > 1:
-                timer = int(message.command[1])
-                if timer < 0:
-                    timer = 0
-                
-                await set_global_setting("AUTO_DELETE_TIMER", timer)
-                
-                if timer > 0:
-                    status = f"✅ **ON**: Menu auto-delete timer set to **{timer} seconds**."
-                else:
-                    status = "❌ **OFF**: Menu auto-delete is disabled."
-                    
-                await message.reply_text(
-                    f"🗑️ Menu Auto-Deletion feature is now set to: {status}\n\n"
-                    f"Set to 0 to disable.",
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-            else:
-                current_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
-                status = f"Current menu auto-delete timer is: **{current_timer} seconds**."
-                await message.reply_text(
-                    f"Usage: `/autodel <seconds>` (e.g., `/autodel 300`)\n"
-                    f"{status}",
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-                
-        except ValueError:
-            await message.reply_text("❌ Invalid number provided. Please use an integer for seconds.", parse_mode=enums.ParseMode.MARKDOWN)
-        except Exception as e:
-            logger.error(f"Error in autodel_command: {e}")
-
-    @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel"]))
-    async def search_handler(_, message):
+    @app.on_message(filters.text & filters.private & ~filters.command())
+    async def search_handler(_, message: Message):
         """Handles user text search queries and starts the Season menu."""
         query = message.text.strip()
          
-        if query.startswith('/') and query.lower() not in ["/index"]: 
+        # Additional check to prevent accidental non-registered command processing
+        if query.startswith('/'): 
             return
 
         imdb_poster_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
@@ -303,26 +288,26 @@ def register_conversation_handlers(app: Client):
 
 
     @app.on_callback_query(filters.regex(r"^ss\|"))
-    async def season_select_handler(_, query):
+    async def season_select_handler(app, query): # ADD app argument
         data = query.data.split('|')
         series_name = data[1]
         season = int(data[2])
-        await show_language_menu(query, series_name, season) 
+        await show_language_menu(app, query, series_name, season) # PASS app argument
         await query.answer()
 
     @app.on_callback_query(filters.regex(r"^ls\|"))
-    async def language_select_handler(_, query):
+    async def language_select_handler(app, query): # ADD app argument
         data = query.data.split('|')
         series_name = data[1]
         season = int(data[2]) 
         language = data[3] 
-        await show_quality_menu(query, series_name, language, season)
+        await show_quality_menu(app, query, series_name, language, season) # PASS app argument
         await query.answer()
 
-    # ⬇⬇⬇ MODIFIED: quality_select_handler (REMOVED auto-delete for files)
     @app.on_callback_query(filters.regex(r"^qs\|")) 
     async def quality_select_handler(app, query):
         """QUALITY CLICK = SEND ALL FILES DIRECTLY"""
+        # ... (function body remains the same as in original) ...
         data = query.data.split('|')
         series_name = data[1]
         season = int(data[2]) 
@@ -367,8 +352,8 @@ def register_conversation_handlers(app: Client):
 
     @app.on_callback_query(filters.regex(r"^fs\|")) 
     async def file_select_handler(app, query):
-        # ... (remains the same) ...
-        """(NOT used now but kept for future)"""
+        """(NOT used now but kept for future) Retrieves a single file document based on its message and channel IDs."""
+        # ... (function body remains the same as in original) ...
         data = query.data.split('|')
         series_name = data[1]
         channel_id = int(data[2])
@@ -406,10 +391,10 @@ def register_conversation_handlers(app: Client):
             await query.answer("❌ Failed to send file. Please ensure the bot is an admin in the source channel.", show_alert=True)
             
 
-    # ⬇⬇⬇ MODIFIED: back_to_search_handler (for menu auto-delete)
     @app.on_callback_query(filters.regex(r"back_to_search"))
-    async def back_to_search_handler(_, query):
+    async def back_to_search_handler(app, query): # ADD app argument
         """Returns to the initial summary/Season selection menu."""
+        # ... (function body remains the same as in original) ...
         data = query.data.split('|')
         series_name = data[1]
          
@@ -476,113 +461,9 @@ def register_conversation_handlers(app: Client):
         await query.answer()
 
 
-    # ⬇⬇⬇ MODIFIED: show_language_menu (for menu auto-delete)
-    async def show_language_menu(query, series_name: str, season: int):
-        """Presents languages available for the specified season."""
-        languages = await get_unique_languages_by_season(series_name, season)
-         
-        if not languages:
-            await query.answer(f"❌ No languages found for {series_name} S{season}.", show_alert=True)
-            return
-
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for lang in languages:
-            callback_data = f'ls|{series_name_short}|{season}|{lang}' 
-            button_text = f"🗣️ {lang}"
-            if lang == "Unknown":
-                button_text = f"❓ Unknown/Unlabeled Files"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-             
-        keyboard.append([InlineKeyboardButton(f"⬅️ Back to All Seasons", callback_data=f'back_to_search|{series_name_short}')])
-         
-        reply_markup = InlineKeyboardMarkup(keyboard)
-         
-        caption = (
-            f"🎬 **{series_name} - S{season}**\n"
-            f"Select the **Language**:"
-        )
-         
-        # --- Get the auto-delete timer for Menus ---
-        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
-        
-        try:
-            if query.message.photo:
-                await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            else:
-                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.warning(f"Error editing menu (show_language_menu): {e}. Falling back to edit_text.")
-            try:
-                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            except MessageNotModified:
-                pass
-        
-        # --- Schedule deletion of the current menu state ---
-        if auto_delete_timer > 0:
-            asyncio.create_task(
-                delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer)
-            )
-             
-    # ⬇⬇⬇ MODIFIED: show_quality_menu (for menu auto-delete)
-    async def show_quality_menu(query, series_name: str, language: str, season: int):
-        """Presents qualities available for the specified season and language."""
-        qualities = await get_unique_qualities_by_lang_season(series_name, language, season)
-         
-        if not qualities:
-            await query.answer(f"❌ No quality files found for S{season} ({language}).", show_alert=True)
-            return
-             
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for quality in qualities:
-            callback_data = f'qs|{series_name_short}|{season}|{language}|{quality}'
-            button_text = f"💾 {quality}"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-             
-        callback_data_back = f'ss|{series_name_short}|{season}' 
-        keyboard.append([InlineKeyboardButton(f"⬅️ Back to Languages for S{season}", callback_data=callback_data_back)])
-         
-        reply_markup = InlineKeyboardMarkup(keyboard)
-         
-        display_language = f"({language})"
-        if language == "Unknown":
-            display_language = f"(❓ Files)"
-             
-        caption = (
-            f"🎬 **{series_name} - S{season}** {display_language}\n"
-            f"Select the desired **video quality**\n\n"
-            f"▶️ After click — bot will auto-send all episodes"
-        )
-         
-        # --- Get the auto-delete timer for Menus ---
-        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
-        
-        try:
-            if query.message.photo:
-                await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            else:
-                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.warning(f"Error editing menu (show_quality_menu): {e}. Falling back to edit_text.")
-            try:
-                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            except MessageNotModified:
-                pass
-        
-        # --- Schedule deletion of the current menu state ---
-        if auto_delete_timer > 0:
-            asyncio.create_task(
-                delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer)
-            )
-
-
     @app.on_callback_query(filters.regex(r"close"))
     async def close_menu_handler(_, query):
+        # ... (function body remains the same as in original) ...
         try:
             await query.message.delete()
             await query.answer("Menu closed.")
@@ -591,10 +472,12 @@ def register_conversation_handlers(app: Client):
 
 
     return [
-        start_command, poster_toggle_command, autodel_command, 
-        search_handler, index_command,
-        language_select_handler, season_select_handler, 
-        quality_select_handler, file_select_handler, 
+        media_handler,
+        search_handler,
+        language_select_handler, 
+        season_select_handler, 
+        quality_select_handler, 
+        file_select_handler, 
         back_to_search_handler, 
         close_menu_handler
     ]
