@@ -50,8 +50,7 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
     keyboard.append([InlineKeyboardButton(f"⬅️ Back to All Seasons", callback_data=f'back_to_search|{series_name_short}')])
     reply_markup = InlineKeyboardMarkup(keyboard)
     caption = (
-        f"🎬 **{series_name} - S{season}**
-"
+        f"🎬 **{series_name} - S{season}**"
         f"Select the **Language**:"
     )
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
@@ -81,11 +80,8 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
     reply_markup = InlineKeyboardMarkup(keyboard)
     display_language = f"({language})"
     caption = (
-        f"🎬 **{series_name} - S{season}** {display_language}
-"
-        f"Select the desired **video quality**
-
-"
+        f"🎬 **{series_name} - S{season}** {display_language}"
+        f"Select the desired **video quality**"
         f"▶️ After click — bot will auto-send all episodes"
     )
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
@@ -155,16 +151,10 @@ def register_conversation_handlers(app: Client):
                 qualities_list = ", ".join(summary['qualities'])
                 imdb_text = f" | 🔗 [IMDB]({imdb_link})" if imdb_link else ""
                 response = (
-                    f"🔎 **{series_to_display}**{imdb_text}
-
-"
-                    f"🎬 Seasons: **{seasons_count}**
-"
-                    f"🗣️ Languages: **{languages_list}**
-"
-                    f"💾 Qualities: **{qualities_list}**
-
-"
+                    f"🔎 **{series_to_display}**{imdb_text}"
+                    f"🎬 Seasons: **{seasons_count}**"
+                    f"🗣️ Languages: **{languages_list}**"
+                    f"💾 Qualities: **{qualities_list}**"
                     f"⬇️ Select Season:"
                 )
                 keyboard = []
