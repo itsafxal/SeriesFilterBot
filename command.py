@@ -36,7 +36,7 @@ def register_command_handlers(app: Client):
         for channel_id in INDEX_CHANNELS:
 
             last_id = await get_bot_state(channel_id) or 0
-            start_id = last_indexed_id if last_indexed_id else 0
+            start_id = last_id
 
             await message.reply_text(
                 f"Processing channel `{channel_id}` from message ID `{start_id + 1}`...",
@@ -51,6 +51,7 @@ def register_command_handlers(app: Client):
                 async for msg in app.get_chat_history(channel_id):
                     if msg.id <= last_id:
                         break  
+                    current_id = msg.id
                     if msg.document or msg.video or msg.audio:
                         saved, count = await save_series_file_for_bulk_index(msg)
                     if saved:
