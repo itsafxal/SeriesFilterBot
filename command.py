@@ -35,7 +35,7 @@ def register_command_handlers(app: Client):
 
         for channel_id in INDEX_CHANNELS:
 
-            last_indexed_id = await get_bot_state(channel_id)
+            last_id = await get_bot_state(channel_id) or 0
             start_id = last_indexed_id if last_indexed_id else 0
 
             await message.reply_text(
@@ -47,21 +47,12 @@ def register_command_handlers(app: Client):
             current_id = 0
 
             try:
-                # 🚨 CHANGE APPLIED HERE 🚨: Using the iter_messages bot-safe logic (via min_id).
-                # This call is preferred for bots to fetch forward-only history from a channel.
                 
-                async for msg in app.get_chat_history(
-                        channel_id,
-                        offset_id=start_id   # <= correct
-                        ):
-
-                    current_id = msg.id
-
-                    if not (msg.document or msg.video or msg.audio):
-                        continue
-
-                    # save_series_file_for_bulk_index is from utils.py
-                    saved, count = await save_series_file_for_bulk_index(msg)
+                async for msg in app.get_chat_history(channel_id):
+                    if msg.id <= last_id:
+                        break  
+                    if msg.document or msg.video or msg.audio:
+                        saved, count = await save_series_file_for_bulk_index(msg)
                     if saved:
                         indexed_count += count
                         total_indexed += count
