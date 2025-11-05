@@ -179,7 +179,7 @@ def register_command_handlers(app: Client):
             return
 
         last_msg_id = origin.message_id
-        chat = origin.sender_chat
+        chat = origin.chat
         chat_id_input = chat.username if chat.username else chat.id
         
         if isinstance(chat_id_input, str):
