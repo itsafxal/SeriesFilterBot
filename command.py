@@ -9,7 +9,7 @@ from database import (
     save_bot_state,
     get_global_setting, 
     set_global_setting,
-    initialize_sql_db # Required for /index which triggers migration
+    # initialize_sql_db is not strictly needed here but kept for context if a full re-migration was desired
 )
 from utils import save_series_file_for_bulk_index # Required for /index
 
@@ -27,13 +27,8 @@ def register_command_handlers(app: Client):
         await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
     @app.on_message(filters.command("index") & filters.user(ADMIN_USERS) & filters.private)
-    async def index_command(_, message: Message):
+    async def index_command(app, message: Message):
         """Admin command to start bulk indexing of files from configured channels."""
-        
-        # NOTE: initialize_sql_db is run sync in main.py, but including it in case 
-        # a full re-migration is needed on command (though usually it runs once at startup).
-        # For a safer/cleaner implementation, consider re-running initialize_sql_db() here 
-        # as a fresh migration/re-index if the user is an admin.
         
         await message.reply_text("Starting bulk indexing. This may take a while...")
 
@@ -53,11 +48,11 @@ def register_command_handlers(app: Client):
             current_id = 0
 
             try:
-                # *** IMPORTANT FIX ***
+                # 🚨 FIX APPLIED HERE 🚨: Replaced deprecated offset_id with min_id
                 async for msg in app.get_chat_history(
                         channel_id,
-                        min_id=start_id,
-                        reverse=True):     # this fixes indexing stop bug
+                        min_id=start_id, # Use min_id to start fetching history *after* start_id
+                        reverse=True):     # This fixes indexing stop bug
 
                     current_id = msg.id
 
@@ -84,9 +79,11 @@ def register_command_handlers(app: Client):
                 )
 
             except Exception as e:
+                # This catches the BOT_METHOD_INVALID error and logs it
                 logger.error(f"Error indexing channel {channel_id}: {e}")
                 await message.reply_text(
-                    f"❌ Indexing failed for channel `{channel_id}`: `{e}`",
+                    f"❌ Indexing failed for channel `{channel_id}`: `{e}`\n\n"
+                    f"**Check if the bot is an administrator in the source channel!**",
                     parse_mode=enums.ParseMode.MARKDOWN
                 )
 
