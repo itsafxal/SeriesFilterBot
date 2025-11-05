@@ -171,20 +171,24 @@ def register_conversation_handlers(app: Client):
         imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
 
         summary = await get_series_summary(series_to_display)
-
+        imdb_title = imdb_data.get('title') if imdb_data else series_name
+        imdb_released = imdb_data.get('year', 'N/A') if imdb_data else 'N/A'
+        imdb_genre = imdb_data.get('genres', 'N/A') if imdb_data else 'N/A'
+        imdb_rating = imdb_data.get('rating', 'N/A') if imdb_data else 'N/A'
+        imdb_link = imdb_data.get('link') if imdb_data else None
         languages_list = ", ".join(summary['languages'])
         seasons_count = len(summary['seasons'])
         qualities_list = ", ".join(summary['qualities'])
         imdb_text = f" | 🔗 [IMDB]({imdb_link})" if imdb_link else ""
-
         response = (
-            f"🔎 **{series_to_display}**{imdb_text}\n\n"
-            f"🎬 Available Seasons: **{seasons_count}**\n"
-            f"🗣️ Available Languages: **{languages_list}**\n"
-            f"💾 Available Qualities: **{qualities_list}**\n\n"
-            f"⬇️ Select **Season** to continue:"
+            f"**○ Title:** {imdb_title}\n"
+            f"**○ Released On:** {imdb_released}\n"
+            f"**○ Genre:** {imdb_genre}\n"
+            f"**○ Rating:** {imdb_rating}\n"
+            f"**○ Language:** {lang_info}\n" 
+            f"**○ Season:** {season_info}\n\n" 
+            f"**Select the <u>Season</u> to continue:**"
         )
-
         keyboard = []
         series_name_short = series_to_display[:MAX_CALLBACK_LENGTH]
         for season in summary['seasons']:
