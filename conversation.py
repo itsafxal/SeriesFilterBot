@@ -168,13 +168,14 @@ def register_conversation_handlers(app: Client):
                 logger.info(f"RTI: Indexed {count} new file(s) from channel {message.chat.id}")
 
 
-    @app.on_message(filters.text & filters.private & ~filters.command())
+    # 🚨 FIX APPLIED HERE 🚨: Added command names to filters.command()
+    @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel"]))
     async def search_handler(_, message: Message):
         """Handles user text search queries and starts the Season menu."""
         query = message.text.strip()
          
         # Additional check to prevent accidental non-registered command processing
-        if query.startswith('/'): 
+        if query.startswith('/') and query.lower() not in ["/index"]: 
             return
 
         imdb_poster_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
