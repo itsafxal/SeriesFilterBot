@@ -1,4 +1,4 @@
-# conversation.py (FINAL FIXED WITH IMDB POSTER PROXY + USER AGENT)
+# conversation.py (IMDB POSTER REMOVED)
 
 import asyncio
 import re
@@ -22,7 +22,7 @@ from database import (
 )
 from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS
 from utils import clean_series_name, save_series_file_for_bulk_index
-from movie_fetcher import get_imdb_data
+from movie_fetcher import get_imdb_data # Kept for get_imdb_data usage (for link and data, not poster)
 
 MAX_CALLBACK_LENGTH = 50
 
@@ -59,11 +59,14 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
     try:
+        # Check for message.photo and change to edit_text
         if query.message.photo:
-            await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
         else:
             await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-    except:
+    except MessageNotModified:
+        pass # Handle case where text is the same
+    except Exception:
         pass
 
     if auto_delete_timer > 0:
@@ -84,7 +87,7 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
         callback_data = f'qs|{series_name_short}|{season}|{language}|{quality}'
         keyboard.append([InlineKeyboardButton(f"💾 {quality}", callback_data=callback_data)])
 
-    keyboard.append([InlineKeyboardButton(f"⬅️ Back", callback_data=f'ss|{series_name_short}|{season}')])
+    keyboard.append([InlineKeyboardButton(f"⬅️ Back", callback_data=f'ls|{series_name_short}|{season}|{language}')])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     caption = (
@@ -96,11 +99,14 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
     try:
+        # Check for message.photo and change to edit_text
         if query.message.photo:
-            await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
         else:
             await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-    except:
+    except MessageNotModified:
+        pass
+    except Exception:
         pass
 
     if auto_delete_timer > 0:
@@ -118,14 +124,14 @@ def register_conversation_handlers(app: Client):
                 logger.info(f"RTI: Indexed {count} new file(s) from channel {message.chat.id}")
 
 
-
     @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel"]))
     async def search_handler(_, message: Message):
         query = message.text.strip()
         if query.startswith('/') and query.lower() not in ["/index"]:
             return
 
-        imdb_poster_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
+        # imdb_poster_enabled is no longer needed but keeping get_global_setting call for other settings
+        # imdb_poster_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
 
         initial_message = await message.reply_text(
             f"🔍 **Searching** for `{query}` ...",
@@ -154,13 +160,14 @@ def register_conversation_handlers(app: Client):
             pass
 
         imdb_data = None
-        if imdb_poster_enabled:
-            try:
-                imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_to_display)
-            except:
-                pass
+        # Fetching IMDB data for the link, not the poster
+        try:
+            imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_to_display)
+        except:
+            pass
 
-        poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
+        # poster_url is removed
+        # poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
         imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
 
         summary = await get_series_summary(series_to_display)
@@ -187,33 +194,8 @@ def register_conversation_handlers(app: Client):
 
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
-        sent_message = None
-
-        if imdb_poster_enabled and poster_url:
-            try:
-                r = requests.get(
-                    poster_url,
-                    timeout=8,
-                    headers={"User-Agent": "Mozilla/5.0"}
-                )
-                if r.status_code == 200:
-                    tmp = f"{series_to_display}.jpg"
-                    with open(tmp, "wb") as f:
-                        f.write(r.content)
-
-                    await initial_message.delete()
-                    sent_message = await message.reply_photo(
-                        photo=tmp,
-                        caption=response,
-                        reply_markup=reply_markup,
-                        parse_mode=enums.ParseMode.MARKDOWN
-                    )
-
-            except Exception as e:
-                logger.warning(f"poster proxy fail: {e}")
-
-        if not sent_message:
-            sent_message = await initial_message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        # Removed all poster downloading and sending logic
+        sent_message = await initial_message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
         if auto_delete_timer > 0:
             asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, auto_delete_timer))
@@ -314,22 +296,21 @@ def register_conversation_handlers(app: Client):
             await query.answer("❌ Failed to send file.\nMake sure bot is admin.", show_alert=True)
 
 
-
     @app.on_callback_query(filters.regex(r"back_to_search"))
     async def back_to_search_handler(app, query):
         data = query.data.split('|')
         series_name = data[1]
 
-        imdb_poster_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
+        # Removed imdb_poster_enabled check
         imdb_data = None
 
-        if imdb_poster_enabled:
-            try:
-                imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_name)
-            except:
-                pass
+        try:
+            imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_name)
+        except:
+            pass
 
-        poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
+        # poster_url is removed
+        # poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
         imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
 
         summary = await get_series_summary(series_name)
@@ -357,14 +338,11 @@ def register_conversation_handlers(app: Client):
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
         try:
-            if imdb_poster_enabled and poster_url and query.message.photo:
-                await query.message.edit_media(
-                    media=InputMediaPhoto(poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
-                    reply_markup=reply_markup
-                )
-            else:
-                await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        except:
+            # Removed logic for editing media (photo)
+            await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        except MessageNotModified:
+            pass
+        except Exception:
             try:
                 await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             except:
