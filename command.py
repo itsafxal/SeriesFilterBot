@@ -1,11 +1,13 @@
 # command.py - MODIFIED for interactive and link-based indexing with deprecation fix
+# FIX: Changed enums.MessageOrigin.CHAT to enums.MessageOriginType.CHAT or similar
+# Based on the error, we assume the Enum Class name is MessageOriginType.
 
 import asyncio
 import re
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, ChannelPrivate
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
-from config import logger, ADMIN_USERS, INDEX_CHANNELS # Keep INDEX_CHANNELS for RTI handler in conversation.py if needed
+from config import logger, ADMIN_USERS, INDEX_CHANNELS 
 from database import (
     get_bot_state,
     save_bot_state,
@@ -169,11 +171,12 @@ def register_command_handlers(app: Client):
             
         user_id = message.from_user.id
         
-        # --- FIX: Use forward_origin to avoid deprecation warnings ---
+        # --- FIX: Use forward_origin to avoid deprecation warnings and fix AttributeError ---
         origin = message.forward_origin
         
-        # Check if it was forwarded from a channel (ChatForwardOrigin)
-        if not origin or origin.type != enums.MessageOrigin.CHAT:
+        # We must use enums.MessageOriginType.CHAT as enums.MessageOrigin is likely not a module/class
+        # This resolves the AttributeError: module 'pyrogram.enums' has no attribute 'MessageOrigin'
+        if not origin or origin.type != enums.MessageOriginType.CHAT:
              await message.reply_text("Please forward a message from the channel *without* forwarding as a copy.", parse_mode=enums.ParseMode.MARKDOWN)
              return
              
