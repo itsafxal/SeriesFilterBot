@@ -1,4 +1,4 @@
-# command.py
+# command.py - MODIFIED for iter_messages logic
 
 import asyncio
 from pyrogram import Client, filters, enums
@@ -9,9 +9,8 @@ from database import (
     save_bot_state,
     get_global_setting, 
     set_global_setting,
-    # initialize_sql_db is not strictly needed here but kept for context if a full re-migration was desired
 )
-from utils import save_series_file_for_bulk_index # Required for /index
+from utils import save_series_file_for_bulk_index 
 
 def register_command_handlers(app: Client):
     """Registers all command-based message handlers with the Pyrogram client."""
@@ -48,11 +47,12 @@ def register_command_handlers(app: Client):
             current_id = 0
 
             try:
-                # 🚨 FIX APPLIED HERE 🚨: Replaced deprecated offset_id with min_id
+                # 🚨 CHANGE APPLIED HERE 🚨: Using the iter_messages bot-safe logic (via min_id).
+                # This call is preferred for bots to fetch forward-only history from a channel.
                 async for msg in app.get_chat_history(
                         channel_id,
-                        offset_id=start_id, # Use min_id to start fetching history *after* start_id
-                        reverse=True):     # This fixes indexing stop bug
+                        min_id=start_id, # Start fetching messages *after* this ID (bot-safe equivalent of iter_messages start)
+                        reverse=True):     
 
                     current_id = msg.id
 
@@ -83,7 +83,7 @@ def register_command_handlers(app: Client):
                 logger.error(f"Error indexing channel {channel_id}: {e}")
                 await message.reply_text(
                     f"❌ Indexing failed for channel `{channel_id}`: `{e}`\n\n"
-                    f"**Check if the bot is an administrator in the source channel!**",
+                    f"**Ensure the bot is an administrator in the source channel with 'Post Messages' rights!**",
                     parse_mode=enums.ParseMode.MARKDOWN
                 )
 
