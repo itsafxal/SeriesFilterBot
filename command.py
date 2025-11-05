@@ -56,7 +56,7 @@ def register_command_handlers(app: Client):
                 # *** IMPORTANT FIX ***
                 async for msg in app.get_chat_history(
                         channel_id,
-                        offset_id=start_id,
+                        min_id=start_id,
                         reverse=True):     # this fixes indexing stop bug
 
                     current_id = msg.id
