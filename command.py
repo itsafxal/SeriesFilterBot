@@ -51,7 +51,7 @@ def register_command_handlers(app: Client):
                 # This call is preferred for bots to fetch forward-only history from a channel.
                 async for msg in app.get_chat_history(
                         channel_id,
-                        min_id=start_id, # Start fetching messages *after* this ID (bot-safe equivalent of iter_messages start)
+                        offset_id, # Start fetching messages *after* this ID (bot-safe equivalent of iter_messages start)
                         reverse=True):     
 
                     current_id = msg.id
