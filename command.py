@@ -1,4 +1,4 @@
-# command.py - MODIFIED for interactive and link-based indexing
+# command.py - MODIFIED for interactive and link-based indexing with deprecation fix
 
 import asyncio
 import re
@@ -130,10 +130,6 @@ async def index_files_task(bot, msg, chat_id, start_msg_id, last_msg_id):
                     except Exception as e:
                         logger.warning(f"Failed to edit status message: {e}")
                     counter -= 200
-
-            # You might need a clear_cache function here if you had one in the original snippet,
-            # but none is present in your current files, so we'll skip it.
-            # await clear_cache(bot, mess=False) 
             
         except asyncio.CancelledError:
             logger.info("Indexing task was cancelled.")
@@ -160,7 +156,7 @@ def register_command_handlers(app: Client):
         )
         await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
-    # --- NEW HANDLERS FOR INTERACTIVE INDEXING ---
+    # --- NEW HANDLERS FOR INTERACTIVE INDEXING (FIXED) ---
 
     @app.on_message(
         filters.private & filters.forwarded & filters.user(ADMIN_USERS) & media_filter
@@ -173,21 +169,21 @@ def register_command_handlers(app: Client):
             
         user_id = message.from_user.id
         
-        # Check for forwarded message details
-        if not message.forward_from_message_id or not message.forward_from_chat:
+        # --- FIX: Use forward_origin to avoid deprecation warnings ---
+        origin = message.forward_origin
+        
+        # Check if it was forwarded from a channel (ChatForwardOrigin)
+        if not origin or origin.type != enums.MessageOrigin.CHAT:
              await message.reply_text("Please forward a message from the channel *without* forwarding as a copy.", parse_mode=enums.ParseMode.MARKDOWN)
              return
              
-        last_msg_id = message.forward_from_message_id
+        # Extract the necessary IDs from the forward_origin object
+        last_msg_id = origin.message_id
+        chat = origin.sender_chat # This is the chat object (Channel/Supergroup)
+        # --- END FIX ---
         
-        chat = message.forward_from_chat
-        
-        # For Pyrogram, it's safest to use the direct ID if available, 
-        # which will be in the -100XXXXXXX format for supergroups/channels.
-        # If the ID is a username (@channelusername), Pyrogram handles it.
         chat_id_input = chat.username if chat.username else chat.id
         
-        # We need the final numerical ID for the task and confirmation check
         if isinstance(chat_id_input, str):
             try:
                 full_chat = await bot.get_chat(chat_id_input)
@@ -387,12 +383,12 @@ def register_command_handlers(app: Client):
     # The function must return a list of handlers for registration in main.py
     return [
         start_command, 
-        index_files_forwarded, # New handler
-        manual_index,          # New handler
-        start_index,           # New callback
-        cancel_indexing,       # New callback
-        cancel_index_confirmation, # New callback
-        index_comm,            # New instruction command
+        index_files_forwarded, 
+        manual_index,          
+        start_index,           
+        cancel_indexing,       
+        cancel_index_confirmation, 
+        index_comm,            
         poster_toggle_command, 
         autodel_command
     ]
