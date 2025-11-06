@@ -36,6 +36,37 @@ async def delete_message_later(app: Client, chat_id, message_id, delay):
     except:
         pass
 
+# --- NEW HELPER FOR FORCE SUBSCRIBE ---
+
+async def check_force_subscribe(app: Client, user_id: int):
+    """Checks if the user is a member of the required force subscribe channel."""
+    channel_id = await get_global_setting("FORCE_SUB_CHANNEL_ID", None)
+    
+    if not channel_id:
+        return True, None # Force sub is disabled
+        
+    try:
+        # Check user's membership status
+        member = await app.get_chat_member(channel_id, user_id)
+        
+        # Check if the member status is one of the valid statuses for a member
+        if member.status in [enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
+            return True, None
+        else:
+            chat = await app.get_chat(channel_id)
+            invite_link = chat.invite_link if chat.invite_link else f"https://t.me/{chat.username}" if chat.username else "N/A"
+            return False, invite_link
+            
+    except Exception as e:
+        logger.error(f"Force Sub check failed for channel {channel_id} and user {user_id}: {e}")
+        # If bot cannot access the channel or other error, fallback to prompt the user to join
+        try:
+            chat = await app.get_chat(channel_id)
+            invite_link = chat.invite_link if chat.invite_link else f"https://t.me/{chat.username}" if chat.username else "N/A"
+            return False, invite_link
+        except:
+             return False, "https://t.me/telegram" # Default fallback link
+
 
 async def show_language_menu(app: Client, query, series_name: str, season: int):
     languages = await get_unique_languages_by_season(series_name, season)
@@ -143,11 +174,27 @@ def register_conversation_handlers(app: Client):
                 logger.info(f"RTI: Indexed {count} new file(s) from channel {message.chat.id}")
 
 
-    @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel"]))
-    async def search_handler(_, message: Message):
+    @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"])) # <--- ADD forcesub
+    async def search_handler(app, message: Message):
         query = message.text.strip()
         if query.startswith('/') and query.lower() not in ["/index"]:
             return
+            
+        # --- FORCE SUBSCRIBE CHECK ADDED HERE ---
+        is_member, invite_link = await check_force_subscribe(app, message.from_user.id)
+        
+        if not is_member:
+            await message.reply_text(
+                "🛑 **Please join our channel to get search results.**\n\n"
+                "Click the button below to join:",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📣 Join Channel", url=invite_link)
+                ]]),
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+            return
+        # --- END FORCE SUBSCRIBE CHECK ---
+
 
         initial_message = await message.reply_text(
             f"🔍 **Searching** for `{query}` ...",
@@ -377,7 +424,7 @@ def register_conversation_handlers(app: Client):
 
         except Exception as e:
             logger.error(f"Failed to copy file {message_id} from {channel_id}: {e}")
-            await query.answer("❌ Failed to send file.\nMake sure bot is admin.", show_alert=True)
+            await query.answer("❌ Failed to send file.\nMake sure bot is admin in the channel.", show_alert=True)
 
 
     # FIX 2: Corrected regex filter to r"^back_to_search\|"
