@@ -162,8 +162,9 @@ async def save_series_file_for_bulk_index(message: types.Message):
     existing = await get_all_files_by_season_and_quality(normalized_name, season, quality, language)
     for row in existing:
         if row["episode"] == episode:
+            logger.info(f"[SKIP] Duplicate ignored → {normalized_name} | S{season}E{episode} | {quality} | {language}")
             return False, 0
-
+            
     file_doc = {
         "channel_id": message.chat.id,
         "message_id": message.id,
