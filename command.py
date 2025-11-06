@@ -357,17 +357,65 @@ def register_command_handlers(app: Client):
         )
 
     @app.on_message(filters.command("fsub") & filters.user(ADMIN_USERS) & filters.private)
-    async def set_fs(_, message: Message):
-        if len(message.command) < 2:
-            return await message.reply("Usage:\n/fs @channelusername\n/fs off  (to disable)")
+    async def forcesub_command(bot, message: Message):
+        """Allows admin to set or disable the force subscribe channel ID."""
+        try:
+            if len(message.command) > 1:
+                channel_id_or_username = message.command[1]
+                
+                # Check for "disable" or "off"
+                if channel_id_or_username.lower() in ["disable", "off", "0"]:
+                    await set_global_setting("FORCE_SUB_CHANNEL_ID", None)
+                    status = "❌ **OFF**"
+                    await message.reply_text(
+                        f"🔒 Force Subscribe feature is now set to: {status}\n\n"
+                        f"Users will not be required to join any channel.",
+                        parse_mode=enums.ParseMode.MARKDOWN
+                    )
+                    return
 
-        ch = message.command[1]
-        if ch.lower() == "off":
-            await set_global_setting("FS_CHANNEL", None)
-            return await message.reply("✅ Force Subscribe disabled")
+                # Attempt to resolve the ID/Username to a valid chat ID
+                try:
+                    chat = await bot.get_chat(channel_id_or_username)
+                    final_channel_id = chat.id
+                    
+                    # Store the ID in the database
+                    await set_global_setting("FORCE_SUB_CHANNEL_ID", final_channel_id)
 
-        await set_global_setting("FSUB_CHANNEL", ch)
-        await message.reply(f"✅ FSUB Channel updated → {ch}")
+                    status = f"✅ **ON**"
+                    await message.reply_text(
+                        f"🔒 Force Subscribe feature is now set to: {status}\n"
+                        f"Required Channel: `{channel_id_or_username}` (ID: `{final_channel_id}`)\n\n"
+                        f"Users must join this channel to get search results.",
+                        parse_mode=enums.ParseMode.MARKDOWN
+                    )
+                except Exception:
+                    await message.reply_text("❌ Invalid channel ID, username, or link provided. Bot must be in the channel.", parse_mode=enums.ParseMode.MARKDOWN)
+                    return
+            else:
+                current_id = await get_global_setting("FORCE_SUB_CHANNEL_ID", None)
+                if current_id:
+                    # Attempt to fetch the channel info to display the username/title
+                    try:
+                        chat = await bot.get_chat(current_id)
+                        title = chat.title
+                        link = chat.invite_link if chat.invite_link else f"tg://resolve?domain={chat.username}"
+                        status = f"Current Required Channel: **{title}** (`{current_id}`)\nLink: {link}"
+                    except Exception:
+                        status = f"Current Required Channel ID: **{current_id}** (Info unavailable)"
+                else:
+                    status = "Force Subscribe is **disabled**."
+
+                await message.reply_text(
+                    f"Usage: `/forcesub <channel_id_or_username_or_link>` (e.g., `/forcesub @MyChannel`)\n"
+                    f"To disable: `/forcesub disable`\n\n"
+                    f"{status}",
+                    parse_mode=enums.ParseMode.MARKDOWN
+                )
+                
+        except Exception as e:
+            logger.error(f"Error in forcesub_command: {e}")
+            await message.reply_text(f"An unexpected error occurred: `{e}`")
 
     @app.on_message(filters.command("autodel") & filters.user(ADMIN_USERS) & filters.private)
     async def autodel_command(_, message: Message):
@@ -408,7 +456,8 @@ def register_command_handlers(app: Client):
     return [
         start_command, 
         index_files_forwarded, 
-        manual_index,          
+        manual_index,
+        forcesub_command,
         start_index,           
         cancel_indexing,       
         cancel_index_confirmation, 
