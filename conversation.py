@@ -503,11 +503,10 @@ def register_conversation_handlers(app: Client):
         )
         HELP_KEYBOARD = InlineKeyboardMarkup(
         [[
-            InlineKeyboardButton("🏡 Home", callback_data="cyber|"),
-            InlineKeyboardButton("🕹 Admins", callback_data="admin_cmd|")  # New button
+            InlineKeyboardButton("⚙️Help", callback_data="help"),
+            InlineKeyboardButton("🤠About", callback_data="about")
         ]])
-        reply_markup = CYBER_KEYBOARD
-        
+        reply_markup = CYBER_KEYBOARD   
         try:
             # Edit the caption (since it should be a photo message)
             await query.message.edit_caption(
