@@ -184,8 +184,8 @@ def register_conversation_handlers(app: Client):
             f"**○ Genre:** {imdb_genre}\n"
             f"**○ Rating:** {imdb_rating}\n"
             f"**○ Language:** {languages_list}\n"
-            f"**○ Season:** {seasons_count}\n"
-            f"**○ Quality:** {qualities_list}\n\n"
+            f"**○ Season Available:** {seasons_count}\n"
+            f"**○ Quality Available:** {qualities_list}\n\n"
             f"**Select the --Season-- to continue:**"
         )
         
