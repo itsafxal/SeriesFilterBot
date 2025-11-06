@@ -138,7 +138,6 @@ def parse_series_info(file_name: str):
     return normalized_name.title(), season, episode, quality, language
 
 async def save_series_file_for_bulk_index(message: types.Message):
-    """Helper function to integrate series parsing/saving into the bulk indexer."""
     file_name = ""
     
     if message.media:
@@ -153,26 +152,29 @@ async def save_series_file_for_bulk_index(message: types.Message):
     if not file_name:
         return False, 0 
 
-    normalized_name, season, episode, quality, language = parse_series_info(file_name) 
-    
-    if season > 0:
-        file_doc = {
-            "channel_id": message.chat.id,
-            "message_id": message.id,
-            "file_name": file_name, 
-            "normalized_name": normalized_name, 
-            "season": season,
-            "episode": episode,
-            "quality": quality, 
-            "language": language, 
-            "timestamp": message.date
-        }
-        
-        saved = await save_file_to_db(file_doc)
-        
-        if saved:
-            return True, 1
-        else:
+    normalized_name, season, episode, quality, language = parse_series_info(file_name)
+
+    # if no season detected -> default
+    if season <= 0:
+        season = 1
+
+    # ✅ allow only 1 file per episode
+    existing = await get_all_files_by_season_and_quality(normalized_name, season, quality, language)
+    for row in existing:
+        if row["episode"] == episode:
             return False, 0
-    else:
-        return False, 0
+
+    file_doc = {
+        "channel_id": message.chat.id,
+        "message_id": message.id,
+        "file_name": file_name, 
+        "normalized_name": normalized_name, 
+        "season": season,
+        "episode": episode,
+        "quality": quality, 
+        "language": language, 
+        "timestamp": message.date
+    }
+
+    saved = await save_file_to_db(file_doc)
+    return (True, 1) if saved else (False, 0)
