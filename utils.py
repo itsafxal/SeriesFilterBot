@@ -104,28 +104,38 @@ def extract_language(file_name: str) -> str:
 def parse_series_info(file_name: str):
     """
     Extracts Series Name, Season (SXX), Episode (EXX), Quality, AND Language.
+
+    Key change:
+    - When SxxExx is found, we take ONLY the text to the *left* of that token
+      as the series name, so episode titles on the right don't pollute normalized_name.
     """
     if not file_name:
         return "", 0, 0, "", ""
-        
-    match = re.search(r"[sS](\d+)[. _-]*[eE](\d+)", file_name)
-    quality = extract_quality(file_name) 
-    language = extract_language(file_name) 
-    
+
+    match = re.search(r"[sS](\d+)[._\-\s]*[eE](\d+)", file_name)
+    quality = extract_quality(file_name)
+    language = extract_language(file_name)
+
     if not match:
+        # no SxxExx -> fall back to aggressive cleaner
         return clean_series_name(file_name), 0, 0, quality, language
 
     season = int(match.group(1))
     episode = int(match.group(2))
-    
-    name_part = re.sub(r"([. _-]+)?[sS]\d+[. _-]*[eE]\d+([. _-]+)?", " ", file_name).strip()
-    normalized_name = clean_series_name(name_part)
-    
-    if len(normalized_name.split()) > 5:
-        normalized_name = " ".join(normalized_name.split()[:5]) 
+
+    # ✅ TAKE ONLY THE LEFT SIDE AS THE SERIES NAME
+    left_side = file_name[:match.start()]
+    normalized_name = clean_series_name(left_side)
+    if not normalized_name:
+        # in case left side is empty (rare), fall back to cleaning whole name
+        normalized_name = clean_series_name(file_name)
+
+    # keep it reasonably short
+    parts = normalized_name.split()
+    if len(parts) > 5:
+        normalized_name = " ".join(parts[:5])
 
     return normalized_name.title(), season, episode, quality, language
-
 
 async def save_series_file_for_bulk_index(message: types.Message):
     """Helper function to integrate series parsing/saving into the bulk indexer."""
