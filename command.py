@@ -7,7 +7,7 @@ import re
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, ChannelPrivate
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
-from config import logger, ADMIN_USERS, INDEX_CHANNELS 
+from config import logger, ADMIN_USERS, INDEX_CHANNELS, START_IMG
 from database import (
     get_bot_state,
     save_bot_state,
@@ -160,13 +160,14 @@ def register_command_handlers(app: Client):
         # Define the inline keyboard with 'Help' and 'About' buttons
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("⚙️Help", callback_data="help"),
-                InlineKeyboardButton("🤠About", callback_data="about")
+                InlineKeyboardButton("⚙️Help", callback_data="help|"),
+                InlineKeyboardButton("🤠About", callback_data="about|")
             ]
         ])
 
-        await message.reply_text(
-            welcome_text,
+        await message.reply_photo(
+            photo=START_IMG
+            caption=welcome_text,
             parse_mode=enums.ParseMode.HTML,
             reply_markup=keyboard  
         )
