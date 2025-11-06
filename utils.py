@@ -99,7 +99,7 @@ def extract_language(file_name: str) -> str:
     if "MALAYALAM" in name or "MAL" in name:
         return "Malayalam"
 
-    return "Unknown"
+    return "English"
 
 def parse_series_info(file_name: str):
     """
