@@ -166,7 +166,7 @@ def register_command_handlers(app: Client):
         ])
 
         await message.reply_photo(
-            photo=START_IMG
+            photo=START_IMG,
             caption=welcome_text,
             parse_mode=enums.ParseMode.HTML,
             reply_markup=keyboard  
