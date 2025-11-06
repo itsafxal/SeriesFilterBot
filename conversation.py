@@ -226,7 +226,6 @@ def register_conversation_handlers(app: Client):
     @app.on_callback_query(filters.regex(r"^ls\\|"))
     async def language_select_handler(app, query):
         data = query.data.split("|")
-        # For simplicity, keeping original logic here, assuming ss| fix covers primary flow issue.
         series_name = data[1]
         season = int(data[2])
         language = data[3]
@@ -237,7 +236,6 @@ def register_conversation_handlers(app: Client):
     @app.on_callback_query(filters.regex(r"^qs\\|"))
     async def quality_select_handler(app, query):
         data = query.data.split("|")
-        # For simplicity, keeping original logic here.
         series_name = data[1]
         season = int(data[2])
         language = data[3]
