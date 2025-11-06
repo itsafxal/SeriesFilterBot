@@ -56,7 +56,7 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
     reply_markup = InlineKeyboardMarkup(keyboard)
     caption = (
         f"📺 Title **{series_name}** — Season **{season}**\n\n"
-        f"Excellent choice!✨ {series_name} is a fantastic show. I hope, you will enjoy this TV Seies\n\n"
+        f"Excellent choice!✨ {series_name} is a fantastic show. I hope, you will enjoy this TV Series\n\n"
         f"🌐 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗔𝘂𝗱𝗶𝗼 𝗟𝗮𝗻𝗴𝘂𝗮𝗴𝗲 👇:"
 
     )
