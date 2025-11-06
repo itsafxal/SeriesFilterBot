@@ -2,7 +2,7 @@
 
 import re
 from pyrogram import types, enums
-# Assumes database.py has been imported and save_file_to_db is available
+from cinfig import logger
 from database import save_file_to_db, get_all_files_by_season_and_quality
 
 ###################################################
