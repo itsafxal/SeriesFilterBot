@@ -102,7 +102,7 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     caption = (
-        f"🎬 {series_name} – Season {season} (language)\n\n"
+        f"🎬 {series_name} – Season {season} ({language})\n\n"
         f"📌 Quality Selector\n\n"
         f"Tap a quality below —\n"
         f"▶️ Bot will instantly auto-send the WHOLE SEASON (all episodes) in that same resolution.\n\n"
