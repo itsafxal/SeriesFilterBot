@@ -65,58 +65,41 @@ def extract_quality(file_name: str) -> str:
 
 
 def extract_language(file_name: str) -> str:
-    """
-    Extracts language tags from a filename, with enhanced multi-language parsing.
-    """
     name = file_name.upper()
-    
-    # --- 1. Enhanced Multi-Language Detection ---
-    if re.search(r"\bDUAL\b|\bMULTI\b", name):
-        
-        # Pattern to capture two distinct language codes near each other
-        # e.g., HIN.ENG, [TAMIL-TELUGU], MALA-ENG, etc.
-        pattern = rf"(?:{LANG_CODE_PATTERN})[._-]*({LANG_CODE_PATTERN})[._-]*({LANG_CODE_PATTERN})"
-        
-        match = re.search(pattern, name)
-        
-        if match:
-            # Group 1 is the first code, Group 2 is the second code
-            code1 = match.group(1).upper()
-            code2 = match.group(2).upper()
-            
-            lang1 = LANGUAGE_CODES.get(code1, code1)
-            lang2 = LANGUAGE_CODES.get(code2, code2)
-            
-            # Combine if they are different and meaningful
-            if lang1 != lang2:
-                # Format: Hindi-English
-                return f"{lang1}-{lang2}" 
 
-        # Fallback for general dual/multi tags when specific languages can't be paired
-        if "HINDI" in name and "ENGLISH" in name:
-            return "Dual Audio (Hindi-English)"
-        
-        # General fallback
-        return "Dual/Multi Audio"
+    # dual / multi audio (most common groups)
+    if "DUAL" in name or "MULTI" in name:
+        langs = []
 
-    # --- 2. Single Language Detection ---
-    
-    # Priority for Indian languages (since they are often the DUB)
-    if any(tag in name for tag in ["HINDI", "HIN", "DUB"]):
+        if "HIN" in name or "HINDI" in name: langs.append("Hindi")
+        if "ENG" in name or "ENGLISH" in name: langs.append("English")
+        if "TEL" in name or "TELUGU" in name: langs.append("Telugu")
+        if "TAM" in name or "TAMIL" in name: langs.append("Tamil")
+        if "MAL" in name or "MALAYALAM" in name: langs.append("Malayalam")
+
+        # example: Hindi-English
+        if len(langs) >= 2:
+            return "-".join(langs)
+
+        return "Multi Audio"
+
+    # single audio detection
+    if "HINDI" in name or "HIN" in name or "DUB" in name:
         return "Hindi"
-    
-    if any(tag in name for tag in ["MALAYALAM", "MALA"]):
-        return "Malayalam"
-        
-    if any(tag in name for tag in ["TAMIL", "TAM", "TELUGU", "TEL"]):
-        return "Indian Regional"
-    
-    # English/Subtitles last
-    if any(tag in name for tag in ["ENGLISH", "ENG", "SUB"]):
-        return "English"
-        
-    return "Unknown" # Cleaned default language
 
+    if "ENGLISH" in name or "ENG" in name:
+        return "English"
+
+    if "TAMIL" in name or "TAM" in name:
+        return "Tamil"
+
+    if "TELUGU" in name or "TEL" in name:
+        return "Telugu"
+
+    if "MALAYALAM" in name or "MAL" in name:
+        return "Malayalam"
+
+    return "Unknown"
 
 def parse_series_info(file_name: str):
     """
