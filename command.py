@@ -152,12 +152,24 @@ def register_command_handlers(app: Client):
     async def start_command(_, message: Message):
         """Handles the /start command."""
         welcome_text = (
-            "👋 <b>Welcome! I'm your Series File Filter Bot.</b>\n\n"
-            "Just send me the <b>name of a series</b> you are looking for. "
-            "I'll show you a summary and ask you to select the **Season**."
+            "<b>👋 Hey Bro,</b>\n\n"
+            "<b>I Am Your Series-Filter Bot- advanced, powerful and designed to make your group to Series Request Group! You Can Also Search Series Here</b>\n\n"
+            "<b>Let's get started ! 🚀</b>"
         )
-        await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
 
+        # Define the inline keyboard with 'Help' and 'About' buttons
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("⚙️Help", callback_data="help"),
+                InlineKeyboardButton("🤠About", callback_data="about")
+            ]
+        ])
+
+        await message.reply_text(
+            welcome_text,
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=keyboard  
+        )
     # --- NEW HANDLERS FOR INTERACTIVE INDEXING (FIXED) ---
 
     @app.on_message(
