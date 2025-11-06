@@ -205,7 +205,7 @@ def register_conversation_handlers(app: Client):
     async def season_select_handler(app, query):
         data = query.data.split("|")
         
-        # FIX: Defensive check for IndexError
+        # FIX 1: Defensive check for IndexError
         if len(data) < 3:
             logger.error(f"Malformed callback data for season_select_handler: {query.data}")
             await query.answer("❌ Error: Invalid season selection data. Please try searching again.", show_alert=True)
@@ -226,7 +226,7 @@ def register_conversation_handlers(app: Client):
     @app.on_callback_query(filters.regex(r"^ls\\|"))
     async def language_select_handler(app, query):
         data = query.data.split("|")
-        # NOTE: Defensive checks could be added here too, but season_select was the reported failure point.
+        # For simplicity, keeping original logic here, assuming ss| fix covers primary flow issue.
         series_name = data[1]
         season = int(data[2])
         language = data[3]
@@ -237,7 +237,7 @@ def register_conversation_handlers(app: Client):
     @app.on_callback_query(filters.regex(r"^qs\\|"))
     async def quality_select_handler(app, query):
         data = query.data.split("|")
-        # NOTE: Defensive checks could be added here too.
+        # For simplicity, keeping original logic here.
         series_name = data[1]
         season = int(data[2])
         language = data[3]
@@ -311,7 +311,7 @@ def register_conversation_handlers(app: Client):
             await query.answer("❌ Failed to send file.\nMake sure bot is admin.", show_alert=True)
 
 
-    @app.on_callback_query(filters.regex(r"back_to_search"))
+    @app.on_callback_query(filters.regex(r"^back_to_search\\|")) # FIX 2: Anchored regex to start of string
     async def back_to_search_handler(app, query):
         data = query.data.split('|')
         series_name = data[1]
