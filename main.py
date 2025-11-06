@@ -1,49 +1,39 @@
-# Main.py (Revised)
+# main.py - MODIFIED for handler registration
 
 import asyncio
-from pyrogram import Client, enums, idle
-from loguru import logger
-from config import API_ID, API_HASH, BOT_TOKEN
-# Updated import to use the combined database logic
-from database import init_db, migrate_mongo_to_sql 
-from handlers.commands import register_command_handlers
-from handlers.callbacks import register_callback_handlers
+from pyrogram import Client
+from command import register_command_handlers # New Import
+from conversation import register_conversation_handlers
+from database import initialize_sql_db
+from config import API_ID, API_HASH, BOT_TOKEN, logger
 
-def build_app() -> Client:
+def main():
+    """Initializes and runs the Pyrogram client, including SQL setup."""
+    
+    # --- SQL DB Initialization and Migration ---
+    logger.info("Initializing and migrating data to SQL database...")
+    try:
+        initialize_sql_db()
+        logger.info("✅ SQL database is ready.")
+    except Exception as e:
+        logger.error(f"❌ Critical failure during SQL DB initialization/migration: {e}")
+        return
+        
+    # --- Pyrogram Client Setup ---
     app = Client(
-        name="series-bot",
+        "SeriesBot",
         api_id=API_ID,
         api_hash=API_HASH,
-        bot_token=BOT_TOKEN,
-        parse_mode=enums.ParseMode.MARKDOWN
+        bot_token=BOT_TOKEN
     )
-    register_command_handlers(app)
-    register_callback_handlers(app)
-    return app
 
-async def main():
-    # 1. Initialize DB (Ensures MongoDB indexes and SQLite schema)
-    init_db() 
+    # Register handlers from both files
+    register_command_handlers(app) # Register command handlers
+    register_conversation_handlers(app) # Register conversation and other non-command handlers
     
-    # 2. Run Migration (Synchronous, but we run it via asyncio.to_thread in database.py if using async)
-    # The migrate_mongo_to_sql is now a blocking function, so we'll wrap the call 
-    # to run it safely, although the main logic inside is synchronous.
-    try:
-        # Since migrate_mongo_to_sql is a synchronous, blocking function, 
-        # we run it directly outside the async loop's execution context if possible, 
-        # or inside a to_thread if you must ensure it doesn't block the startup of the main thread.
-        moved = await asyncio.to_thread(migrate_mongo_to_sql)
-        logger.info("Migrated {} legacy records from Mongo (if any).", moved)
-    except Exception as e:
-        logger.exception("Migration failed: {}", e)
-
-    # 3. Start Bot
-    app = build_app()
-    await app.start()
-    logger.info("Bot started.")
-    await idle()
-    await app.stop()
+    # Start the bot
+    logger.info("Starting bot client...")
+    app.run()
 
 if __name__ == "__main__":
-    asyncio.run(main())
-    
+    main()
