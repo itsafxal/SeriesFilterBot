@@ -32,6 +32,43 @@ except Exception as e:
 SQLITE_DB_PATH = "series_index.db"
 sql_db_lock = asyncio.Lock()
 
+# ---- Helpers to recompute normalized series names (no import from utils to avoid cycles)
+
+_CLEAN_TAGS = [
+    "4K","1080P","720P","HDRIP","WEB-DL","WEBRIP","BLURAY","HDTV",
+    "AMZN","NETFLIX","HULU","DDP5.1","X265","X264","10BIT","HEVC",
+    "MKV","AAC","PSA","REPACK","COMPLETE","WEB",
+]
+
+def _clean_series_name_local(name: str) -> str:
+    name = re.sub(r"[._\s]+", " ", name).strip()
+    # remove channel tags/brackets/mentions
+    name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", name).strip()
+    for term in _CLEAN_TAGS + [r"(19|20)\d{2}"]:
+        t = term
+        if term != r"(19|20)\d{2}":
+            t = rf"\b{re.escape(term)}\b"
+        name = re.sub(t, " ", name, flags=re.IGNORECASE).strip()
+    # common channel suffixes
+    for tag in ["CK","UB","TG","MOVIE HUB","FILM"]:
+        tag_regex = rf"(?:^|[\W_]+){re.escape(tag)}(?:$|[\W_]+)"
+        name = re.sub(tag_regex, " ", name, flags=re.IGNORECASE).strip()
+    name = re.sub(r"\s+", " ", name).strip()
+    return name.title()
+
+def _normalized_series_from_filename(file_name: str) -> str:
+    if not file_name:
+        return ""
+    m = re.search(r"[sS](\d+)[._\-\s]*[eE](\d+)", file_name)
+    if not m:
+        return _clean_series_name_local(file_name)
+    left = file_name[:m.start()]
+    base = _clean_series_name_local(left) or _clean_series_name_local(file_name)
+    parts = base.split()
+    if len(parts) > 5:
+        base = " ".join(parts[:5])
+    return base.title()
+
 def create_sql_schema(conn):
     """Creates the necessary table in the SQLite database, including 'language'."""
     cursor = conn.cursor()
@@ -69,14 +106,19 @@ def migrate_data_from_mongo_to_sql():
         "normalized_name": 1, "season": 1, "episode": 1, 
         "quality": 1, "language": 1, "_id": 0
     })
-    
     insert_data = []
     for doc in mongo_docs:
-        # Note: Assumes 'Unknown' is the default/fallback from utils.py
+        fn = doc.get("file_name", "") or ""
+        normalized = _normalized_series_from_filename(fn)  # ✅ recompute from filename
         insert_data.append((
-            doc.get("channel_id"), doc.get("message_id"), doc.get("file_name"), 
-            doc.get("normalized_name"), doc.get("season", 0), doc.get("episode", 0), 
-            doc.get("quality"), doc.get("language", "Unknown") 
+            doc.get("channel_id"),
+            doc.get("message_id"),
+            fn,
+            normalized,
+            doc.get("season", 0),
+            doc.get("episode", 0),
+            doc.get("quality"),
+            doc.get("language", "Unknown")
         ))
 
     if insert_data:
@@ -90,6 +132,26 @@ def migrate_data_from_mongo_to_sql():
         except Exception as e:
             logger.error(f"❌ Failed to execute bulk SQL insert during migration: {e}")
     
+    conn.close()
+
+def repair_normalized_names_in_sqlite():
+    """
+    Recomputes normalized_name for all files in SQLite from the file_name,
+    so rows previously saved with episode-title 'series' get fixed.
+    """
+    conn = sqlite3.connect(SQLITE_DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT rowid, file_name, normalized_name FROM files")
+    rows = cursor.fetchall()
+    updates = []
+    for rowid, file_name, old_norm in rows:
+        new_norm = _normalized_series_from_filename(file_name or "")
+        if new_norm and new_norm != old_norm:
+            updates.append((new_norm, rowid))
+    if updates:
+        cursor.executemany("UPDATE files SET normalized_name = ? WHERE rowid = ?", updates)
+        conn.commit()
+        logger.info(f"🛠️ Repaired {len(updates)} normalized_name rows in SQLite.")
     conn.close()
 
 def initialize_sql_db():
