@@ -155,8 +155,14 @@ def repair_normalized_names_in_sqlite():
     conn.close()
 
 def initialize_sql_db():
-    """Synchronously initializes the SQL database and runs the migration."""
+    """Synchronously initializes the SQL database and runs the migration + repair."""
     migrate_data_from_mongo_to_sql()
+    # Optional: also repair any pre-existing rows that slipped in earlier
+    try:
+        repair_normalized_names_in_sqlite()
+    except Exception as e:
+        logger.error(f"repair_normalized_names_in_sqlite failed: {e}")
+
 
 # --- BOT STATE FUNCTIONS ---
 
