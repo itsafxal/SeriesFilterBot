@@ -19,7 +19,7 @@ from database import (
     get_file_by_message_id_and_channel_id
 )
 # Assuming DEFAULT_POSTER_URL is available in config
-from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS, DEFAULT_POSTER_URL
+from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS, DEFAULT_POSTER_URL, ABOUT_TEXT
 from utils import clean_series_name, save_series_file_for_bulk_index
 from movie_fetcher import get_imdb_data # Kept for get_imdb_data usage (for link and data, not poster)
 
@@ -209,6 +209,13 @@ def register_conversation_handlers(app: Client):
         for season in summary.get('seasons', []):
             callback_data = f'ss|{series_name_short}|{season}'
             keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
+        
+        # --- NEW BUTTONS: Help and About ---
+        keyboard.append([
+            InlineKeyboardButton("❓ Help", callback_data='help|'),
+            InlineKeyboardButton("ℹ️ About", callback_data='about|')
+        ])
+        # -----------------------------------
             
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -423,6 +430,13 @@ def register_conversation_handlers(app: Client):
         for season in summary.get('seasons', []):
             callback_data = f'ss|{series_name_short}|{season}'
             keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
+        
+        # --- RE-ADD NEW BUTTONS: Help and About ---
+        keyboard.append([
+            InlineKeyboardButton("❓ Help", callback_data='help|'),
+            InlineKeyboardButton("ℹ️ About", callback_data='about|')
+        ])
+        # ------------------------------------------
 
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -449,6 +463,85 @@ def register_conversation_handlers(app: Client):
 
         await query.answer()
 
+    # --- NEW HANDLER: Help Menu ---
+    @app.on_callback_query(filters.regex(r"^help\|"))
+    async def help_menu_handler(app, query):
+        help_text = (
+            "💡 **Help & Instructions**\n\n"
+            "1. **Search**: Simply send the **name** of the movie or series you are looking for.\n"
+            "2. **Select**: Tap the **Season** button for a series.\n"
+            "3. **Filter**: Choose the **Language** and then the **Quality**.\n"
+            "4. **Receive**: The bot will automatically start sending the files to you.\n\n"
+            "If you see *'No series found'*, try a slightly different or shorter name."
+        )
+        
+        # Get the current reply_markup (Season selection menu) for the back button
+        reply_markup = query.message.reply_markup
+        
+        try:
+            # Edit the caption (since it should be a photo message)
+            await query.message.edit_caption(help_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        except MessageNotModified:
+            pass
+        except Exception as e:
+            logger.error(f"Error editing message caption in help_menu_handler: {e}")
+            # Fallback
+            try:
+                await query.message.edit_text(help_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            except:
+                pass
+
+        await query.answer("Showing help menu.")
+
+    @app.on_callback_query(filters.regex(r"^cyber\|"))
+    async def cyber_menu_handler(app, query):
+        home_text = (
+            "**👋 Hey Bro **\n\n"
+            "**I Am Your Series-Filter Bot- advanced, powerful and designed to make your group to Series Request Group! You Can Also Search Series Here **\n\n"
+            "**Let's get started ! 🚀**"
+        )
+        
+        # Get the current reply_markup (Season selection menu) for the back button
+        reply_markup = query.message.reply_markup
+        
+        try:
+            # Edit the caption (since it should be a photo message)
+            await query.message.edit_caption(home_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        except MessageNotModified:
+            pass
+        except Exception as e:
+            logger.error(f"Error editing message caption in help_menu_handler: {e}")
+            # Fallback
+            try:
+                await query.message.edit_text(help_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            except:
+                pass
+
+        await query.answer("Back To Home ")
+
+    # --- NEW HANDLER: About Menu ---
+    @app.on_callback_query(filters.regex(r"^about\|"))
+    async def about_menu_handler(app, query):
+        about_text = ABOUT_TEXT
+        # Get the current reply_markup (Season selection menu) for the back button
+        reply_markup = query.message.reply_markup
+        
+        try:
+            # Edit the caption (since it should be a photo message)
+            await query.message.edit_caption(about_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        except MessageNotModified:
+            pass
+        except Exception as e:
+            logger.error(f"Error editing message caption in about_menu_handler: {e}")
+            # Fallback
+            try:
+                await query.message.edit_text(about_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            except:
+                pass
+        
+        await query.answer("Showing about information.")
+    # -------------------------------
+
 
     @app.on_callback_query(filters.regex(r"close"))
     async def close_menu_handler(_, query):
@@ -463,9 +556,12 @@ def register_conversation_handlers(app: Client):
         search_handler,
         season_select_handler,
         language_select_handler,
-        back_to_language_handler, # Added new handler here
+        back_to_language_handler,
         quality_select_handler,
         file_select_handler,
         back_to_search_handler,
+        help_menu_handler,      # Added new handler here
+        about_menu_handler,
+        cyber_menu_handler, # Added new handler here
         close_menu_handler
     ]
