@@ -93,6 +93,10 @@ def create_sql_schema(conn):
 
 def migrate_data_from_mongo_to_sql():
     """Migrates all data from MongoDB's 'files' collection to SQLite."""
+    import sqlite3 # Assuming these imports are available in the scope
+    # Assuming SQLITE_DB_PATH, create_sql_schema, logger, files_collection, and _normalized_series_from_filename are defined
+    # outside this function and accessible.
+    
     conn = sqlite3.connect(SQLITE_DB_PATH)
     create_sql_schema(conn)
     cursor = conn.cursor()
@@ -100,26 +104,40 @@ def migrate_data_from_mongo_to_sql():
     cursor.execute("DELETE FROM files")
     conn.commit()
     logger.info("ℹ️ Cleared SQLite table for fresh migration.")
+    
 
     mongo_docs = files_collection.find({}, {
         "channel_id": 1, "message_id": 1, "file_name": 1, 
         "normalized_name": 1, "season": 1, "episode": 1, 
         "quality": 1, "language": 1, "_id": 0
     })
-    insert_data = []
+    
+    # ✅ new dedupe block here
+    unique = {}
     for doc in mongo_docs:
         fn = doc.get("file_name", "") or ""
-        normalized = _normalized_series_from_filename(fn)  # ✅ recompute from filename
-        insert_data.append((
+        normalized = _normalized_series_from_filename(fn) # ✅ recompute from filename
+        season = doc.get("season", 0)
+        episode = doc.get("episode", 0)
+        quality = doc.get("quality", "Unknown")
+        language = doc.get("language", "Unknown")
+
+        key = (normalized, season, episode, quality, language)
+        if key in unique:  # same ep / same quality / same language → skip
+            continue
+
+        unique[key] = (
             doc.get("channel_id"),
             doc.get("message_id"),
             fn,
             normalized,
-            doc.get("season", 0),
-            doc.get("episode", 0),
-            doc.get("quality"),
-            doc.get("language", "Unknown")
-        ))
+            season,
+            episode,
+            quality,
+            language
+        )
+
+    insert_data = list(unique.values())
 
     if insert_data:
         try:
@@ -128,12 +146,12 @@ def migrate_data_from_mongo_to_sql():
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, insert_data)
             conn.commit()
-            logger.info(f"✅ Migrated {len(insert_data)} documents from MongoDB to SQLite.")
+            logger.info(f"✅ Migrated {len(insert_data)} unique documents from MongoDB to SQLite.")
         except Exception as e:
             logger.error(f"❌ Failed to execute bulk SQL insert during migration: {e}")
     
     conn.close()
-
+    
 def repair_normalized_names_in_sqlite():
     """
     Recomputes normalized_name for all files in SQLite from the file_name,
