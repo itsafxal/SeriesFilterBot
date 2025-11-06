@@ -1,5 +1,3 @@
-# conversation.py (IMDB POSTER REMOVED)
-
 import asyncio
 import re
 import requests
@@ -72,7 +70,6 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
         asyncio.create_task(delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer))
 
 
-
 async def show_quality_menu(app: Client, query, series_name: str, language: str, season: int):
     qualities = await get_unique_qualities_by_lang_season(series_name, language, season)
 
@@ -110,7 +107,6 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
 
     if auto_delete_timer > 0:
         asyncio.create_task(delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer))
-
 
 
 def register_conversation_handlers(app: Client):
@@ -208,8 +204,21 @@ def register_conversation_handlers(app: Client):
     @app.on_callback_query(filters.regex(r"^ss\\|"))
     async def season_select_handler(app, query):
         data = query.data.split("|")
+        
+        # FIX: Defensive check for IndexError
+        if len(data) < 3:
+            logger.error(f"Malformed callback data for season_select_handler: {query.data}")
+            await query.answer("❌ Error: Invalid season selection data. Please try searching again.", show_alert=True)
+            return
+            
         series_name = data[1]
-        season = int(data[2])
+        try:
+            season = int(data[2])
+        except ValueError:
+            logger.error(f"Callback data had non-integer season: {data[2]}")
+            await query.answer("❌ Error: Invalid season number format.", show_alert=True)
+            return
+
         await show_language_menu(app, query, series_name, season)
         await query.answer()
 
@@ -217,6 +226,7 @@ def register_conversation_handlers(app: Client):
     @app.on_callback_query(filters.regex(r"^ls\\|"))
     async def language_select_handler(app, query):
         data = query.data.split("|")
+        # NOTE: Defensive checks could be added here too, but season_select was the reported failure point.
         series_name = data[1]
         season = int(data[2])
         language = data[3]
@@ -227,6 +237,7 @@ def register_conversation_handlers(app: Client):
     @app.on_callback_query(filters.regex(r"^qs\\|"))
     async def quality_select_handler(app, query):
         data = query.data.split("|")
+        # NOTE: Defensive checks could be added here too.
         series_name = data[1]
         season = int(data[2])
         language = data[3]
