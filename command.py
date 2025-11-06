@@ -356,6 +356,19 @@ def register_command_handlers(app: Client):
             parse_mode=enums.ParseMode.MARKDOWN
         )
 
+    @app.on_message(filters.command("fsub") & filters.user(ADMIN_USERS) & filters.private)
+    async def set_fs(_, message: Message):
+        if len(message.command) < 2:
+            return await message.reply("Usage:\n/fs @channelusername\n/fs off  (to disable)")
+
+        ch = message.command[1]
+        if ch.lower() == "off":
+            await set_global_setting("FS_CHANNEL", None)
+            return await message.reply("✅ Force Subscribe disabled")
+
+        await set_global_setting("FSUB_CHANNEL", ch)
+        await message.reply(f"✅ FSUB Channel updated → {ch}")
+
     @app.on_message(filters.command("autodel") & filters.user(ADMIN_USERS) & filters.private)
     async def autodel_command(_, message: Message):
         """Allows admin to set the auto-delete timer for sent files."""
