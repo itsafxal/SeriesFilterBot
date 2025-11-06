@@ -50,7 +50,6 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
         keyboard.append([InlineKeyboardButton(display_text, callback_data=callback_data)])
     keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data=f'back_to_search|{series_name_short}')])
     reply_markup = InlineKeyboardMarkup(keyboard)
-
     caption = (
         f"🎬 **{series_name} - S{season}**\n"
         f"Select the **Language**:"
@@ -188,7 +187,7 @@ def register_conversation_handlers(app: Client):
             f"**○ Language:** {languages_list}\n"
             f"**○ Season:** {seasons_count}\n"
             f"**○ Quality:** {qualities_list}\n\n"
-            f"**Select the <u>Season</u> to continue:**"
+            f"**Select the --Season-- to continue:**"
         )
         keyboard = []
         series_name_short = series_to_display[:MAX_CALLBACK_LENGTH]
@@ -319,19 +318,25 @@ def register_conversation_handlers(app: Client):
         imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
 
         summary = await get_series_summary(series_name)
+        imdb_title = imdb_data.get('title') if imdb_data else series_name
+        imdb_released = imdb_data.get('year', 'N/A') if imdb_data else 'N/A'
+        imdb_genre = imdb_data.get('genres', 'N/A') if imdb_data else 'N/A'
+        imdb_rating = imdb_data.get('rating', 'N/A') if imdb_data else 'N/A'
+        imdb_link = imdb_data.get('link') if imdb_data else None
         languages_list = ", ".join(summary['languages'])
         seasons_count = len(summary['seasons'])
         qualities_list = ", ".join(summary['qualities'])
         imdb_text = f" | 🔗 [IMDB]({imdb_link})" if imdb_link else ""
-
         response = (
-            f"🔎 **{series_name}**{imdb_text}\n\n"
-            f"🎬 Seasons: **{seasons_count}**\n"
-            f"🗣️ Languages: **{languages_list}**\n"
-            f"💾 Qualities: **{qualities_list}**\n\n"
-            f"⬇️ Select Season:"
+            f"**○ Title:** {imdb_title}\n"
+            f"**○ Released On:** {imdb_released}\n"
+            f"**○ Genre:** {imdb_genre}\n"
+            f"**○ Rating:** {imdb_rating}\n"
+            f"**○ Language:** {languages_list}\n"
+            f"**○ Season:** {seasons_count}\n"
+            f"**○ Quality:** {qualities_list}\n\n"
+            f"**Select the --Season-- to continue:**"
         )
-
         keyboard = []
         series_name_short = series_name[:MAX_CALLBACK_LENGTH]
         for season in summary['seasons']:
