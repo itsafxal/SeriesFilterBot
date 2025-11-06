@@ -124,6 +124,7 @@ def migrate_data_from_mongo_to_sql():
 
         key = (normalized, season, episode, quality, language)
         if key in unique:  # same ep / same quality / same language → skip
+            logger.info(f"[MIGRATION SKIP] Duplicate → {normalized} | S{season}E{episode} | {quality} | {language}")
             continue
 
         unique[key] = (
