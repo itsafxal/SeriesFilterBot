@@ -228,12 +228,6 @@ def register_conversation_handlers(app: Client):
         except:
             pass
 
-        imdb_title = imdb_data.get('title') if imdb_data else series_to_display
-        imdb_released = imdb_data.get('year', 'N/A') if imdb_data else 'N/A'
-        imdb_genre = imdb_data.get('genres', 'N/A') if imdb_data else 'N/A'
-        imdb_rating = imdb_data.get('rating', 'N/A') if imdb_data else 'N/A'
-        imdb_link = imdb_data.get('link') if imdb_data else None
-        
         # CHANGE 3: Get poster URL
         poster_url = imdb_data.get('poster') if imdb_data and imdb_data.get('poster') else DEFAULT_POSTER_URL
         
@@ -244,14 +238,11 @@ def register_conversation_handlers(app: Client):
         qualities_list = ", ".join(summary.get('qualities', []))
         
         response = (
-            f"**○ Title:** {imdb_title}\n"
-            f"**○ Released On:** {imdb_released}\n"
-            f"**○ Genre:** {imdb_genre}\n"
-            f"**○ Rating:** {imdb_rating}\n"
+            f"**○ Title:** {series_to_display}\n"
             f"**○ Language:** {languages_list}\n"
             f"**○ Season Available:** {seasons_count}\n"
             f"**○ Quality Available:** {qualities_list}\n\n"
-            f"**Select the --Season-- to continue:**"
+            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
         )
         
         keyboard = []
@@ -442,12 +433,6 @@ def register_conversation_handlers(app: Client):
             imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_name)
         except:
             pass
-
-        imdb_title = imdb_data.get('title') if imdb_data else series_name
-        imdb_released = imdb_data.get('year', 'N/A') if imdb_data else 'N/A'
-        imdb_genre = imdb_data.get('genres', 'N/A') if imdb_data else 'N/A'
-        imdb_rating = imdb_data.get('rating', 'N/A') if imdb_data else 'N/A'
-        imdb_link = imdb_data.get('link') if imdb_data else None
         
         # CHANGE 5: Get poster URL for back action
         poster_url = imdb_data.get('poster') if imdb_data and imdb_data.get('poster') else DEFAULT_POSTER_URL
@@ -459,14 +444,11 @@ def register_conversation_handlers(app: Client):
         qualities_list = ", ".join(summary.get('qualities', []))
         
         response = (
-            f"**○ Title:** {imdb_title}\n"
-            f"**○ Released On:** {imdb_released}\n"
-            f"**○ Genre:** {imdb_genre}\n"
-            f"**○ Rating:** {imdb_rating}\n"
+            f"**○ Title:** {series_name}\n"
             f"**○ Language:** {languages_list}\n"
             f"**○ Season:** {seasons_count}\n"
             f"**○ Quality:** {qualities_list}\n\n"
-            f"**Select the --Season-- to continue:**"
+            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
         )
         
         keyboard = []
