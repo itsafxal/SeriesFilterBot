@@ -24,6 +24,7 @@ from movie_fetcher import get_imdb_data # Kept for get_imdb_data usage (for link
 
 MAX_CALLBACK_LENGTH = 50
 
+# --- Helper Functions ---
 
 async def delete_message_later(app: Client, chat_id, message_id, delay):
     if delay <= 0:
@@ -46,7 +47,10 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
         callback_data = f'ls|{series_name_short}|{season}|{lang}'
         display_text = f"🗣️ {lang}"
         keyboard.append([InlineKeyboardButton(display_text, callback_data=callback_data)])
+    
+    # Corrected callback data regex: back_to_search|...
     keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data=f'back_to_search|{series_name_short}')])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     caption = (
         f"🎬 **{series_name} - S{season}**\n"
@@ -83,7 +87,9 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
         callback_data = f'qs|{series_name_short}|{season}|{language}|{quality}'
         keyboard.append([InlineKeyboardButton(f"💾 {quality}", callback_data=callback_data)])
 
+    # Corrected callback data regex: ls|...
     keyboard.append([InlineKeyboardButton(f"⬅️ Back", callback_data=f'ls|{series_name_short}|{season}|{language}')])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     caption = (
@@ -109,6 +115,8 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
         asyncio.create_task(delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer))
 
 
+# --- Handler Registration ---
+
 def register_conversation_handlers(app: Client):
 
     @app.on_message((filters.document | filters.video | filters.audio) & filters.channel)
@@ -124,9 +132,6 @@ def register_conversation_handlers(app: Client):
         query = message.text.strip()
         if query.startswith('/') and query.lower() not in ["/index"]:
             return
-
-        # imdb_poster_enabled is no longer needed but keeping get_global_setting call for other settings
-        # imdb_poster_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
 
         initial_message = await message.reply_text(
             f"🔍 **Searching** for `{query}` ...",
@@ -161,20 +166,18 @@ def register_conversation_handlers(app: Client):
         except:
             pass
 
-        # poster_url is removed
-        # poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
-        imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
-
-        summary = await get_series_summary(series_to_display)
         imdb_title = imdb_data.get('title') if imdb_data else series_to_display
         imdb_released = imdb_data.get('year', 'N/A') if imdb_data else 'N/A'
         imdb_genre = imdb_data.get('genres', 'N/A') if imdb_data else 'N/A'
         imdb_rating = imdb_data.get('rating', 'N/A') if imdb_data else 'N/A'
         imdb_link = imdb_data.get('link') if imdb_data else None
-        languages_list = ", ".join(summary['languages'])
-        seasons_count = len(summary['seasons'])
-        qualities_list = ", ".join(summary['qualities'])
-        imdb_text = f" | 🔗 [IMDB]({imdb_link})" if imdb_link else ""
+        
+        summary = await get_series_summary(series_to_display)
+        
+        languages_list = ", ".join(summary.get('languages', []))
+        seasons_count = len(summary.get('seasons', []))
+        qualities_list = ", ".join(summary.get('qualities', []))
+        
         response = (
             f"**○ Title:** {imdb_title}\n"
             f"**○ Released On:** {imdb_released}\n"
@@ -185,11 +188,14 @@ def register_conversation_handlers(app: Client):
             f"**○ Quality:** {qualities_list}\n\n"
             f"**Select the --Season-- to continue:**"
         )
+        
         keyboard = []
         series_name_short = series_to_display[:MAX_CALLBACK_LENGTH]
-        for season in summary['seasons']:
+        for season in summary.get('seasons', []):
             callback_data = f'ss|{series_name_short}|{season}'
+            # fs| is no longer used here, was for file select (removed from original)
             keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
+            
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
@@ -201,16 +207,18 @@ def register_conversation_handlers(app: Client):
             asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, auto_delete_timer))
 
 
-    @app.on_callback_query(filters.regex(r"^ss\\|"))
+    # FIX: Corrected regex filter to r"^ss\|" to prevent clashes and eliminate warning
+    @app.on_callback_query(filters.regex(r"^ss\|"))
     async def season_select_handler(app, query):
-        # FIX: Add explicit check to prevent filter clash with back_to_search|
-        if not query.data.startswith("ss|"):
-            logger.warning(f"Handler filter bypass detected: Ignoring query data: {query.data}")
-            await query.answer()
-            return
-
-        data = query.data.split("|")
         
+        # REMOVED THE REDUNDANT GUARDRAIL that produced the warning
+        # if not query.data.startswith("ss|"):
+        #     logger.warning(f"Handler filter bypass detected: Ignoring query data: {query.data}")
+        #     await query.answer()
+        #     return
+            
+        data = query.data.split("|")
+            
         # FIX 1: Defensive check for IndexError
         if len(data) < 3:
             logger.error(f"Malformed callback data for season_select_handler: {query.data}")
@@ -229,9 +237,15 @@ def register_conversation_handlers(app: Client):
         await query.answer()
 
 
-    @app.on_callback_query(filters.regex(r"^ls\\|"))
+    # FIX: Corrected regex filter to r"^ls\|"
+    @app.on_callback_query(filters.regex(r"^ls\|"))
     async def language_select_handler(app, query):
         data = query.data.split("|")
+        # Defensive check
+        if len(data) < 4:
+            await query.answer("❌ Error: Invalid language selection data.", show_alert=True)
+            return
+            
         series_name = data[1]
         season = int(data[2])
         language = data[3]
@@ -239,9 +253,15 @@ def register_conversation_handlers(app: Client):
         await query.answer()
 
 
-    @app.on_callback_query(filters.regex(r"^qs\\|"))
+    # FIX: Corrected regex filter to r"^qs\|"
+    @app.on_callback_query(filters.regex(r"^qs\|"))
     async def quality_select_handler(app, query):
         data = query.data.split("|")
+        # Defensive check
+        if len(data) < 5:
+            await query.answer("❌ Error: Invalid quality selection data.", show_alert=True)
+            return
+            
         series_name = data[1]
         season = int(data[2])
         language = data[3]
@@ -281,9 +301,15 @@ def register_conversation_handlers(app: Client):
         await query.answer("✅ Sent files!", show_alert=True)
 
 
-    @app.on_callback_query(filters.regex(r"^fs\\|"))
+    # FIX: Corrected regex filter to r"^fs\|"
+    @app.on_callback_query(filters.regex(r"^fs\|"))
     async def file_select_handler(app, query):
         data = query.data.split('|')
+        # Defensive check
+        if len(data) < 4:
+            await query.answer("❌ Error: Invalid file selection data.", show_alert=True)
+            return
+            
         channel_id = int(data[2])
         message_id = int(data[3])
         await query.answer("Sending episode file...", cache_time=0)
@@ -315,12 +341,16 @@ def register_conversation_handlers(app: Client):
             await query.answer("❌ Failed to send file.\nMake sure bot is admin.", show_alert=True)
 
 
-    @app.on_callback_query(filters.regex(r"^back_to_search\\|")) # FIX 2: Anchored regex to start of string
+    # FIX 2: Corrected regex filter to r"^back_to_search\|"
+    @app.on_callback_query(filters.regex(r"^back_to_search\|"))
     async def back_to_search_handler(app, query):
         data = query.data.split('|')
+        # Defensive check
+        if len(data) < 2:
+            await query.answer("❌ Error: Invalid back data.", show_alert=True)
+            return
+            
         series_name = data[1]
-
-        # Removed imdb_poster_enabled check
         imdb_data = None
 
         try:
@@ -328,20 +358,18 @@ def register_conversation_handlers(app: Client):
         except:
             pass
 
-        # poster_url is removed
-        # poster_url = imdb_data['poster'] if imdb_data and imdb_data.get('poster') else None
-        imdb_link = imdb_data['link'] if imdb_data and imdb_data.get('link') else None
-
-        summary = await get_series_summary(series_name)
         imdb_title = imdb_data.get('title') if imdb_data else series_name
         imdb_released = imdb_data.get('year', 'N/A') if imdb_data else 'N/A'
         imdb_genre = imdb_data.get('genres', 'N/A') if imdb_data else 'N/A'
         imdb_rating = imdb_data.get('rating', 'N/A') if imdb_data else 'N/A'
         imdb_link = imdb_data.get('link') if imdb_data else None
-        languages_list = ", ".join(summary['languages'])
-        seasons_count = len(summary['seasons'])
-        qualities_list = ", ".join(summary['qualities'])
-        imdb_text = f" | 🔗 [IMDB]({imdb_link})" if imdb_link else ""
+        
+        summary = await get_series_summary(series_name)
+        
+        languages_list = ", ".join(summary.get('languages', []))
+        seasons_count = len(summary.get('seasons', []))
+        qualities_list = ", ".join(summary.get('qualities', []))
+        
         response = (
             f"**○ Title:** {imdb_title}\n"
             f"**○ Released On:** {imdb_released}\n"
@@ -352,9 +380,10 @@ def register_conversation_handlers(app: Client):
             f"**○ Quality:** {qualities_list}\n\n"
             f"**Select the --Season-- to continue:**"
         )
+        
         keyboard = []
         series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for season in summary['seasons']:
+        for season in summary.get('seasons', []):
             callback_data = f'ss|{series_name_short}|{season}'
             keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
 
