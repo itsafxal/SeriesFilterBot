@@ -68,6 +68,33 @@ def _normalized_series_from_filename(file_name: str) -> str:
     if len(parts) > 5:
         base = " ".join(parts[:5])
     return base.title()
+def _extract_language_local(file_name: str) -> str:
+    name = (file_name or "").upper()
+    sep_normalized = re.sub(r"[+&/x,.\-_]+", " ", name)
+
+    lang_patterns = [
+        (r"\b(HINDI|HIN|HI|DUB)\b", "Hindi"),
+        (r"\b(ENGLISH|ENG|EN)\b", "English"),
+        (r"\b(TAMIL|TAM)\b", "Tamil"),
+        (r"\b(TELUGU|TEL)\b", "Telugu"),
+        (r"\b(MALAYALAM|MAL)\b", "Malayalam"),
+    ]
+
+    found = set()
+    for pat, canon in lang_patterns:
+        if re.search(pat, sep_normalized):
+            found.add(canon)
+
+    if ("DUAL" in name or "MULTI" in name) and not found:
+        return "Multi Audio"
+
+    if not found:
+        return "English"
+
+    if len(found) == 1:
+        return next(iter(found))
+
+    return "-".join(sorted(found))
 
 def create_sql_schema(conn):
     """Creates the necessary table in the SQLite database, including 'language'."""
@@ -94,7 +121,7 @@ def create_sql_schema(conn):
 def migrate_data_from_mongo_to_sql():
     """Migrates all data from MongoDB's 'files' collection to SQLite."""
     import sqlite3 # Assuming these imports are available in the scope
-    # Assuming SQLITE_DB_PATH, create_sql_schema, logger, files_collection, and _normalized_series_from_filename are defined
+    # Assuming SQLITE_DB_PATH, create_sql_schema, logger, files_collection, and _normalized_series_from_filename, and _extract_language_local are defined
     # outside this function and accessible.
     
     conn = sqlite3.connect(SQLITE_DB_PATH)
@@ -117,10 +144,11 @@ def migrate_data_from_mongo_to_sql():
     for doc in mongo_docs:
         fn = doc.get("file_name", "") or ""
         normalized = _normalized_series_from_filename(fn) # ✅ recompute from filename
+        
         season = doc.get("season", 0)
         episode = doc.get("episode", 0)
         quality = doc.get("quality", "Unknown")
-        language = doc.get("language", "Unknown")
+        language = _extract_language_local(fn)  # 👈 use recomputed canonical language
 
         key = (normalized, season, episode, quality, language)
         if key in unique:  # same ep / same quality / same language → skip
