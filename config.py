@@ -13,7 +13,8 @@ MONGO_URI = "mongodb+srv://ss:ss@seriesfilterbot.p88od4y.mongodb.net/?appName=Se
 INDEX_CHANNELS = [-1001996538290] 
 ADMIN_USERS = [5483128891] # ⚠️ REPLACE ME: Your Telegram User ID(s)
 
-# --- Custom Caption Configuration ---
+DEFAULT_POSTER_URL = "https://sanishtech.com/i/690ceab460363-1762454196.jpg"
+
 CUSTOM_CAPTION_TEXT = """
 `{file_name}`
 
