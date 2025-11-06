@@ -506,8 +506,8 @@ def register_conversation_handlers(app: Client):
         )
         CYBER_KEYBOARD = InlineKeyboardMarkup(
         [[
-            InlineKeyboardButton("⚙️Help", callback_data="help"),
-            InlineKeyboardButton("🤠About", callback_data="about")
+            InlineKeyboardButton("⚙️Help", callback_data="help|"),
+            InlineKeyboardButton("🤠About", callback_data="about|")
         ]])
         reply_markup = CYBER_KEYBOARD   
         try:
