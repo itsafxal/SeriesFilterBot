@@ -8,19 +8,17 @@ from database import initialize_sql_db
 from config import API_ID, API_HASH, BOT_TOKEN, logger
 
 def main():
+    """Initializes and runs the Pyrogram client, including SQL setup."""
     
     # --- SQL DB Initialization and Migration ---
     logger.info("Initializing and migrating data to SQL database...")
-    try:
-        def initialize_sql_db(): # Function definition starts here
-    """Synchronously initializes the SQL database and runs the migration + repair.""" # Error on this line
-    migrate_data_from_mongo_to_sql()
-    # Optional: also repair any pre-existing rows that slipped in earlier
     try:
-        repair_normalized_names_in_sqlite()
+        initialize_sql_db()
+        logger.info("✅ SQL database is ready.")
     except Exception as e:
-        logger.error(f"repair_normalized_names_in_sqlite failed: {e}")
-
+        logger.error(f"❌ Critical failure during SQL DB initialization/migration: {e}")
+        return
+        
     # --- Pyrogram Client Setup ---
     app = Client(
         "SeriesBot",
