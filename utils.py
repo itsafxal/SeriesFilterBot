@@ -61,7 +61,7 @@ def extract_quality(file_name: str) -> str:
     if "480P" in name:
         return "480P"
     
-    return "UNKNOWN"
+    return "480P"
 
 
 def extract_language(file_name: str) -> str:
