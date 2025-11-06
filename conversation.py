@@ -44,11 +44,12 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
     keyboard = []
     series_name_short = series_name[:MAX_CALLBACK_LENGTH]
     for lang in languages:
+        # Callback for selecting a language to go to quality menu
         callback_data = f'ls|{series_name_short}|{season}|{lang}'
         display_text = f"🗣️ {lang}"
         keyboard.append([InlineKeyboardButton(display_text, callback_data=callback_data)])
     
-    # Corrected callback data regex: back_to_search|...
+    # Callback for going back to the Season selection menu
     keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data=f'back_to_search|{series_name_short}')])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -66,7 +67,7 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
         else:
             await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
     except MessageNotModified:
-        pass # Handle case where text is the same
+        pass
     except Exception:
         pass
 
@@ -87,8 +88,9 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
         callback_data = f'qs|{series_name_short}|{season}|{language}|{quality}'
         keyboard.append([InlineKeyboardButton(f"💾 {quality}", callback_data=callback_data)])
 
-    # Corrected callback data regex: ls|...
-    keyboard.append([InlineKeyboardButton(f"⬅️ Back", callback_data=f'ls|{series_name_short}|{season}|{language}')])
+    # FIX: Changed back button callback prefix to 'bl|' (Back to Language) 
+    # This prevents the previous handler from looping and ensures a correct step back.
+    keyboard.append([InlineKeyboardButton(f"⬅️ Back", callback_data=f'bl|{series_name_short}|{season}')])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -101,7 +103,6 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
     try:
-        # Check for message.photo and change to edit_text
         if query.message.photo:
             await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
         else:
@@ -160,7 +161,6 @@ def register_conversation_handlers(app: Client):
             pass
 
         imdb_data = None
-        # Fetching IMDB data for the link, not the poster
         try:
             imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_to_display)
         except:
@@ -193,33 +193,24 @@ def register_conversation_handlers(app: Client):
         series_name_short = series_to_display[:MAX_CALLBACK_LENGTH]
         for season in summary.get('seasons', []):
             callback_data = f'ss|{series_name_short}|{season}'
-            # fs| is no longer used here, was for file select (removed from original)
             keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
             
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
-        # Removed all poster downloading and sending logic
         sent_message = await initial_message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
         if auto_delete_timer > 0:
             asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, auto_delete_timer))
 
 
-    # FIX: Corrected regex filter to r"^ss\|" to prevent clashes and eliminate warning
+    # FIX: Corrected regex filter to r"^ss\|" 
     @app.on_callback_query(filters.regex(r"^ss\|"))
     async def season_select_handler(app, query):
         
-        # REMOVED THE REDUNDANT GUARDRAIL that produced the warning
-        # if not query.data.startswith("ss|"):
-        #     logger.warning(f"Handler filter bypass detected: Ignoring query data: {query.data}")
-        #     await query.answer()
-        #     return
-            
         data = query.data.split("|")
             
-        # FIX 1: Defensive check for IndexError
         if len(data) < 3:
             logger.error(f"Malformed callback data for season_select_handler: {query.data}")
             await query.answer("❌ Error: Invalid season selection data. Please try searching again.", show_alert=True)
@@ -241,7 +232,6 @@ def register_conversation_handlers(app: Client):
     @app.on_callback_query(filters.regex(r"^ls\|"))
     async def language_select_handler(app, query):
         data = query.data.split("|")
-        # Defensive check
         if len(data) < 4:
             await query.answer("❌ Error: Invalid language selection data.", show_alert=True)
             return
@@ -252,12 +242,32 @@ def register_conversation_handlers(app: Client):
         await show_quality_menu(app, query, series_name, language, season)
         await query.answer()
 
+    
+    # NEW HANDLER: Handles the 'bl|' callback (Back to Language) from the Quality Menu
+    @app.on_callback_query(filters.regex(r"^bl\|"))
+    async def back_to_language_handler(app, query):
+        data = query.data.split("|")
+        
+        if len(data) < 3:
+            await query.answer("❌ Error: Invalid back data.", show_alert=True)
+            return
+            
+        series_name = data[1]
+        try:
+            season = int(data[2])
+        except ValueError:
+            await query.answer("❌ Error: Invalid season number format.", show_alert=True)
+            return
+
+        # Correctly calls show_language_menu to display the previous step
+        await show_language_menu(app, query, series_name, season)
+        await query.answer()
+
 
     # FIX: Corrected regex filter to r"^qs\|"
     @app.on_callback_query(filters.regex(r"^qs\|"))
     async def quality_select_handler(app, query):
         data = query.data.split("|")
-        # Defensive check
         if len(data) < 5:
             await query.answer("❌ Error: Invalid quality selection data.", show_alert=True)
             return
@@ -305,7 +315,6 @@ def register_conversation_handlers(app: Client):
     @app.on_callback_query(filters.regex(r"^fs\|"))
     async def file_select_handler(app, query):
         data = query.data.split('|')
-        # Defensive check
         if len(data) < 4:
             await query.answer("❌ Error: Invalid file selection data.", show_alert=True)
             return
@@ -345,7 +354,6 @@ def register_conversation_handlers(app: Client):
     @app.on_callback_query(filters.regex(r"^back_to_search\|"))
     async def back_to_search_handler(app, query):
         data = query.data.split('|')
-        # Defensive check
         if len(data) < 2:
             await query.answer("❌ Error: Invalid back data.", show_alert=True)
             return
@@ -392,7 +400,6 @@ def register_conversation_handlers(app: Client):
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
         try:
-            # Removed logic for editing media (photo)
             await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
         except MessageNotModified:
             pass
@@ -421,6 +428,7 @@ def register_conversation_handlers(app: Client):
         search_handler,
         season_select_handler,
         language_select_handler,
+        back_to_language_handler, # Added new handler here
         quality_select_handler,
         file_select_handler,
         back_to_search_handler,
