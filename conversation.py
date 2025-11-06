@@ -6,7 +6,7 @@ from pyrogram.types import (
     Message,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    InputMediaPhoto
+    InputMediaPhoto, # Added for editing message to include photo
 )
 from pyrogram.errors import MessageNotModified
 from database import (
@@ -18,7 +18,8 @@ from database import (
     get_unique_qualities_by_lang_season,
     get_file_by_message_id_and_channel_id
 )
-from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS
+# Assuming DEFAULT_POSTER_URL is available in config
+from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS, DEFAULT_POSTER_URL
 from utils import clean_series_name, save_series_file_for_bulk_index
 from movie_fetcher import get_imdb_data # Kept for get_imdb_data usage (for link and data, not poster)
 
@@ -61,15 +62,21 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
     try:
-        # Check for message.photo and change to edit_text
-        if query.message.photo:
-            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        else:
-            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        # CHANGE 1: Use edit_text if it's a photo message, as edit_text on a photo edits the caption
+        # If it's a plain text message, edit_text works as expected.
+        await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
     except MessageNotModified:
         pass
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Error editing message caption in show_language_menu: {e}")
+        try:
+             # Fallback if the message wasn't a photo (e.g., initial search message was only text)
+             await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        except MessageNotModified:
+             pass
+        except Exception:
+             pass
+
 
     if auto_delete_timer > 0:
         asyncio.create_task(delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer))
@@ -103,14 +110,19 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
     try:
-        if query.message.photo:
-            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        else:
-            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        # CHANGE 2: Use edit_caption for consistency, as the message should now be a photo
+        await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
     except MessageNotModified:
         pass
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Error editing message caption in show_quality_menu: {e}")
+        try:
+             # Fallback
+             await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        except MessageNotModified:
+             pass
+        except Exception:
+             pass
 
     if auto_delete_timer > 0:
         asyncio.create_task(delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer))
@@ -172,6 +184,9 @@ def register_conversation_handlers(app: Client):
         imdb_rating = imdb_data.get('rating', 'N/A') if imdb_data else 'N/A'
         imdb_link = imdb_data.get('link') if imdb_data else None
         
+        # CHANGE 3: Get poster URL
+        poster_url = imdb_data.get('poster') if imdb_data and imdb_data.get('poster') else DEFAULT_POSTER_URL
+        
         summary = await get_series_summary(series_to_display)
         
         languages_list = ", ".join(summary.get('languages', []))
@@ -199,7 +214,18 @@ def register_conversation_handlers(app: Client):
 
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
-        sent_message = await initial_message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        # CHANGE 4: Change message from text to photo/media
+        # Use edit_media to switch from a text message to a photo message
+        try:
+            sent_message = await initial_message.edit_media(
+                media=InputMediaPhoto(media=poster_url, caption=response),
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            logger.error(f"Failed to edit media for search result: {e}. Falling back to edit_text.")
+            # Fallback to plain text if photo editing fails
+            sent_message = await initial_message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+
 
         if auto_delete_timer > 0:
             asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, auto_delete_timer))
@@ -372,6 +398,9 @@ def register_conversation_handlers(app: Client):
         imdb_rating = imdb_data.get('rating', 'N/A') if imdb_data else 'N/A'
         imdb_link = imdb_data.get('link') if imdb_data else None
         
+        # CHANGE 5: Get poster URL for back action
+        poster_url = imdb_data.get('poster') if imdb_data and imdb_data.get('poster') else DEFAULT_POSTER_URL
+        
         summary = await get_series_summary(series_name)
         
         languages_list = ", ".join(summary.get('languages', []))
@@ -399,11 +428,17 @@ def register_conversation_handlers(app: Client):
 
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
+        # CHANGE 6: Edit message media back to the search result photo
         try:
-            await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            await query.message.edit_media(
+                media=InputMediaPhoto(media=poster_url, caption=response),
+                reply_markup=reply_markup
+            )
         except MessageNotModified:
             pass
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to edit media for back_to_search: {e}. Falling back to edit_text.")
+            # Fallback to plain text if photo editing fails
             try:
                 await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             except:
