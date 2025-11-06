@@ -203,6 +203,12 @@ def register_conversation_handlers(app: Client):
 
     @app.on_callback_query(filters.regex(r"^ss\\|"))
     async def season_select_handler(app, query):
+        # FIX: Add explicit check to prevent filter clash with back_to_search|
+        if not query.data.startswith("ss|"):
+            logger.warning(f"Handler filter bypass detected: Ignoring query data: {query.data}")
+            await query.answer()
+            return
+
         data = query.data.split("|")
         
         # FIX 1: Defensive check for IndexError
