@@ -210,13 +210,7 @@ def register_conversation_handlers(app: Client):
             callback_data = f'ss|{series_name_short}|{season}'
             keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
         
-        # --- NEW BUTTONS: Help and About ---
-        keyboard.append([
-            InlineKeyboardButton("❓ Help", callback_data='help|'),
-            InlineKeyboardButton("ℹ️ About", callback_data='about|')
-        ])
-        # -----------------------------------
-            
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
@@ -243,7 +237,7 @@ def register_conversation_handlers(app: Client):
     async def season_select_handler(app, query):
         
         data = query.data.split("|")
-            
+                
         if len(data) < 3:
             logger.error(f"Malformed callback data for season_select_handler: {query.data}")
             await query.answer("❌ Error: Invalid season selection data. Please try searching again.", show_alert=True)
@@ -431,12 +425,6 @@ def register_conversation_handlers(app: Client):
             callback_data = f'ss|{series_name_short}|{season}'
             keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
         
-        # --- RE-ADD NEW BUTTONS: Help and About ---
-        keyboard.append([
-            InlineKeyboardButton("❓ Help", callback_data='help|'),
-            InlineKeyboardButton("ℹ️ About", callback_data='about|')
-        ])
-        # ------------------------------------------
 
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -463,84 +451,122 @@ def register_conversation_handlers(app: Client):
 
         await query.answer()
 
-    # --- NEW HANDLER: Help Menu ---
+    
     @app.on_callback_query(filters.regex(r"^help\|"))
     async def help_menu_handler(app, query):
         help_text = (
-            "💡 **Help & Instructions**\n\n"
-            "1. **Search**: Simply send the **name** of the movie or series you are looking for.\n"
-            "2. **Select**: Tap the **Season** button for a series.\n"
-            "3. **Filter**: Choose the **Language** and then the **Quality**.\n"
-            "4. **Receive**: The bot will automatically start sending the files to you.\n\n"
-            "If you see *'No series found'*, try a slightly different or shorter name."
+            "<b>💡 Help & Instructions</b>\n\n"
+            "1. <b>Search</b>: Simply send the <b>name</b> of the movie or series you are looking for.\n"
+            "2. <b>Select</b>: Tap the <b>Season</b> button for a series.\n"
+            "3. <b>Filter</b>: Choose the <b>Language</b> and then the <b>Quality</b>.\n"
+            "4. <b>Receive</b>: The bot will automatically start sending the files to you.\n\n"
+            "<i>If you see 'No series found', try a slightly different or shorter name.</i>"
         )
         
-        # Get the current reply_markup (Season selection menu) for the back button
-        reply_markup = query.message.reply_markup
+        HELP_KEYBOARD = InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("🏡 Home", callback_data="cyber|"),
+            InlineKeyboardButton("🕹 Admins", callback_data="admin_cmd|")  # New button
+        ]])
+        reply_markup = HELP_KEYBOARD
         
         try:
             # Edit the caption (since it should be a photo message)
-            await query.message.edit_caption(help_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            await query.message.edit_caption(
+                help_text, 
+                reply_markup=reply_markup, 
+                parse_mode=enums.ParseMode.HTML # Changed to HTML
+            )
         except MessageNotModified:
             pass
         except Exception as e:
             logger.error(f"Error editing message caption in help_menu_handler: {e}")
-            # Fallback
+            # Fallback to edit_text
             try:
-                await query.message.edit_text(help_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+                await query.message.edit_text(
+                    help_text, 
+                    reply_markup=reply_markup, 
+                    parse_mode=enums.ParseMode.HTML # Changed to HTML
+                )
             except:
                 pass
 
         await query.answer("Showing help menu.")
 
+
     @app.on_callback_query(filters.regex(r"^cyber\|"))
     async def cyber_menu_handler(app, query):
         home_text = (
-            "**👋 Hey Bro **\n\n"
-            "**I Am Your Series-Filter Bot- advanced, powerful and designed to make your group to Series Request Group! You Can Also Search Series Here **\n\n"
-            "**Let's get started ! 🚀**"
+            "<b>👋 Hey Bro</b>\n\n"
+            "<b>I Am Your Series-Filter Bot</b> - advanced, powerful and designed to make your group a Series Request Group! You Can Also Search Series Here\n\n"
+            "<b>Let's get started! 🚀</b>"
         )
-        
-        # Get the current reply_markup (Season selection menu) for the back button
-        reply_markup = query.message.reply_markup
+        HELP_KEYBOARD = InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("🏡 Home", callback_data="cyber|"),
+            InlineKeyboardButton("🕹 Admins", callback_data="admin_cmd|")  # New button
+        ]])
+        reply_markup = CYBER_KEYBOARD
         
         try:
             # Edit the caption (since it should be a photo message)
-            await query.message.edit_caption(home_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            await query.message.edit_caption(
+                home_text, 
+                reply_markup=reply_markup, 
+                parse_mode=enums.ParseMode.HTML # Changed to HTML
+            )
         except MessageNotModified:
             pass
         except Exception as e:
-            logger.error(f"Error editing message caption in help_menu_handler: {e}")
+            logger.error(f"Error editing message caption in cyber_menu_handler: {e}")
             # Fallback
+            # FIX: Ensure we use the correct variable `home_text` for the fallback.
             try:
-                await query.message.edit_text(help_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+                await query.message.edit_text(
+                    home_text,
+                    reply_markup=reply_markup, 
+                    parse_mode=enums.ParseMode.HTML # Changed to HTML
+                )
             except:
                 pass
 
-        await query.answer("Back To Home ")
+        await query.answer("Back To Home")
 
-    # --- NEW HANDLER: About Menu ---
+
+    # --- NEW HANDLER: About Menu Handler ---
     @app.on_callback_query(filters.regex(r"^about\|"))
     async def about_menu_handler(app, query):
+        # ABOUT_TEXT is assumed to be defined in HTML format now
         about_text = ABOUT_TEXT
-        # Get the current reply_markup (Season selection menu) for the back button
-        reply_markup = query.message.reply_markup
         
+        ABOUT_KEYBOARD = InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("🔙 Back to Home", callback_data="cyber|"),
+            InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/CyberTGx")  # New button
+        ]])
+        reply_markup = ABOUT_KEYBOARD
         try:
             # Edit the caption (since it should be a photo message)
-            await query.message.edit_caption(about_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            await query.message.edit_caption(
+                about_text, 
+                reply_markup=reply_markup, 
+                parse_mode=enums.ParseMode.HTML # Changed to HTML
+            )
         except MessageNotModified:
             pass
         except Exception as e:
             logger.error(f"Error editing message caption in about_menu_handler: {e}")
             # Fallback
             try:
-                await query.message.edit_text(about_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+                await query.message.edit_text(
+                    about_text, 
+                    reply_markup=reply_markup, 
+                    parse_mode=enums.ParseMode.HTML # Changed to HTML
+                )
             except:
                 pass
-        
+            
         await query.answer("Showing about information.")
-    # -------------------------------
 
 
     @app.on_callback_query(filters.regex(r"close"))
@@ -552,16 +578,8 @@ def register_conversation_handlers(app: Client):
             await query.answer("Can't close.")
 
     return [
-        media_handler,
-        search_handler,
-        season_select_handler,
-        language_select_handler,
-        back_to_language_handler,
-        quality_select_handler,
-        file_select_handler,
-        back_to_search_handler,
-        help_menu_handler,      # Added new handler here
-        about_menu_handler,
-        cyber_menu_handler, # Added new handler here
-        close_menu_handler
+        media_handler, search_handler, season_select_handler, language_select_handler,
+        back_to_language_handler, quality_select_handler, file_select_handler,
+        back_to_search_handler, help_menu_handler, about_menu_handler,     
+        cyber_menu_handler, close_menu_handler
     ]
