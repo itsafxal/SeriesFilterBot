@@ -65,41 +65,45 @@ def extract_quality(file_name: str) -> str:
 
 
 def extract_language(file_name: str) -> str:
-    name = file_name.upper()
+    """
+    Detects single or multi-audio languages robustly.
+    - Works even if 'DUAL'/'MULTI' is missing (e.g., 'ENGLISH+HINDI', 'Tamil & Malayalam').
+    - Canonicalizes multi-audio as alphabetically sorted joined with '-'
+      e.g., 'Hindi-English', 'Malayalam-Tamil'.
+    """
+    name = (file_name or "").upper()
 
-    # dual / multi audio (most common groups)
-    if "DUAL" in name or "MULTI" in name:
-        langs = []
+    # Normalize separators: treat +, &, /, x, commas and dots/underscores as separators
+    sep_normalized = re.sub(r"[+&/x,.\-_]+", " ", name)
 
-        if "HIN" in name or "HINDI" in name: langs.append("Hindi")
-        if "ENG" in name or "ENGLISH" in name: langs.append("English")
-        if "TEL" in name or "TELUGU" in name: langs.append("Telugu")
-        if "TAM" in name or "TAMIL" in name: langs.append("Tamil")
-        if "MAL" in name or "MALAYALAM" in name: langs.append("Malayalam")
+    # Map of regex patterns -> canonical language name
+    lang_patterns = [
+        (r"\b(HINDI|HIN|HI|DUB)\b", "Hindi"),
+        (r"\b(ENGLISH|ENG|EN)\b", "English"),
+        (r"\b(TAMIL|TAM)\b", "Tamil"),
+        (r"\b(TELUGU|TEL)\b", "Telugu"),
+        (r"\b(MALAYALAM|MAL)\b", "Malayalam"),
+    ]
 
-        # example: Hindi-English
-        if len(langs) >= 2:
-            return "-".join(langs)
+    found = set()
+    for pat, canon in lang_patterns:
+        if re.search(pat, sep_normalized):
+            found.add(canon)
 
+    # If 'DUAL'/'MULTI' flags exist, still rely on actual matches if we have them.
+    if ("DUAL" in name or "MULTI" in name) and not found:
+        # Fallback label if they wrote MULTI but didn't name languages.
         return "Multi Audio"
 
-    # single audio detection
-    if "HINDI" in name or "HIN" in name or "DUB" in name:
-        return "Hindi"
-
-    if "ENGLISH" in name or "ENG" in name:
+    if not found:
+        # Final fallback if nothing matched; your previous default was English.
         return "English"
 
-    if "TAMIL" in name or "TAM" in name:
-        return "Tamil"
+    if len(found) == 1:
+        return next(iter(found))
 
-    if "TELUGU" in name or "TEL" in name:
-        return "Telugu"
-
-    if "MALAYALAM" in name or "MAL" in name:
-        return "Malayalam"
-
-    return "English"
+    # Multi-audio: canonicalize order to avoid 'Hindi-English' vs 'English-Hindi' duplicates
+    return "-".join(sorted(found))
 
 def parse_series_info(file_name: str):
     """
@@ -164,6 +168,7 @@ async def save_series_file_for_bulk_index(message: types.Message):
         if row["episode"] == episode:
             logger.info(f"[SKIP] Duplicate ignored → {normalized_name} | S{season}E{episode} | {quality} | {language}")
             return False, 0
+
             
     file_doc = {
         "channel_id": message.chat.id,
