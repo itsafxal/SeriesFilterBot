@@ -11,10 +11,10 @@ def main():
     
     # --- SQL DB Initialization and Migration ---
     logger.info("Initializing and migrating data to SQL database...")
-    try:
-        def initialize_sql_db():
-    """Synchronously initializes the SQL database and runs the migration + repair."""
-    migrate_data_from_mongo_to_sql()
+    try:
+        def initialize_sql_db(): # Function definition starts here
+    """Synchronously initializes the SQL database and runs the migration + repair.""" # Error on this line
+    migrate_data_from_mongo_to_sql()
     # Optional: also repair any pre-existing rows that slipped in earlier
     try:
         repair_normalized_names_in_sqlite()
