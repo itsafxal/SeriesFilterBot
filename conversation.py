@@ -94,7 +94,7 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
     try:
-        # Use edit_caption if it's a photo message
+        # Pass parse_mode to edit_caption
         await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
     except MessageNotModified:
         pass
@@ -142,7 +142,7 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
     try:
-        # Use edit_caption for consistency, as the message should now be a photo
+        # Pass parse_mode to edit_caption
         await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
     except MessageNotModified:
         pass
@@ -192,12 +192,6 @@ def register_conversation_handlers(app: Client):
             )
             return
         # --- END FORCE SUBSCRIBE CHECK ---
-
-        # --- REMOVED: initial_message creation ---
-        # initial_message = await message.reply_text(
-        #     f"🔍 **Searching** for `{query}` ...",
-        #     parse_mode=enums.ParseMode.MARKDOWN
-        # )
 
         unique_names = await search_series(query)
 
@@ -429,8 +423,8 @@ def register_conversation_handlers(app: Client):
         response = (
             f"**○ Title:** {series_name}\n"
             f"**○ Language:** {languages_list}\n"
-            f"**○ Season:** {seasons_count}\n"
-            f"**○ Quality:** {qualities_list}\n\n"
+            f"**○ Season Available:** {seasons_count}\n"
+            f"**○ Quality Available:** {qualities_list}\n\n"
             f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
         )
         
@@ -444,12 +438,12 @@ def register_conversation_handlers(app: Client):
 
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
-        # CHANGE 6: Edit message media back to the search result photo
+        # --- FIX: Moved parse_mode inside InputMediaPhoto to resolve the error ---
         try:
             await query.message.edit_media(
-                media=InputMediaPhoto(media=poster_url, caption=response),
-                reply_markup=reply_markup,
-                parse_mode=enums.ParseMode.MARKDOWN # Added parse_mode for edit_media caption
+                media=InputMediaPhoto(media=poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
+                reply_markup=reply_markup
+                # Removed the redundant 'parse_mode' argument here
             )
         except MessageNotModified:
             pass
@@ -490,7 +484,7 @@ def register_conversation_handlers(app: Client):
             await query.message.edit_caption(
                 help_text, 
                 reply_markup=reply_markup, 
-                parse_mode=enums.ParseMode.HTML # Changed to HTML
+                parse_mode=enums.ParseMode.HTML # Passed parse_mode to edit_caption
             )
         except MessageNotModified:
             pass
@@ -501,7 +495,7 @@ def register_conversation_handlers(app: Client):
                 await query.message.edit_text(
                     help_text, 
                     reply_markup=reply_markup, 
-                    parse_mode=enums.ParseMode.HTML # Changed to HTML
+                    parse_mode=enums.ParseMode.HTML # Passed parse_mode to edit_text
                 )
             except:
                 pass
@@ -527,19 +521,18 @@ def register_conversation_handlers(app: Client):
             await query.message.edit_caption(
                 home_text, 
                 reply_markup=reply_markup, 
-                parse_mode=enums.ParseMode.HTML # Changed to HTML
+                parse_mode=enums.ParseMode.HTML # Passed parse_mode to edit_caption
             )
         except MessageNotModified:
             pass
         except Exception as e:
             logger.error(f"Error editing message caption in cyber_menu_handler: {e}")
             # Fallback
-            # FIX: Ensure we use the correct variable `home_text` for the fallback.
             try:
                 await query.message.edit_text(
                     home_text,
                     reply_markup=reply_markup, 
-                    parse_mode=enums.ParseMode.HTML # Changed to HTML
+                    parse_mode=enums.ParseMode.HTML # Passed parse_mode to edit_text
                 )
             except:
                 pass
@@ -564,7 +557,7 @@ def register_conversation_handlers(app: Client):
             await query.message.edit_caption(
                 about_text, 
                 reply_markup=reply_markup, 
-                parse_mode=enums.ParseMode.HTML # Changed to HTML
+                parse_mode=enums.ParseMode.HTML # Passed parse_mode to edit_caption
             )
         except MessageNotModified:
             pass
@@ -575,7 +568,7 @@ def register_conversation_handlers(app: Client):
                 await query.message.edit_text(
                     about_text, 
                     reply_markup=reply_markup, 
-                    parse_mode=enums.ParseMode.HTML # Changed to HTML
+                    parse_mode=enums.ParseMode.HTML # Passed parse_mode to edit_text
                 )
             except:
                 pass
