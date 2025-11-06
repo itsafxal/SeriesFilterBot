@@ -501,7 +501,7 @@ def register_conversation_handlers(app: Client):
             "<b>I Am Your Series-Filter Bot</b> - advanced, powerful and designed to make your group a Series Request Group! You Can Also Search Series Here\n\n"
             "<b>Let's get started! 🚀</b>"
         )
-        HELP_KEYBOARD = InlineKeyboardMarkup(
+        CYBER_KEYBOARD = InlineKeyboardMarkup(
         [[
             InlineKeyboardButton("⚙️Help", callback_data="help"),
             InlineKeyboardButton("🤠About", callback_data="about")
