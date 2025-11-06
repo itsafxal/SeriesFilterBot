@@ -94,15 +94,14 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
     try:
-        # CHANGE 1: Use edit_text if it's a photo message, as edit_text on a photo edits the caption
-        # If it's a plain text message, edit_text works as expected.
+        # Use edit_caption if it's a photo message
         await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
     except MessageNotModified:
         pass
     except Exception as e:
         logger.error(f"Error editing message caption in show_language_menu: {e}")
         try:
-             # Fallback if the message wasn't a photo (e.g., initial search message was only text)
+             # Fallback if the message wasn't a photo
              await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
         except MessageNotModified:
              pass
@@ -128,7 +127,6 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
         keyboard.append([InlineKeyboardButton(f"💾 {quality}", callback_data=callback_data)])
 
     # FIX: Changed back button callback prefix to 'bl|' (Back to Language) 
-    # This prevents the previous handler from looping and ensures a correct step back.
     keyboard.append([InlineKeyboardButton(f"⬅️ Back", callback_data=f'bl|{series_name_short}|{season}')])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -144,7 +142,7 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
     try:
-        # CHANGE 2: Use edit_caption for consistency, as the message should now be a photo
+        # Use edit_caption for consistency, as the message should now be a photo
         await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
     except MessageNotModified:
         pass
@@ -180,7 +178,7 @@ def register_conversation_handlers(app: Client):
         if query.startswith('/') and query.lower() not in ["/index"]:
             return
             
-        # --- FORCE SUBSCRIBE CHECK ADDED HERE ---
+        # --- FORCE SUBSCRIBE CHECK ---
         is_member, invite_link = await check_force_subscribe(app, message.from_user.id)
         
         if not is_member:
@@ -195,41 +193,24 @@ def register_conversation_handlers(app: Client):
             return
         # --- END FORCE SUBSCRIBE CHECK ---
 
-
-        initial_message = await message.reply_text(
-            f"🔍 **Searching** for `{query}` ...",
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
+        # --- REMOVED: initial_message creation ---
+        # initial_message = await message.reply_text(
+        #     f"🔍 **Searching** for `{query}` ...",
+        #     parse_mode=enums.ParseMode.MARKDOWN
+        # )
 
         unique_names = await search_series(query)
 
         if not unique_names:
-            await initial_message.edit_text(f"❌ No series found `<code>{query}</code>`", parse_mode=enums.ParseMode.HTML)
+            # Reply directly if no series found
+            await message.reply_text(f"❌ No series found `<code>{query}</code>`", parse_mode=enums.ParseMode.HTML)
             return
 
-        normalized_query = clean_series_name(query).lower()
-        series_to_display = None
-        for db_name in unique_names:
-            cleaned_db_name = clean_series_name(db_name)
-            if cleaned_db_name.lower() == normalized_query:
-                series_to_display = cleaned_db_name
-                break
-        if series_to_display is None:
-            series_to_display = clean_series_name(min(unique_names, key=len))
+        # Use the first series found, skipping complex matching logic
+        series_to_display = clean_series_name(unique_names[0])
 
-        try:
-            await initial_message.edit_text(f"✅ Found **{series_to_display}**. Fetching IMDB ...", parse_mode=enums.ParseMode.MARKDOWN)
-        except:
-            pass
-
-        imdb_data = None
-        try:
-            imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_to_display)
-        except:
-            pass
-
-        # CHANGE 3: Get poster URL
-        poster_url = imdb_data.get('poster') if imdb_data and imdb_data.get('poster') else DEFAULT_POSTER_URL
+        # Skip IMDB data fetching and poster URL extraction. Use Default Poster.
+        poster_url = DEFAULT_POSTER_URL
         
         summary = await get_series_summary(series_to_display)
         
@@ -256,17 +237,18 @@ def register_conversation_handlers(app: Client):
 
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
-        # CHANGE 4: Change message from text to photo/media
-        # Use edit_media to switch from a text message to a photo message
+        # --- CHANGE: Reply immediately with the final result photo/media ---
         try:
-            sent_message = await initial_message.edit_media(
-                media=InputMediaPhoto(media=poster_url, caption=response),
-                reply_markup=reply_markup
+            sent_message = await message.reply_photo(
+                photo=poster_url, 
+                caption=response,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.MARKDOWN
             )
         except Exception as e:
-            logger.error(f"Failed to edit media for search result: {e}. Falling back to edit_text.")
-            # Fallback to plain text if photo editing fails
-            sent_message = await initial_message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            logger.error(f"Failed to reply with photo for search result: {e}. Falling back to reply_text.")
+            # Fallback to plain text if photo sending fails
+            sent_message = await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
 
         if auto_delete_timer > 0:
@@ -430,11 +412,12 @@ def register_conversation_handlers(app: Client):
         imdb_data = None
 
         try:
+            # We still fetch IMDB data here to get the poster when going back
             imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_name)
         except:
             pass
         
-        # CHANGE 5: Get poster URL for back action
+        # Get poster URL for back action
         poster_url = imdb_data.get('poster') if imdb_data and imdb_data.get('poster') else DEFAULT_POSTER_URL
         
         summary = await get_series_summary(series_name)
@@ -457,7 +440,6 @@ def register_conversation_handlers(app: Client):
             callback_data = f'ss|{series_name_short}|{season}'
             keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
         
-
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
@@ -466,7 +448,8 @@ def register_conversation_handlers(app: Client):
         try:
             await query.message.edit_media(
                 media=InputMediaPhoto(media=poster_url, caption=response),
-                reply_markup=reply_markup
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.MARKDOWN # Added parse_mode for edit_media caption
             )
         except MessageNotModified:
             pass
@@ -538,7 +521,7 @@ def register_conversation_handlers(app: Client):
             InlineKeyboardButton("⚙️Help", callback_data="help|"),
             InlineKeyboardButton("🤠About", callback_data="about|")
         ]])
-        reply_markup = CYBER_KEYBOARD   
+        reply_markup = CYBER_KEYBOARD    
         try:
             # Edit the caption (since it should be a photo message)
             await query.message.edit_caption(
@@ -611,6 +594,6 @@ def register_conversation_handlers(app: Client):
     return [
         media_handler, search_handler, season_select_handler, language_select_handler,
         back_to_language_handler, quality_select_handler, file_select_handler,
-        back_to_search_handler, help_menu_handler, about_menu_handler,     
+        back_to_search_handler, help_menu_handler, about_menu_handler,      
         cyber_menu_handler, close_menu_handler
     ]
