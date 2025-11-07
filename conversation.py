@@ -330,7 +330,7 @@ def register_conversation_handlers(app: Client):
             return
 
         bot_username = (await app.get_me()).username
-
+        sent_count = 0
         for file_entry in files:
             channel_id = file_entry["channel_id"]
             message_id = file_entry["message_id"]
