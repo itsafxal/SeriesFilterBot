@@ -308,92 +308,7 @@ def register_conversation_handlers(app: Client):
         await query.answer()
 
 
-    # FIX: Corrected regex filter to r"^qs\|"
-    @app.on_callback_query(filters.regex(r"^qs\|"))
-async def quality_select_handler(app, query):
-    data = query.data.split("|")
-    if len(data) < 5:
-        await query.answer("❌ Error: Invalid quality selection data.", show_alert=True)
-        return
-        
-    series_name = data[1]
-    # Use try/except for type conversion for robustness
-    try:
-        season = int(data[2])
-    except ValueError:
-        await query.answer("❌ Error: Invalid season number.", show_alert=True)
-        return
-        
-    language = data[3]
-    quality = data[4]
-
-    await query.answer(f"Sending {quality}/{language} episodes for S{season}...", cache_time=0)
-
-    # Assume get_all_files_by_season_and_quality is defined elsewhere
-    files = await get_all_files_by_season_and_quality(series_name, season, quality, language)
-
-    if not files:
-        await query.answer("❌ No files found.", show_alert=True)
-        return
-
-    # Cache bot_username lookup outside the loop
-    bot_username = (await app.get_me()).username
-    sent_count = 0
-    
-    # Loop through all files to send
-    for file_entry in files:
-        channel_id = file_entry["channel_id"]
-        message_id = file_entry["message_id"]
-        # Use .get with a default for safer access
-        file_name = file_entry.get("file_name", f"S{file_entry.get('season', 0)}E{file_entry.get('episode', 99)}")
-
-        # Assume CUSTOM_CAPTION_TEXT is defined elsewhere
-        custom_caption = CUSTOM_CAPTION_TEXT.format(
-            file_name=file_name,
-            bot_username=bot_username
-        )
-
-        try:
-            file_id = file_entry.get("file_id")
-            
-            # Prefer sending by file_id if available, otherwise copy the message
-            if file_id:
-                # 🎯 FIX: Use send_document if file_id is available (for faster sending/direct access)
-                await app.send_document(
-                    chat_id=query.from_user.id,
-                    document=file_id,
-                    caption=custom_caption,
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-            else:
-                # 🎯 FIX: Copy the original message if file_id is not available
-                await app.copy_message(
-                    chat_id=query.from_user.id,
-                    from_chat_id=channel_id,
-                    message_id=message_id,
-                    caption=custom_caption,
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-            
-            sent_count += 1 # Increment only on successful send/copy
-
-        except Exception as e:
-            # Assume logger is defined elsewhere
-            logger.error(f"Copy/Send fail for {message_id} in {channel_id}: {e}")
-            # Continue to the next file if one fails
-
-    # Final success message logic is correct (moved outside the loop)
-    success_text = (
-        f"✅ Successfully sent {sent_count} files from "
-        f"**{series_name}** — Season {season} ({quality})"
-    )
-
-    await app.send_message(
-        chat_id=query.from_user.id,
-        text=success_text,
-        parse_mode=enums.ParseMode.MARKDOWN
-    )
-
+# FIX: Corrected regex filter to r"^qs\|"
     @app.on_callback_query(filters.regex(r"^qs\|"))
     async def quality_select_handler(app, query):
         data = query.data.split("|")
@@ -402,6 +317,7 @@ async def quality_select_handler(app, query):
             return
             
         series_name = data[1]
+        # Use try/except for type conversion for robustness
         try:
             season = int(data[2])
         except ValueError:
@@ -413,6 +329,7 @@ async def quality_select_handler(app, query):
 
         await query.answer(f"Sending {quality}/{language} episodes for S{season}...", cache_time=0)
 
+        # Assume get_all_files_by_season_and_quality is defined elsewhere
         files = await get_all_files_by_season_and_quality(series_name, season, quality, language)
 
         if not files:
@@ -476,8 +393,7 @@ async def quality_select_handler(app, query):
             text=success_text,
             parse_mode=enums.ParseMode.MARKDOWN
         )
-
-    # FIX 2: Corrected regex filter to r"^back_to_search\|"
+        
     @app.on_callback_query(filters.regex(r"^back_to_search\|"))
     async def back_to_search_handler(app, query):
         data = query.data.split('|')
