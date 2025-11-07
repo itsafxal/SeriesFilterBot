@@ -1,3 +1,151 @@
+
+# command.py - MODIFIED for interactive and link-based indexing with deprecation fix
+# FIX: Changed enums.MessageOrigin.CHAT to enums.MessageOriginType.CHAT or similar
+# Based on the error, we assume the Enum Class name is MessageOriginType.
+
+import asyncio
+import re
+from pyrogram import Client, filters, enums
+from pyrogram.errors import FloodWait, ChannelPrivate
+from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
+from config import logger, ADMIN_USERS, INDEX_CHANNELS, START_IMG
+from database import (
+    get_bot_state,
+    save_bot_state,
+    get_global_setting, 
+    set_global_setting,
+)
+from utils import save_series_file_for_bulk_index 
+
+# --- NEW GLOBALS AND HELPER FUNCTIONS ---
+lock = asyncio.Lock()
+media_filter = filters.document | filters.video | filters.audio
+index_task = None
+link_pattern = r"https://t\.me/c/(\d+)/(\d+)" # Pattern to match c/channel_id/message_id links
+
+def extract_links(links):
+    """
+    Extracts chat_id, start_msg_id, and last_msg_id from one or two links.
+    """
+    if len(links) == 1:
+        match = re.match(link_pattern, links[0])
+        if not match:
+            raise ValueError("Invalid link format.")
+        channel_id, last_msg_id = match.groups()
+        # Convert to -100XXXXXXXXXX format
+        chat_id = int(f"-100{channel_id}")
+        # Default start ID to 2 (1 is usually service message)
+        return chat_id, 2, int(last_msg_id)
+
+    elif len(links) == 2:
+        match1 = re.match(link_pattern, links[0])
+        match2 = re.match(link_pattern, links[1])
+        if not match1 or not match2:
+            raise ValueError("Invalid link format.")
+        channel_id1, start_msg_id = match1.groups()
+        channel_id2, last_msg_id = match2.groups()
+        if channel_id1 != channel_id2:
+            raise ValueError("Links belong to different channels.")
+        chat_id = int(f"-100{channel_id1}")
+        return chat_id, int(start_msg_id), int(last_msg_id)
+
+    raise ValueError("Invalid number of links provided.")
+
+async def index_files_task(bot, msg, chat_id, start_msg_id, last_msg_id):
+    """The main background task for sequential indexing."""
+    global index_task
+
+    total_files = 0
+    current = int(start_msg_id)
+    counter = 0
+    saved = 0
+    total = last_msg_id + 1
+
+    async with lock:
+        try:
+            while current < total:
+                try:
+                    # Fetching messages one by one to respect start/end IDs
+                    message = await bot.get_messages(
+                        chat_id=chat_id, message_ids=current, replies=0
+                    )
+                except FloodWait as e:
+                    logger.warning("FloodWait while indexing, Error: %s", str(e))
+                    await asyncio.sleep(e.value)
+                    # Retry after sleep
+                    message = await bot.get_messages(
+                        chat_id=chat_id, message_ids=current, replies=0
+                    )
+                except asyncio.CancelledError:
+                    logger.info("Indexing task was cancelled.")
+                    await msg.edit_text("Indexing process was cancelled.")
+                    return
+                except ChannelPrivate as e:
+                    logger.warning(
+                        "Chat is private or bot is not an admin: %s : %s", chat_id, str(e)
+                    )
+                    await msg.edit_text(f"Chat is private or bot is not an admin: {chat_id}\nError: {str(e)}")
+                    return
+                except Exception as e:
+                    # Ignore deletion/access errors and move to next ID
+                    logger.warning(f"Error occurred while fetching message {current} from {chat_id}: {str(e)}")
+                    current += 1
+                    continue
+
+                if message and (message.document or message.video or message.audio):
+                    # Use the existing save_series_file_for_bulk_index from utils.py
+                    saved_flag, count = await save_series_file_for_bulk_index(message)
+                    if saved_flag:
+                        saved += count
+                        total_files += count
+                
+                current += 1
+                counter += 1
+                
+                # Update status message every 200 messages checked
+                if counter >= 200:
+                    try:
+                        kb = InlineKeyboardMarkup(
+                            [
+                                [
+                                    InlineKeyboardButton(
+                                        "Cancel Indexing", callback_data="cancel_index"
+                                    ),
+                                ]
+                            ]
+                        )
+                        await msg.edit_text(
+                            f"Total messages checked: **{current - 1}**\nTotal files saved: **{saved}**",
+                            reply_markup=kb,
+                            parse_mode=enums.ParseMode.MARKDOWN
+                        )
+                        logger.info(
+                            "INDEX: Total messages & files processed: %s : %s",
+                            current - 1,
+                            saved,
+                        )
+                    except FloodWait as e:
+                        logger.warning(
+                            "FloodWait while editing count message, sleeping for: %s seconds",
+                            str(e.value),
+                        )
+                        await asyncio.sleep(e.value)
+                    except Exception as e:
+                        logger.warning(f"Failed to edit status message: {e}")
+                    counter -= 200
+            
+        except asyncio.CancelledError:
+            logger.info("Indexing task was cancelled.")
+            await msg.edit_text("Indexing process was cancelled.")
+        except Exception as e:
+            logger.exception(e)
+            await msg.edit_text(f"Error while indexing: {e}")
+        else:
+            logger.info("Complete: Total files saved: %s", saved)
+            await msg.edit_text(f"🥳 **Complete!** Total **{saved}** Files Saved To Database!")
+        finally:
+            index_task = None
+
 def register_command_handlers(app: Client):
     """Registers all command-based message handlers with the Pyrogram client."""
 
