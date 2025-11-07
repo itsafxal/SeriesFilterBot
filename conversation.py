@@ -351,6 +351,16 @@ def register_conversation_handlers(app: Client):
                 )
             except Exception as e:
                 logger.error(f"copy fail {message_id} : {e}")
+            success_text = (
+                f"✅ Successfully sent {sent_count} files from "
+                f"**{series_name}** — Season {season} ({quality})"
+            )
+
+        await app.send_message(
+            chat_id=query.from_user.id,
+            text=success_text,
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
 
         await query.answer("✅ Sent files!", show_alert=True)
 
