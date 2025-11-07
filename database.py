@@ -54,6 +54,7 @@ def _clean_series_name_local(name: str) -> str:
         tag_regex = rf"(?:^|[\W_]+){re.escape(tag)}(?:$|[\W_]+)"
         name = re.sub(tag_regex, " ", name, flags=re.IGNORECASE).strip()
     name = re.sub(r"\s+", " ", name).strip()
+    name = re.sub(r'^(?:collection|pack|set|series|season|episode|ep|vol|volume|batch|complete|full|合集|koleksi)\b', ' ', name, flags=re.IGNORECASE)
     return name.title()
 
 def _normalized_series_from_filename(file_name: str) -> str:
