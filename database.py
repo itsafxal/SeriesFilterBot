@@ -494,3 +494,45 @@ async def save_file_to_db(file_doc: dict):
         return sql_success 
 
     return await asyncio.to_thread(sync_save)
+
+# --- NEW DELETE AND COUNT FUNCTIONS ---
+
+async def delete_all_files():
+    """delete all files from mongo + sqlite"""
+    def sync_clear():
+        # mongo
+        files_collection.delete_many({})
+        # sql
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM files")
+        conn.commit()
+        conn.close()
+    await asyncio.to_thread(sync_clear)
+
+
+async def delete_one_file(channel_id: int, msg_id: int):
+    """delete single file from both dbs"""
+    def sync_delete():
+        # mongo
+        files_collection.delete_one({"channel_id": channel_id, "message_id": msg_id})
+        # sqlite
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM files WHERE channel_id = ? AND message_id = ?", (channel_id, msg_id))
+        conn.commit()
+        conn.close()
+    await asyncio.to_thread(sync_delete)
+
+
+async def get_total_files():
+    """returns count from sqlite only"""
+    async with sql_db_lock:
+        def sync_total():
+            conn = sqlite3.connect(SQLITE_DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM files")
+            total = cursor.fetchone()[0]
+            conn.close()
+            return total
+        return await asyncio.to_thread(sync_total)
