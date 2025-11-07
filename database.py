@@ -42,8 +42,8 @@ _CLEAN_TAGS = [
 
 def _clean_series_name_local(name: str) -> str:
     name = re.sub(r"[._\s]+", " ", name).strip()
-    # remove channel tags/brackets/mentions
     name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", name).strip()
+    name = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', name)
     for term in _CLEAN_TAGS + [r"(19|20)\d{2}"]:
         t = term
         if term != r"(19|20)\d{2}":
