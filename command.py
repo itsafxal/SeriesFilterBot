@@ -1,150 +1,3 @@
-# command.py - MODIFIED for interactive and link-based indexing with deprecation fix
-# FIX: Changed enums.MessageOrigin.CHAT to enums.MessageOriginType.CHAT or similar
-# Based on the error, we assume the Enum Class name is MessageOriginType.
-
-import asyncio
-import re
-from pyrogram import Client, filters, enums
-from pyrogram.errors import FloodWait, ChannelPrivate
-from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
-from config import logger, ADMIN_USERS, INDEX_CHANNELS, START_IMG
-from database import (
-    get_bot_state,
-    save_bot_state,
-    get_global_setting, 
-    set_global_setting,
-)
-from utils import save_series_file_for_bulk_index 
-
-# --- NEW GLOBALS AND HELPER FUNCTIONS ---
-lock = asyncio.Lock()
-media_filter = filters.document | filters.video | filters.audio
-index_task = None
-link_pattern = r"https://t\.me/c/(\d+)/(\d+)" # Pattern to match c/channel_id/message_id links
-
-def extract_links(links):
-    """
-    Extracts chat_id, start_msg_id, and last_msg_id from one or two links.
-    """
-    if len(links) == 1:
-        match = re.match(link_pattern, links[0])
-        if not match:
-            raise ValueError("Invalid link format.")
-        channel_id, last_msg_id = match.groups()
-        # Convert to -100XXXXXXXXXX format
-        chat_id = int(f"-100{channel_id}")
-        # Default start ID to 2 (1 is usually service message)
-        return chat_id, 2, int(last_msg_id)
-
-    elif len(links) == 2:
-        match1 = re.match(link_pattern, links[0])
-        match2 = re.match(link_pattern, links[1])
-        if not match1 or not match2:
-            raise ValueError("Invalid link format.")
-        channel_id1, start_msg_id = match1.groups()
-        channel_id2, last_msg_id = match2.groups()
-        if channel_id1 != channel_id2:
-            raise ValueError("Links belong to different channels.")
-        chat_id = int(f"-100{channel_id1}")
-        return chat_id, int(start_msg_id), int(last_msg_id)
-
-    raise ValueError("Invalid number of links provided.")
-
-async def index_files_task(bot, msg, chat_id, start_msg_id, last_msg_id):
-    """The main background task for sequential indexing."""
-    global index_task
-
-    total_files = 0
-    current = int(start_msg_id)
-    counter = 0
-    saved = 0
-    total = last_msg_id + 1
-
-    async with lock:
-        try:
-            while current < total:
-                try:
-                    # Fetching messages one by one to respect start/end IDs
-                    message = await bot.get_messages(
-                        chat_id=chat_id, message_ids=current, replies=0
-                    )
-                except FloodWait as e:
-                    logger.warning("FloodWait while indexing, Error: %s", str(e))
-                    await asyncio.sleep(e.value)
-                    # Retry after sleep
-                    message = await bot.get_messages(
-                        chat_id=chat_id, message_ids=current, replies=0
-                    )
-                except asyncio.CancelledError:
-                    logger.info("Indexing task was cancelled.")
-                    await msg.edit_text("Indexing process was cancelled.")
-                    return
-                except ChannelPrivate as e:
-                    logger.warning(
-                        "Chat is private or bot is not an admin: %s : %s", chat_id, str(e)
-                    )
-                    await msg.edit_text(f"Chat is private or bot is not an admin: {chat_id}\nError: {str(e)}")
-                    return
-                except Exception as e:
-                    # Ignore deletion/access errors and move to next ID
-                    logger.warning(f"Error occurred while fetching message {current} from {chat_id}: {str(e)}")
-                    current += 1
-                    continue
-
-                if message and (message.document or message.video or message.audio):
-                    # Use the existing save_series_file_for_bulk_index from utils.py
-                    saved_flag, count = await save_series_file_for_bulk_index(message)
-                    if saved_flag:
-                        saved += count
-                        total_files += count
-                
-                current += 1
-                counter += 1
-                
-                # Update status message every 200 messages checked
-                if counter >= 200:
-                    try:
-                        kb = InlineKeyboardMarkup(
-                            [
-                                [
-                                    InlineKeyboardButton(
-                                        "Cancel Indexing", callback_data="cancel_index"
-                                    ),
-                                ]
-                            ]
-                        )
-                        await msg.edit_text(
-                            f"Total messages checked: **{current - 1}**\nTotal files saved: **{saved}**",
-                            reply_markup=kb,
-                            parse_mode=enums.ParseMode.MARKDOWN
-                        )
-                        logger.info(
-                            "INDEX: Total messages & files processed: %s : %s",
-                            current - 1,
-                            saved,
-                        )
-                    except FloodWait as e:
-                        logger.warning(
-                            "FloodWait while editing count message, sleeping for: %s seconds",
-                            str(e.value),
-                        )
-                        await asyncio.sleep(e.value)
-                    except Exception as e:
-                        logger.warning(f"Failed to edit status message: {e}")
-                    counter -= 200
-            
-        except asyncio.CancelledError:
-            logger.info("Indexing task was cancelled.")
-            await msg.edit_text("Indexing process was cancelled.")
-        except Exception as e:
-            logger.exception(e)
-            await msg.edit_text(f"Error while indexing: {e}")
-        else:
-            logger.info("Complete: Total files saved: %s", saved)
-            await msg.edit_text(f"🥳 **Complete!** Total **{saved}** Files Saved To Database!")
-        finally:
-            index_task = None
-
 def register_command_handlers(app: Client):
     """Registers all command-based message handlers with the Pyrogram client."""
 
@@ -169,8 +22,67 @@ def register_command_handlers(app: Client):
             photo=START_IMG,
             caption=welcome_text,
             parse_mode=enums.ParseMode.HTML,
-            reply_markup=keyboard  
+            reply_markup=keyboard
         )
+
+    # --- NEW HANDLERS FOR ADMIN COMMANDS ---
+
+    @app.on_message(filters.command("broadcast") & filters.user(ADMIN_USERS))
+    async def broadcast_cmd(bot, msg):
+        """Broadcasts a replied-to message to all private chats."""
+        if not msg.reply_to_message:
+            return await msg.reply("reply the message you want to broadcast")
+
+        sent = 0
+        async for user in bot.get_dialogs():
+            try:
+                # Check for private chats only
+                if user.chat.type == enums.ChatType.PRIVATE:
+                    await msg.reply_to_message.copy(user.chat.id)
+                    sent += 1
+                    # Small delay to avoid FloodWait, adjust if needed
+                    await asyncio.sleep(0.1) 
+            except FloodWait as e:
+                logger.warning("FloodWait while broadcasting, sleeping for: %s seconds", str(e.value))
+                await asyncio.sleep(e.value)
+            except Exception as e:
+                # Catch other errors like blocked by user, chat invalid, etc.
+                logger.warning(f"Error broadcasting to {user.chat.id}: {e}")
+                pass
+        await msg.reply(f"✅ broadcast done — sent to **{sent}** users", parse_mode=enums.ParseMode.MARKDOWN)
+
+
+    @app.on_message(filters.command("deleteall") & filters.user(ADMIN_USERS))
+    async def deleteall_cmd(_, msg):
+        """Deletes all indexed files."""
+        await delete_all_files()
+        await msg.reply("✅ all files deleted from mongo + sqlite")
+
+
+    @app.on_message(filters.command("deletefile") & filters.user(ADMIN_USERS))
+    async def deletefile_cmd(_, msg):
+        """Deletes a single indexed file by channel and message ID."""
+        # usage: /deletefile <channel_id> <message_id>
+        if len(msg.command) < 3:
+            return await msg.reply("usage: `/deletefile -10012345 2345`", parse_mode=enums.ParseMode.MARKDOWN)
+
+        try:
+            cid = int(msg.command[1])
+            mid = int(msg.command[2])
+        except ValueError:
+             return await msg.reply("❌ Invalid channel ID or message ID. Both must be integers.", parse_mode=enums.ParseMode.MARKDOWN)
+
+        await delete_one_file(cid, mid)
+        await msg.reply(f"✅ deleted file **{cid} / {mid}**", parse_mode=enums.ParseMode.MARKDOWN)
+
+
+    @app.on_message(filters.command("total") & filters.user(ADMIN_USERS))
+    async def total_cmd(_, msg):
+        """Displays the total number of indexed files."""
+        total = await get_total_files()
+        await msg.reply(f"📦 total indexed files: **{total}**", parse_mode=enums.ParseMode.MARKDOWN)
+
+
     # --- NEW HANDLERS FOR INTERACTIVE INDEXING (FIXED) ---
 
     @app.on_message(
@@ -181,7 +93,7 @@ def register_command_handlers(app: Client):
         if lock.locked():
             await message.reply("Wait until the previous process completes.")
             return
-            
+
         user_id = message.from_user.id
         origin = message.forward_origin
         if not origin or origin.type != enums.MessageOriginType.CHANNEL:
@@ -194,7 +106,7 @@ def register_command_handlers(app: Client):
         last_msg_id = origin.message_id
         chat = origin.chat
         chat_id_input = chat.username if chat.username else chat.id
-        
+
         if isinstance(chat_id_input, str):
             try:
                 full_chat = await bot.get_chat(chat_id_input)
@@ -204,7 +116,7 @@ def register_command_handlers(app: Client):
                 return
         else:
             final_chat_id = chat_id_input
-            
+
         # Ensure the final ID is the negative integer format
         if not str(final_chat_id).startswith("-100"):
             final_chat_id = final_chat_id if final_chat_id < 0 else int(f"-100{final_chat_id}")
@@ -257,10 +169,10 @@ def register_command_handlers(app: Client):
             return
         try:
             chat_id, start_msg_id, last_msg_id = extract_links(args)
-            
+
             # Simple check to see if bot can access the last message ID
             await bot.get_messages(chat_id=chat_id, message_ids=last_msg_id)
-            
+
             kb = InlineKeyboardMarkup(
                 [
                     [
@@ -323,13 +235,13 @@ def register_command_handlers(app: Client):
         else:
             await query.message.edit_text("No active indexing process to cancel.")
         await query.answer()
-        
+
     @app.on_callback_query(filters.regex(r"^can-index$"))
     async def cancel_index_confirmation(bot, query):
         """Callback to cancel the initial confirmation menu."""
         await query.message.delete()
         await query.answer("Indexing confirmation cancelled.")
-        
+
     @app.on_message(filters.command(["index"]) & filters.user(ADMIN_USERS) & filters.private)
     async def index_comm(bot, update):
         """Provides instructions for the /index command."""
@@ -342,11 +254,11 @@ def register_command_handlers(app: Client):
 
 
     # --- OTHER ADMIN COMMANDS (Unmodified) ---
-    
+
     @app.on_message(filters.command("imdb") & filters.user(ADMIN_USERS) & filters.private)
     async def poster_toggle_command(_, message: Message):
         """Allows admin to turn the IMDB poster feature on or off."""
-        current_state = await get_global_setting("IMDB_POSTER_ENABLED", True) 
+        current_state = await get_global_setting("IMDB_POSTER_ENABLED", True)
         new_state = not current_state
         await set_global_setting("IMDB_POSTER_ENABLED", new_state)
 
@@ -362,7 +274,7 @@ def register_command_handlers(app: Client):
         try:
             if len(message.command) > 1:
                 channel_id_or_username = message.command[1]
-                
+
                 # Check for "disable" or "off"
                 if channel_id_or_username.lower() in ["disable", "off", "0"]:
                     await set_global_setting("FORCE_SUB_CHANNEL_ID", None)
@@ -378,7 +290,7 @@ def register_command_handlers(app: Client):
                 try:
                     chat = await bot.get_chat(channel_id_or_username)
                     final_channel_id = chat.id
-                    
+
                     # Store the ID in the database
                     await set_global_setting("FORCE_SUB_CHANNEL_ID", final_channel_id)
 
@@ -412,7 +324,7 @@ def register_command_handlers(app: Client):
                     f"{status}",
                     parse_mode=enums.ParseMode.MARKDOWN
                 )
-                
+
         except Exception as e:
             logger.error(f"Error in forcesub_command: {e}")
             await message.reply_text(f"An unexpected error occurred: `{e}`")
@@ -425,14 +337,14 @@ def register_command_handlers(app: Client):
                 timer = int(message.command[1])
                 if timer < 0:
                     timer = 0
-                
+
                 await set_global_setting("AUTO_DELETE_TIMER", timer)
-                
+
                 if timer > 0:
                     status = f"✅ **ON**: Menu auto-delete timer set to **{timer} seconds**."
                 else:
                     status = "❌ **OFF**: Menu auto-delete is disabled."
-                    
+
                 await message.reply_text(
                     f"🗑️ Menu Auto-Deletion feature is now set to: {status}\n\n"
                     f"Set to 0 to disable.",
@@ -446,7 +358,7 @@ def register_command_handlers(app: Client):
                     f"{status}",
                     parse_mode=enums.ParseMode.MARKDOWN
                 )
-                
+
         except ValueError:
             await message.reply_text("❌ Invalid number provided. Please use an integer for seconds.", parse_mode=enums.ParseMode.MARKDOWN)
         except Exception as e:
@@ -454,14 +366,19 @@ def register_command_handlers(app: Client):
 
     # The function must return a list of handlers for registration in main.py
     return [
-        start_command, 
-        index_files_forwarded, 
+        start_command,
+        index_files_forwarded,
         manual_index,
         forcesub_command,
-        start_index,           
-        cancel_indexing,       
-        cancel_index_confirmation, 
-        index_comm,            
-        poster_toggle_command, 
-        autodel_command
+        start_index,
+        cancel_indexing,
+        cancel_index_confirmation,
+        index_comm,
+        poster_toggle_command,
+        autodel_command,
+        # --- NEW HANDLERS ADDED HERE ---
+        broadcast_cmd,
+        deleteall_cmd,
+        deletefile_cmd,
+        total_cmd
     ]
