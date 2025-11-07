@@ -48,7 +48,13 @@ def clean_series_name(name: str) -> str:
         name = re.sub(tag_regex, " ", name, flags=re.IGNORECASE).strip()
         
     name = re.sub(r"\s+", " ", name).strip()
-    name = re.sub(r'^(?:collection|pack|set|series|season|episode|ep|vol|volume|batch|complete|full|合集|koleksi)\b', ' ', name, flags=re.IGNORECASE)
+    name = re.sub(
+    r'^(?:collection|pack|set|series|season|episode|ep|vol|volume|batch|complete|full|合集|koleksi|release|mux|rip|hq|ultra|theatre|theater|bluray|remux|webdl|webrip|web|netflix|prime|amzn|hulu|hotstar|disney|hbo|tgx|yts|subs|dub|audio|team|group)\b',
+    ' ',
+    name,
+    flags=re.IGNORECASE
+    )
+
     return name.title()
 
 def extract_quality(file_name: str) -> str:
