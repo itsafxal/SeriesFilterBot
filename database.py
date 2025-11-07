@@ -54,7 +54,12 @@ def _clean_series_name_local(name: str) -> str:
         tag_regex = rf"(?:^|[\W_]+){re.escape(tag)}(?:$|[\W_]+)"
         name = re.sub(tag_regex, " ", name, flags=re.IGNORECASE).strip()
     name = re.sub(r"\s+", " ", name).strip()
-    name = re.sub(r'^(?:collection|pack|set|series|season|episode|ep|vol|volume|batch|complete|full|合集|koleksi)\b', ' ', name, flags=re.IGNORECASE)
+    name = re.sub(
+    r'^(?:collection|pack|set|series|season|episode|ep|vol|volume|batch|complete|full|合集|koleksi|release|mux|rip|hq|ultra|theatre|theater|bluray|remux|webdl|webrip|web|netflix|prime|amzn|hulu|hotstar|disney|hbo|tgx|yts|subs|dub|audio|team|group)\b',
+    ' ',
+    name,
+    flags=re.IGNORECASE
+    )
     return name.title()
 
 def _normalized_series_from_filename(file_name: str) -> str:
