@@ -393,7 +393,45 @@ def register_conversation_handlers(app: Client):
             text=success_text,
             parse_mode=enums.ParseMode.MARKDOWN
         )
-        
+
+   # FIX: Corrected regex filter to r"^fs\|"
+    @app.on_callback_query(filters.regex(r"^fs\|"))
+    async def file_select_handler(app, query):
+        data = query.data.split('|')
+        if len(data) < 4:
+            await query.answer("❌ Error: Invalid file selection data.", show_alert=True)
+            return
+            
+        channel_id = int(data[2])
+        message_id = int(data[3])
+        await query.answer("Sending episode file...", cache_time=0)
+
+        file_entry = await get_file_by_message_id_and_channel_id(channel_id, message_id)
+
+        if not file_entry:
+            await query.answer("❌ File link not found.", show_alert=True)
+            return
+
+        file_name = file_entry.get('file_name', f"S{file_entry.get('season',0)}E{file_entry.get('episode',99)}")
+
+        try:
+            bot_username = (await app.get_me()).username
+            custom_caption = CUSTOM_CAPTION_TEXT.format(file_name=file_name, bot_username=bot_username)
+
+            await app.copy_message(
+                chat_id=query.from_user.id,
+                from_chat_id=channel_id,
+                message_id=message_id,
+                caption=custom_caption,
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+
+            await query.answer(f"✅ Sent '{file_name}'!", show_alert=True)
+
+        except Exception as e:
+            logger.error(f"Failed to copy file {message_id} from {channel_id}: {e}")
+            await query.answer("❌ Failed to send file.\nMake sure bot is admin.", show_alert=True)
+
     @app.on_callback_query(filters.regex(r"^back_to_search\|"))
     async def back_to_search_handler(app, query):
         data = query.data.split('|')
