@@ -151,12 +151,16 @@ def parse_series_info(file_name: str):
 
 async def save_series_file_for_bulk_index(message: types.Message):
     file_name = ""
-    
+
+    tg_file_id = None  # NEW
+
     if message.media:
         if message.media == enums.MessageMediaType.DOCUMENT and message.document:
             file_name = message.document.file_name or ""
+            tg_file_id = message.document.file_id  # NEW
         elif message.media == enums.MessageMediaType.VIDEO and message.video:
             file_name = message.video.file_name or ""
+            tg_file_id = message.video.file_id  # NEW
     
     if not file_name and message.caption:
         file_name = message.caption.split('\n')[0].strip()
@@ -177,7 +181,6 @@ async def save_series_file_for_bulk_index(message: types.Message):
             logger.info(f"[SKIP] Duplicate ignored → {normalized_name} | S{season}E{episode} | {quality} | {language}")
             return False, 0
 
-            
     file_doc = {
         "channel_id": message.chat.id,
         "message_id": message.id,
@@ -186,7 +189,8 @@ async def save_series_file_for_bulk_index(message: types.Message):
         "season": season,
         "episode": episode,
         "quality": quality, 
-        "language": language, 
+        "language": language,
+        "file_id": tg_file_id,   # NEW
         "timestamp": message.date
     }
 
