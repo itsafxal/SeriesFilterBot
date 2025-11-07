@@ -476,13 +476,15 @@ async def save_file_to_db(file_doc: dict):
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT OR REPLACE INTO files 
-                (channel_id, message_id, file_name, normalized_name, season, episode, quality, language)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (channel_id, message_id, file_name, normalized_name, season, episode, quality, language, file_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 file_doc["channel_id"], file_doc["message_id"], file_doc["file_name"], 
                 file_doc["normalized_name"], file_doc["season"], file_doc["episode"], 
-                file_doc["quality"], file_doc["language"]
+                file_doc["quality"], file_doc["language"],
+                file_doc.get("file_id")  # NEW
             ))
+
             conn.commit()
             conn.close()
             sql_success = True
