@@ -349,6 +349,7 @@ def register_conversation_handlers(app: Client):
                     caption=custom_caption,
                     parse_mode=enums.ParseMode.MARKDOWN
                 )
+                sent_count += 1
             except Exception as e:
                 logger.error(f"copy fail {message_id} : {e}")
             success_text = (
