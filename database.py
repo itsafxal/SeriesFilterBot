@@ -302,19 +302,34 @@ async def get_series_summary(series_name: str):
 # --- SEARCH AND RETRIEVAL FUNCTIONS ---
 
 async def search_series(query: str):
-    """Searches SQLITE for unique series names matching the query using LIKE."""
     async with sql_db_lock:
         def sync_search():
             conn = sqlite3.connect(SQLITE_DB_PATH)
             cursor = conn.cursor()
-            like_query = f"%{'%'.join(query.strip().split())}%"
+
+            q = query.strip()
+
+            # 1) exact match first
             cursor.execute("""
                 SELECT DISTINCT normalized_name FROM files 
-                WHERE normalized_name LIKE ? COLLATE NOCASE
-            """, (like_query,))
-            results = [row[0] for row in cursor.fetchall()]
+                WHERE normalized_name = ? COLLATE NOCASE
+            """, (q,))
+            rows = [r[0] for r in cursor.fetchall()]
+            if rows:
+                conn.close()
+                return rows
+
+            # 2) whole word match only
+            pattern = f"% {q} %"
+            cursor.execute("""
+                SELECT DISTINCT normalized_name FROM files 
+                WHERE ' ' || normalized_name || ' ' LIKE ? COLLATE NOCASE
+            """, (pattern,))
+            rows = [r[0] for r in cursor.fetchall()]
+
             conn.close()
-            return results
+            return rows
+
         return await asyncio.to_thread(sync_search)
 
 async def get_unique_languages_by_name(series_name: str):
