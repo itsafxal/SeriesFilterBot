@@ -25,6 +25,7 @@ LANG_CODE_PATTERN = "|".join(LANGUAGE_CODES.keys())
 def clean_series_name(name: str) -> str:
     """Aggressively cleans the series name by removing common tags and metadata."""
     name = re.sub(r"[. _]+", " ", name).strip()
+    name = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', name)
     common_terms = [
         "4K", "1080P", "720P", "HDRIP", "WEB-DL", "WEBRIP", "BLURAY", "HDTV", 
         "AMZN", "NETFLIX", "HULU", "DDP5.1", "X265", "x264", "10BIT", "HEVC", 
