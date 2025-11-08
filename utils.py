@@ -170,9 +170,11 @@ async def save_series_file_for_bulk_index(message: types.Message):
 
     normalized_name, season, episode, quality, language = parse_series_info(file_name)
     
-    if season <= 0:
-        logger.info(f"[SKIP: MOVIE] {file_name}")
+    # skip movies only when no season AND no episode
+    if season == 0 and episode == 0:
+        logger.info(f"[SKIP MOVIE] {file_name}")
         return False, 0
+
     
 
     # ✅ allow only 1 file per episode
