@@ -19,6 +19,7 @@ from database import (
     delete_all_files, 
     delete_one_file, 
     get_total_files,
+    get_total_users,
 )
 from utils import save_series_file_for_bulk_index 
 
@@ -227,7 +228,7 @@ def register_command_handlers(app: Client):
     async def total_cmd(_, msg):
         """Displays the total number of indexed files."""
         total = await get_total_files()
-        users = await get_all_users()
+        users = await get_total_users()
         await msg.reply(f"📦 Total Files: **{total}**\n👤 Total Users **{users}**", parse_mode=enums.ParseMode.MARKDOWN)
 
 
