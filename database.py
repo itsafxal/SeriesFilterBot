@@ -554,3 +554,11 @@ async def get_all_users():
         return [u["_id"] for u in users_collection.find({})]
     return await asyncio.to_thread(sync_get)
 
+async def get_total_users() -> int:
+    """Returns the total number of unique users from the MongoDB users collection."""
+    def sync_total_users():
+        # Use count_documents({}) for an accurate count of all documents/users
+        return users_collection.count_documents({}) 
+    return await asyncio.to_thread(sync_total_users)
+    
+
