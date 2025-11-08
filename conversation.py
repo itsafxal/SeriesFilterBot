@@ -19,7 +19,7 @@ from database import (
     get_file_by_message_id_and_channel_id
 )
 # Assuming DEFAULT_POSTER_URL is available in config
-from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS, DEFAULT_POSTER_URL, ABOUT_TEXT
+from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS, DEFAULT_POSTER_URL, ABOUT_TEXT, ADMIN_USERS, ADMIN_TEXT
 from utils import clean_series_name, save_series_file_for_bulk_index
 from movie_fetcher import get_imdb_data # Kept for get_imdb_data usage (for link and data, not poster)
 
@@ -579,7 +579,7 @@ def register_conversation_handlers(app: Client):
     @app.on_callback_query(filters.regex(r"^admin_cmd\|"))
     async def admin_menu_handler(app, query):
         user_id = query.from_user.id
-        if user_id != ADMIN_USER_ID:
+        if user_id != ADMIN_USERS:
             await query.answer("You are not authorized. Only the admin can open this menu.", show_alert=True)
         return 
         about_text = ADMIN_TEXT
