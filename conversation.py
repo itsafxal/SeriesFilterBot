@@ -576,6 +576,41 @@ def register_conversation_handlers(app: Client):
 
         await query.answer("Back To Home")
 
+    @app.on_callback_query(filters.regex(r"^admin_cmd\|"))
+    async def admin_menu_handler(app, query):
+        user_id = query.from_user.id
+        if user_id != ADMIN_USER_ID:
+        await query.answer("You are not authorized. Only the admin can open this menu.", show_alert=True)
+        return 
+        about_text = ADMIN_TEXT
+        ABOUT_KEYBOARD = InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("🔙 Back", callback_data="cyber|"),
+            InlineKeyboardButton("Close", callback_data="close")
+        ]])
+        reply_markup = ABOUT_KEYBOARD
+        try:
+            # Edit the caption (since it should be a photo message)
+            await query.message.edit_caption(
+                about_text, 
+                reply_markup=reply_markup, 
+                parse_mode=enums.ParseMode.HTML # Passed parse_mode to edit_caption
+            )
+        except MessageNotModified:
+            pass
+        except Exception as e:
+            logger.error(f"Error editing message caption in about_menu_handler: {e}")
+            # Fallback
+            try:
+                await query.message.edit_text(
+                    about_text, 
+                    reply_markup=reply_markup, 
+                    parse_mode=enums.ParseMode.HTML # Passed parse_mode to edit_text
+                )
+            except:
+                pass
+            
+        await query.answer("Showing about information.")
 
     # --- NEW HANDLER: About Menu Handler ---
     @app.on_callback_query(filters.regex(r"^about\|"))
@@ -625,5 +660,5 @@ def register_conversation_handlers(app: Client):
         media_handler, search_handler, season_select_handler, language_select_handler,
         back_to_language_handler, quality_select_handler, file_select_handler,
         back_to_search_handler, help_menu_handler, about_menu_handler,      
-        cyber_menu_handler, close_menu_handler
+        admin_menu_handler, cyber_menu_handler, close_menu_handler
     ]
