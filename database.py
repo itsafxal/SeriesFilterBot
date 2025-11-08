@@ -115,7 +115,8 @@ def create_sql_schema(conn):
             season INTEGER NOT NULL,
             episode INTEGER NOT NULL,
             quality TEXT NOT NULL,
-            language TEXT NOT NULL,  -- **NEW COLUMN**
+            language TEXT NOT NULL, 
+            file_id TEXT,  
             UNIQUE(channel_id, message_id)
         )
     """)
