@@ -578,9 +578,9 @@ def register_conversation_handlers(app: Client):
 
     @app.on_callback_query(filters.regex(r"^admin_cmd\|"))
     async def admin_menu_handler(app, query):
+        user_id = query.from_user.id
         print(f"User ID who clicked: {user_id}")
         print(f"Expected Admin ID: {ADMIN_USERS}")
-        user_id = query.from_user.id
         if user_id != ADMIN_USERS:
             await query.answer("You are not authorized. Only the admin can open this menu.", show_alert=True)
         return 
