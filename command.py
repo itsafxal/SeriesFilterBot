@@ -10,6 +10,8 @@ from pyrogram.errors import FloodWait, ChannelPrivate
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from config import logger, ADMIN_USERS, INDEX_CHANNELS, START_IMG
 from database import (
+    add_user,
+    get_all_users,
     get_bot_state,
     save_bot_state,
     get_global_setting, 
@@ -155,6 +157,7 @@ def register_command_handlers(app: Client):
     @app.on_message(filters.command("start") & filters.private)
     async def start_command(_, message: Message):
         """Handles the /start command."""
+        await add_user(message.from_user.id)
         welcome_text = (
             "<b>👋 Hey Bro,</b>\n\n"
             "<b>I Am Your Series-Filter Bot- advanced, powerful and designed to make your group to Series Request Group! You Can Also Search Series Here</b>\n\n"
@@ -184,24 +187,17 @@ def register_command_handlers(app: Client):
         if not msg.reply_to_message:
             return await msg.reply("reply the message you want to broadcast")
 
+        users = await get_all_users()
         sent = 0
-        async for user in bot.get_dialogs():
-            try:
-                # Check for private chats only
-                if user.chat.type == enums.ChatType.PRIVATE:
-                    await msg.reply_to_message.copy(user.chat.id)
-                    sent += 1
-                    # Small delay to avoid FloodWait, adjust if needed
-                    await asyncio.sleep(0.1) 
-            except FloodWait as e:
-                logger.warning("FloodWait while broadcasting, sleeping for: %s seconds", str(e.value))
-                await asyncio.sleep(e.value)
-            except Exception as e:
-                # Catch other errors like blocked by user, chat invalid, etc.
-                logger.warning(f"Error broadcasting to {user.chat.id}: {e}")
-                pass
-        await msg.reply(f"✅ broadcast done — sent to **{sent}** users", parse_mode=enums.ParseMode.MARKDOWN)
+        for uid in users:
+        try:
+            await msg.reply_to_message.copy(uid)
+            sent += 1
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            logger.warning(f"broadcast fail {uid}: {e}")
 
+    await msg.reply(f"✅ broadcast done — sent to **{sent}** users")
 
     @app.on_message(filters.command("deleteall") & filters.user(ADMIN_USERS))
     async def deleteall_cmd(_, msg):
@@ -231,7 +227,8 @@ def register_command_handlers(app: Client):
     async def total_cmd(_, msg):
         """Displays the total number of indexed files."""
         total = await get_total_files()
-        await msg.reply(f"📦 total indexed files: **{total}**", parse_mode=enums.ParseMode.MARKDOWN)
+        users = await get_all_users()
+        await msg.reply(f"📦 Total Files: **{total}**\n👤 Total Users **{users}**", parse_mode=enums.ParseMode.MARKDOWN)
 
 
     # --- NEW HANDLERS FOR INTERACTIVE INDEXING (FIXED) ---
