@@ -190,15 +190,15 @@ def register_command_handlers(app: Client):
         users = await get_all_users()
         sent = 0
         for uid in users:
-        try: # <--- ERROR LOCATION: Missing indentation
-            await msg.reply_to_message.copy(uid)
-            sent += 1
-            await asyncio.sleep(0.1)
-        except Exception as e:
-            logger.warning(f"broadcast fail {uid}: {e}")
+            try:  # <-- FIX: Correctly indented to be part of the 'for' loop
+                await msg.reply_to_message.copy(uid)
+                sent += 1
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                logger.warning(f"broadcast fail {uid}: {e}")
 
-    await msg.reply(f"✅ broadcast done — sent to **{sent}** users") # <--- Also needs correction
-
+        await msg.reply(f"✅ broadcast done — sent to **{sent}** users")
+        
     @app.on_message(filters.command("deleteall") & filters.user(ADMIN_USERS))
     async def deleteall_cmd(_, msg):
         """Deletes all indexed files."""
