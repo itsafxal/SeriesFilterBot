@@ -169,10 +169,11 @@ async def save_series_file_for_bulk_index(message: types.Message):
         return False, 0 
 
     normalized_name, season, episode, quality, language = parse_series_info(file_name)
-
-    # if no season detected -> default
+    
     if season <= 0:
-        season = 1
+    logger.info(f"[SKIP: MOVIE] {file_name}")
+    return False, 0
+    
 
     # ✅ allow only 1 file per episode
     existing = await get_all_files_by_season_and_quality(normalized_name, season, quality, language)
