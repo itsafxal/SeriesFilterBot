@@ -23,6 +23,10 @@ CUSTOM_CAPTION_TEXT = """
 🔗 **Please Use Our Bot **
 @{bot_username}
 """
+
+ADMIN_TEXT ="""
+HLO TEST
+"""
 ABOUT_TEXT = """ <blockquote>
 ‣ ᴍʏ ɴᴀᴍᴇ : <a href='https://t.me/TGxSeriesBot'>Sᴇʀɪᴇs Bᴏᴛ</a>
 ‣ ᴄʀᴇᴀᴛᴏʀ : <a href='tg://settings'>ᴛʜɪs ᴘᴇʀsᴏɴ</a>
