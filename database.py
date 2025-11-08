@@ -11,6 +11,7 @@ mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["SeriesBotDB"]
 files_collection = db["files"] 
 state_collection = db["bot_state"] 
+users_collection = db["users"]
 
 # Ensure MongoDB Indexes (for search/backup if needed)
 try:
@@ -537,3 +538,19 @@ async def get_total_files():
             conn.close()
             return total
         return await asyncio.to_thread(sync_total)
+
+async def add_user(user_id: int):
+    def sync_add():
+        users_collection.update_one(
+            {"_id": user_id},
+            {"$set": {"_id": user_id}},
+            upsert=True
+        )
+    await asyncio.to_thread(sync_add)
+
+
+async def get_all_users():
+    def sync_get():
+        return [u["_id"] for u in users_collection.find({})]
+    return await asyncio.to_thread(sync_get)
+
