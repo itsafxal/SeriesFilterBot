@@ -14,6 +14,9 @@ from database import (
     save_bot_state,
     get_global_setting, 
     set_global_setting,
+    delete_all_files, 
+    delete_one_file, 
+    get_total_files,
 )
 from utils import save_series_file_for_bulk_index 
 
