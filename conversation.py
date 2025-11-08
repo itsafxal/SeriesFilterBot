@@ -580,7 +580,7 @@ def register_conversation_handlers(app: Client):
     async def admin_menu_handler(app, query):
         user_id = query.from_user.id
         if user_id != ADMIN_USER_ID:
-        await query.answer("You are not authorized. Only the admin can open this menu.", show_alert=True)
+            await query.answer("You are not authorized. Only the admin can open this menu.", show_alert=True)
         return 
         about_text = ADMIN_TEXT
         ABOUT_KEYBOARD = InlineKeyboardMarkup(
