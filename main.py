@@ -5,9 +5,9 @@ import asyncio
 from pyrogram import Client
 from pyrogram.errors import FloodWait
 from command import register_command_handlers
-from conversation import register_conversation_handlers
+from conversation import register_conversation_handlers, SERIES_CACHE, SERIES_CACHE_LC
 # Ensure get_all_users is imported from database
-from database import initialize_sql_db, get_all_users 
+from database import initialize_sql_db, get_all_users, search_series
 from config import API_ID, API_HASH, BOT_TOKEN, logger
 
 # --- Notification Function ---
@@ -65,7 +65,9 @@ async def run_bot_async(app: Client):
     
     # 1. Start the client to establish the connection and make it ready for sending messages.
     await app.start()
-    
+    SERIES_CACHE[:] = await search_series("")
+    SERIES_CACHE_LC[:] = [x.lower() for x in SERIES_CACHE]
+    logger.info(f"SERIES CACHE LOADED: {len(SERIES_CACHE)} entries")
     # 2. Schedule the notification task to run concurrently after the client is connected.
     asyncio.create_task(notify_users_of_restart(app))
     
