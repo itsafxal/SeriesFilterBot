@@ -14,9 +14,12 @@ INDEX_CHANNELS = [-1001996538290]
 ADMIN_USERS = [5483128891] # ⚠️ REPLACE ME: Your Telegram User ID(s)
 FORCE_SUB_CHANNEL = None   
 
+#Image/Poster Configuration
 START_IMG = "https://sanishtech.com/i/690cfef2312bd-1762459378.jpg"
 DEFAULT_POSTER_URL = "https://sanishtech.com/i/690ceab460363-1762454196.jpg"
+OMDB_API_KEY = ""
 
+#captions
 CUSTOM_CAPTION_TEXT = """
 `{file_name}`
 
