@@ -1,3 +1,4 @@
+
 import asyncio
 import re
 import requests
@@ -6,7 +7,7 @@ from pyrogram.types import (
     Message,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    InputMediaPhoto, # Added for editing message to include photo
+    InputMediaPhoto,
 )
 from pyrogram.errors import MessageNotModified
 from database import (
@@ -21,8 +22,11 @@ from database import (
 # Assuming DEFAULT_POSTER_URL is available in config
 from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS, DEFAULT_POSTER_URL, ABOUT_TEXT, ADMIN_USERS, ADMIN_TEXT
 from utils import clean_series_name, save_series_file_for_bulk_index
-from movie_fetcher import get_imdb_data # Kept for get_imdb_data usage (for link and data, not poster)
+from movie_fetcher import get_imdb_data
+import difflib
 
+SERIES_CACHE = []
+SERIES_CACHE_LC = []
 MAX_CALLBACK_LENGTH = 50
 
 # --- Helper Functions ---
@@ -170,6 +174,11 @@ def register_conversation_handlers(app: Client):
             saved, count = await save_series_file_for_bulk_index(message)
             if saved:
                 logger.info(f"RTI: Indexed {count} new file(s) from channel {message.chat.id}")
+                global SERIES_CACHE, SERIES_CACHE_LC
+                SERIES_CACHE = await search_series("")
+                SERIES_CACHE_LC = [x.lower() for x in SERIES_CACHE]
+
+
 
 
     @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"])) # <--- ADD forcesub
@@ -196,11 +205,31 @@ def register_conversation_handlers(app: Client):
         unique_names = await search_series(query)
 
         if not unique_names:
-            # Reply directly if no series found
-            await message.reply_text(f"❌ No series found `<code>{query}</code>`", parse_mode=enums.ParseMode.HTML)
-            return
-
+            if SERIES_CACHE:
+                suggestions = difflib.get_close_matches(query.lower(), SERIES_CACHE_LC, n=3, cutoff=0.55)
+                if suggestions:
+                    rows = []
+                    for s in suggestions:
+                        idx = SERIES_CACHE_LC.index(s)
+                        real_name = SERIES_CACHE[idx]
+                        rows.append([InlineKeyboardButton(f"🔍 {real_name}", callback_data=f"spellfix|{real_name}")])
+                    
+                    suggestions_markup = InlineKeyboardMarkup(rows)
+                    
+                    await message.reply_text(
+                        f"❌ No exact match found for `<code>{query}</code>`\n\n**Maybe you meant?**",
+                        reply_markup=suggestions_markup, # Ensure reply_markup is used
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+                    return
+            await message.reply_text(
+                f"❌ No series found `<code>{query}</code>`",
+                parse_mode=enums.ParseMode.HTML
+            ) 
+            return # This return is essential, preventing the IndexError below
+        
         # Use the first series found, skipping complex matching logic
+        # Execution reaches here ONLY if unique_names is NOT empty
         series_to_display = clean_series_name(unique_names[0])
 
         # Skip IMDB data fetching and poster URL extraction. Use Default Poster.
@@ -254,7 +283,7 @@ def register_conversation_handlers(app: Client):
     async def season_select_handler(app, query):
         
         data = query.data.split("|")
-                
+              
         if len(data) < 3:
             logger.error(f"Malformed callback data for season_select_handler: {query.data}")
             await query.answer("❌ Error: Invalid season selection data. Please try searching again.", show_alert=True)
@@ -363,7 +392,7 @@ def register_conversation_handlers(app: Client):
                         chat_id=query.from_user.id,
                         document=file_id,
                         caption=custom_caption,
-                        parse_mode=enums.ParseMode.MARKDOWN
+                        parse_mode="markdown"
                     )
                 else:
                     # 🎯 FIX: Copy the original message if file_id is not available
@@ -372,7 +401,7 @@ def register_conversation_handlers(app: Client):
                         from_chat_id=channel_id,
                         message_id=message_id,
                         caption=custom_caption,
-                        parse_mode=enums.ParseMode.MARKDOWN
+                        parse_mode="markdown"
                     )
                 
                 sent_count += 1 # Increment only on successful send/copy
@@ -391,10 +420,10 @@ def register_conversation_handlers(app: Client):
         await app.send_message(
             chat_id=query.from_user.id,
             text=success_text,
-            parse_mode=enums.ParseMode.MARKDOWN
+            parse_mode="markdown"
         )
 
-   # FIX: Corrected regex filter to r"^fs\|"
+    # FIX: Corrected regex filter to r"^fs\|"
     @app.on_callback_query(filters.regex(r"^fs\|"))
     async def file_select_handler(app, query):
         data = query.data.split('|')
@@ -581,9 +610,13 @@ def register_conversation_handlers(app: Client):
         user_id = query.from_user.id
         print(f"User ID who clicked: {user_id}")
         print(f"Expected Admin ID: {ADMIN_USERS}")
+        
+        # NOTE: If ADMIN_USERS is a single integer, the comparison below is correct.
+        # If ADMIN_USERS is a list, you'd need `if user_id not in ADMIN_USERS:`
         if user_id != ADMIN_USERS:
             await query.answer("You are not authorized. Only the admin can open this menu.", show_alert=True)
-        return 
+            return # Added return here to prevent unauthorized users from proceeding
+            
         about_text = ADMIN_TEXT
         ABOUT_KEYBOARD = InlineKeyboardMarkup(
         [[
@@ -601,7 +634,7 @@ def register_conversation_handlers(app: Client):
         except MessageNotModified:
             pass
         except Exception as e:
-            logger.error(f"Error editing message caption in about_menu_handler: {e}")
+            logger.error(f"Error editing message caption in admin_menu_handler: {e}")
             # Fallback
             try:
                 await query.message.edit_text(
@@ -649,7 +682,14 @@ def register_conversation_handlers(app: Client):
             
         await query.answer("Showing about information.")
 
-
+    @app.on_callback_query(filters.regex(r"^spellfix\|"))
+    async def spellfix_handler(app, query):
+        series = query.data.split("|")[1]
+        fake = query.message
+        fake.text = series
+        await search_handler(app, fake)
+        await query.answer()
+        
     @app.on_callback_query(filters.regex(r"close"))
     async def close_menu_handler(_, query):
         try:
@@ -662,5 +702,6 @@ def register_conversation_handlers(app: Client):
         media_handler, search_handler, season_select_handler, language_select_handler,
         back_to_language_handler, quality_select_handler, file_select_handler,
         back_to_search_handler, help_menu_handler, about_menu_handler,      
-        admin_menu_handler, cyber_menu_handler, close_menu_handler
+        admin_menu_handler, cyber_menu_handler, close_menu_handler,
+        spellfix_handler
     ]
