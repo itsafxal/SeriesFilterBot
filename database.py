@@ -1,3 +1,4 @@
+
 # database.py
 import asyncio
 import re
@@ -561,4 +562,3 @@ async def get_total_users() -> int:
         return users_collection.count_documents({}) 
     return await asyncio.to_thread(sync_total_users)
     
-
