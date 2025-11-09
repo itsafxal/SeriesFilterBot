@@ -1,4 +1,5 @@
 
+
 # command.py - MODIFIED for interactive and link-based indexing with deprecation fix
 # FIX: Changed enums.MessageOrigin.CHAT to enums.MessageOriginType.CHAT or similar
 # Based on the error, we assume the Enum Class name is MessageOriginType.
