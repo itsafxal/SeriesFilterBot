@@ -17,7 +17,7 @@ FORCE_SUB_CHANNEL = None
 #Image/Poster Configuration
 START_IMG = "https://sanishtech.com/i/690cfef2312bd-1762459378.jpg"
 DEFAULT_POSTER_URL = "https://sanishtech.com/i/690ceab460363-1762454196.jpg"
-OMDB_API_KEY = ""
+OMDB_API_KEY = "b22e0756"
 
 #captions
 CUSTOM_CAPTION_TEXT = """
