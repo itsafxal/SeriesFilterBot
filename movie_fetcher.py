@@ -1,42 +1,33 @@
-from imdb import IMDb
-
-ia = IMDb()
+import requests
+import html
+from config import OMDB_API_KEY
 
 def get_imdb_data(query: str):
     try:
-        results = ia.search_movie(query)
-        if not results:
+        url = "https://www.omdbapi.com/"
+        params = {
+            "apikey": OMDB_API_KEY,
+            "t": query,
+            "plot": "short"
+        }
+
+        r = requests.get(url, params=params)
+        data = r.json()
+
+        if data.get("Response") != "True":
             return None
 
-        mid = results[0].movieID
-        m = ia.get_movie(mid)
-
-        # better poster resolve
-        poster = None
-
-        if 'full-size cover url' in m:
-            poster = m['full-size cover url']
-        elif 'cover url' in m:
-            poster = m['cover url']
-        elif 'full-size poster' in m:
-            poster = m['full-size poster']
-        elif 'poster' in m:
-            poster = m['poster']
-
-        # NEW – fallback to moviePhoto url (this works 95% cases)
-        if not poster and 'movie photo' in m:
-            poster = m['movie photo']
-
+        poster = data.get("Poster")
         if poster and poster.startswith("http://"):
             poster = poster.replace("http://", "https://")
 
         return {
-            "title": m.get("title", query),
-            "year": m.get("year", "?"),
-            "genres": ", ".join(m.get("genres", [])),
-            "rating": m.get("rating", "?"),
+            "title": data.get("Title", query),
+            "year": data.get("Year", "?"),
+            "genres": data.get("Genre", ""),
+            "rating": data.get("imdbRating", "?"),
             "poster": poster,
-            "link": f"https://www.imdb.com/title/tt{mid}/"
+            "link": f"https://www.imdb.com/title/{data.get('imdbID')}/"
         }
 
     except Exception:
