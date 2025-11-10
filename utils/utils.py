@@ -186,16 +186,24 @@ async def save_series_file_for_bulk_index(message: types.Message):
             logger.info(f"[SKIP] Duplicate ignored → {normalized_name} | S{season}E{episode} | {quality} | {language}")
             return False, 0
 
+    # Fetch OMDb poster (falls back to DEFAULT_POSTER if not found)
+    try:
+        poster_url = await get_series_poster_async(normalized_name)
+    except Exception:
+        # safety: never break saving if poster lookup fails
+        poster_url = None
+
     file_doc = {
         "channel_id": message.chat.id,
         "message_id": message.id,
-        "file_name": file_name, 
-        "normalized_name": normalized_name, 
+        "file_name": file_name,
+        "normalized_name": normalized_name,
         "season": season,
         "episode": episode,
-        "quality": quality, 
+        "quality": quality,
         "language": language,
         "file_id": tg_file_id,   # NEW
+        "poster": poster_url,    # <-- added poster field
         "timestamp": message.date
     }
 
