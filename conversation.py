@@ -711,11 +711,9 @@ def register_conversation_handlers(app: Client):
     @app.on_callback_query(filters.regex(r"^spellfix\|"))
     async def spellfix_handler(app, query):
         series = query.data.split("|")[1]
-        fake = query.message
-        fake.text = series
-        await search_handler(app, fake)
+        await app.send_message(query.from_user.id, series)
         await query.answer()
-        
+
     @app.on_callback_query(filters.regex(r"close"))
     async def close_menu_handler(_, query):
         try:
