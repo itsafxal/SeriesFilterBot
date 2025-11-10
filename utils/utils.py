@@ -165,21 +165,19 @@ async def save_series_file_for_bulk_index(message: types.Message):
         elif message.media == enums.MessageMediaType.VIDEO and message.video:
             file_name = message.video.file_name or ""
             tg_file_id = message.video.file_id  # NEW
-    
+
     if not file_name and message.caption:
         file_name = message.caption.split('\n')[0].strip()
 
     if not file_name:
-        return False, 0 
+        return False, 0
 
     normalized_name, season, episode, quality, language = parse_series_info(file_name)
-    
+
     # skip movies only when no season AND no episode
     if season == 0 and episode == 0:
         logger.info(f"[SKIP MOVIE] {file_name}")
         return False, 0
-
-    
 
     # ✅ allow only 1 file per episode
     existing = await get_all_files_by_season_and_quality(normalized_name, season, quality, language)
@@ -190,12 +188,12 @@ async def save_series_file_for_bulk_index(message: types.Message):
 
     # Fetch OMDb poster (falls back to DEFAULT_POSTER if not found)
     try:
-    poster_url = await get_series_poster_async(normalized_name)
-    # ensure not None
-    poster_url = poster_url or DEFAULT_POSTER
-except Exception as e:
-    logger.warning(f"[OMDB ERROR] {normalized_name} -> {e}")
-    poster_url = DEFAULT_POSTER
+        poster_url = await get_series_poster_async(normalized_name)
+        # ensure not None/empty
+        poster_url = poster_url or DEFAULT_POSTER
+    except Exception as e:
+        logger.warning(f"[OMDB ERROR] {normalized_name} -> {e}")
+        poster_url = DEFAULT_POSTER
 
     file_doc = {
         "channel_id": message.chat.id,
