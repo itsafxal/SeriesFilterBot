@@ -23,7 +23,7 @@ from database import (
 # Assuming DEFAULT_POSTER_URL is available in config
 from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS, DEFAULT_POSTER_URL, ABOUT_TEXT, ADMIN_USERS, ADMIN_TEXT
 from utils import clean_series_name, save_series_file_for_bulk_index
-from movie_fetcher import get_imdb_data
+from imdb import get_imdb_data
 import difflib
 
 SERIES_CACHE = []
