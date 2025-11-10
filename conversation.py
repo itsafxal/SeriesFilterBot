@@ -820,5 +820,5 @@ def register_conversation_handlers(app: Client):
         back_to_language_handler, quality_select_handler, file_select_handler,
         back_to_search_handler, help_menu_handler, about_menu_handler,
         admin_menu_handler, cyber_menu_handler, close_menu_handler,
-        search_original_handler,
+        close_suggestion_handler, sugg_select_handler
     ]
