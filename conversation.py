@@ -1,4 +1,3 @@
-
 import asyncio
 import re
 import requests
@@ -232,9 +231,26 @@ def register_conversation_handlers(app: Client):
         # Execution reaches here ONLY if unique_names is NOT empty
         series_to_display = clean_series_name(unique_names[0])
 
-        # Skip IMDB data fetching and poster URL extraction. Use Default Poster.
-        poster_url = DEFAULT_POSTER_URL
+        # --- MODIFICATION: Add IMDB Poster Fetching Logic with Global Setting Check ---
+        imdb_data = None
+        poster_url = DEFAULT_POSTER_URL # Initialize with default
+
+        # 🚀 NEW CHECK: Get IMDB_POSTER_ENABLED setting, default to True
+        imdb_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
         
+        if imdb_enabled:
+            try:
+                # Fetch IMDB data asynchronously
+                imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_to_display)
+            except Exception as e:
+                logger.error(f"Failed to fetch IMDB data for {series_to_display}: {e}")
+                pass # Use DEFAULT_POSTER_URL on failure
+
+            # Determine the poster URL: IMDb poster if available, otherwise use default
+            if imdb_data and imdb_data.get('poster'):
+                poster_url = imdb_data.get('poster')
+        # --- END MODIFICATION ---
+
         summary = await get_series_summary(series_to_display)
         
         languages_list = ", ".join(summary.get('languages', []))
@@ -387,21 +403,21 @@ def register_conversation_handlers(app: Client):
                 
                 # Prefer sending by file_id if available, otherwise copy the message
                 if file_id:
-                    # 🎯 FIX: Use send_document if file_id is available (for faster sending/direct access)
+                    # 🎯 FIX 1: Use enums.ParseMode.MARKDOWN
                     await app.send_document(
                         chat_id=query.from_user.id,
                         document=file_id,
                         caption=custom_caption,
-                        parse_mode="markdown"
+                        parse_mode=enums.ParseMode.MARKDOWN
                     )
                 else:
-                    # 🎯 FIX: Copy the original message if file_id is not available
+                    # 🎯 FIX 2: Use enums.ParseMode.MARKDOWN
                     await app.copy_message(
                         chat_id=query.from_user.id,
                         from_chat_id=channel_id,
                         message_id=message_id,
                         caption=custom_caption,
-                        parse_mode="markdown"
+                        parse_mode=enums.ParseMode.MARKDOWN
                     )
                 
                 sent_count += 1 # Increment only on successful send/copy
@@ -417,10 +433,11 @@ def register_conversation_handlers(app: Client):
             f"**{series_name}** — Season {season} ({quality})"
         )
 
+        # 🎯 FIX 3: Use enums.ParseMode.MARKDOWN
         await app.send_message(
             chat_id=query.from_user.id,
             text=success_text,
-            parse_mode="markdown"
+            parse_mode=enums.ParseMode.MARKDOWN
         )
 
     # FIX: Corrected regex filter to r"^fs\|"
@@ -447,6 +464,7 @@ def register_conversation_handlers(app: Client):
             bot_username = (await app.get_me()).username
             custom_caption = CUSTOM_CAPTION_TEXT.format(file_name=file_name, bot_username=bot_username)
 
+            # 🎯 FIX 4: Use enums.ParseMode.MARKDOWN
             await app.copy_message(
                 chat_id=query.from_user.id,
                 from_chat_id=channel_id,
@@ -470,15 +488,21 @@ def register_conversation_handlers(app: Client):
             
         series_name = data[1]
         imdb_data = None
-
-        try:
-            # We still fetch IMDB data here to get the poster when going back
-            imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_name)
-        except:
-            pass
+        poster_url = DEFAULT_POSTER_URL
         
-        # Get poster URL for back action
-        poster_url = imdb_data.get('poster') if imdb_data and imdb_data.get('poster') else DEFAULT_POSTER_URL
+        # 🚀 NEW CHECK: Get IMDB_POSTER_ENABLED setting, default to True
+        imdb_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
+
+        if imdb_enabled:
+            try:
+                # We still fetch IMDB data here to get the poster when going back
+                imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_name)
+            except:
+                pass
+            
+            # Get poster URL for back action
+            if imdb_data and imdb_data.get('poster'):
+                 poster_url = imdb_data.get('poster')
         
         summary = await get_series_summary(series_name)
         
