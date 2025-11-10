@@ -1,3 +1,5 @@
+#conversation.py
+
 import asyncio
 import re
 import requests
@@ -250,6 +252,11 @@ def register_conversation_handlers(app: Client):
             if imdb_data and imdb_data.get('poster'):
                 poster_url = imdb_data.get('poster')
         # --- END MODIFICATION ---
+        
+        # --- FIX: Extract IMDb details or use placeholders ---
+        imdb_rating = imdb_data.get('rating', 'N/A') if imdb_data else 'N/A'
+        imdb_plot = imdb_data.get('plot', 'Plot information not available.') if imdb_data else 'Plot information not available.'
+        # ---------------------------------------------------
 
         summary = await get_series_summary(series_to_display)
         
@@ -259,9 +266,11 @@ def register_conversation_handlers(app: Client):
         
         response = (
             f"**○ Title:** {series_to_display}\n"
+            f"**⭐ IMDb Rating:** {imdb_rating}\n" # ADDED: IMDb Rating
             f"**○ Language:** {languages_list}\n"
             f"**○ Season Available:** {seasons_count}\n"
             f"**○ Quality Available:** {qualities_list}\n\n"
+            f"**📖 Plot:** {imdb_plot}\n\n" # ADDED: Plot
             f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
         )
         
@@ -504,6 +513,11 @@ def register_conversation_handlers(app: Client):
             if imdb_data and imdb_data.get('poster'):
                  poster_url = imdb_data.get('poster')
         
+        # --- FIX: Extract IMDb details or use placeholders ---
+        imdb_rating = imdb_data.get('rating', 'N/A') if imdb_data else 'N/A'
+        imdb_plot = imdb_data.get('plot', 'Plot information not available.') if imdb_data else 'Plot information not available.'
+        # ---------------------------------------------------
+
         summary = await get_series_summary(series_name)
         
         languages_list = ", ".join(summary.get('languages', []))
@@ -512,9 +526,11 @@ def register_conversation_handlers(app: Client):
         
         response = (
             f"**○ Title:** {series_name}\n"
+            f"**⭐ IMDb Rating:** {imdb_rating}\n" # ADDED: IMDb Rating
             f"**○ Language:** {languages_list}\n"
             f"**○ Season Available:** {seasons_count}\n"
             f"**○ Quality Available:** {qualities_list}\n\n"
+            f"**📖 Plot:** {imdb_plot}\n\n" # ADDED: Plot
             f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
         )
         
@@ -635,8 +651,7 @@ def register_conversation_handlers(app: Client):
         print(f"User ID who clicked: {user_id}")
         print(f"Expected Admin ID: {ADMIN_USERS}")
         
-        # NOTE: If ADMIN_USERS is a single integer, the comparison below is correct.
-        # If ADMIN_USERS is a list, you'd need `if user_id not in ADMIN_USERS:`
+        # NOTE: This assumes ADMIN_USERS is a single integer, as in the original code.
         if user_id != ADMIN_USERS:
             await query.answer("You are not authorized. Only the admin can open this menu.", show_alert=True)
             return # Added return here to prevent unauthorized users from proceeding
