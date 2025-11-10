@@ -1,4 +1,4 @@
-# conversation.py (fixed)
+# conversation.py (with suggestion/spell check fallback logic)
 import asyncio
 import re
 import shelve
@@ -34,12 +34,7 @@ from config import (
 from utils import clean_series_name, save_series_file_for_bulk_index
 from poster import get_series_poster_async
 
-# --- NEW: Spell Checker Import and Initialization ---
-from spellchecker import SpellChecker
-
-# Initialize SpellChecker with English dictionary
-SPELL = SpellChecker()
-# --- END NEW ---
+# --- Spell Checker Import and Initialization REMOVED ---
 
 MAX_CALLBACK_LENGTH = 50
 
@@ -216,30 +211,70 @@ def register_conversation_handlers(app: Client):
             )
             return
 
-        # Spell check
-        corrected_query = " ".join(SPELL.correction(word) for word in query.split())
-
-        # Search corrected query first
+        # 1. Primary search attempt
         try:
-            unique_names = await search_series(corrected_query)
+            unique_names = await search_series(query)
         except Exception as e:
-            logger.warning(f"[SEARCH ERROR] search_series failed for `{corrected_query}`: {e}")
+            logger.warning(f"[SEARCH ERROR] search_series failed for ORIGINAL query `{query}`: {e}")
             unique_names = []
 
-        is_suggestion = (query.lower() != corrected_query.lower()) and bool(unique_names)
-
-        if not unique_names and not is_suggestion:
-            try:
-                unique_names = await search_series(query)
-            except Exception as e:
-                logger.warning(f"[SEARCH ERROR] search_series failed for `{query}`: {e}")
-                unique_names = []
-
         if not unique_names:
-            await message.reply_text(f"❌ No series found `<code>{query}</code>`", parse_mode=enums.ParseMode.HTML)
-            return
+            # 2. Fallback/Suggestion Logic (using cleaned query for broader search)
+            
+            # Clean up query similar to advantage_spell_chok logic (removes filler words)
+            clean_query = re.sub(
+                r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil|file|that|find|und(o)*|kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*|aya(k)*(um(o)*)?|full\smovie|any(one)|with\ssubtitle(s)?)",
+                "", message.text, flags=re.IGNORECASE).strip()
+            
+            suggestion_list = []
+            
+            if clean_query:
+                # Try searching with the cleaned-up query
+                try:
+                    suggestion_list = await search_series(clean_query)
+                except Exception as e:
+                    logger.warning(f"[SEARCH ERROR] search_series failed for CLEANED query `{clean_query}`: {e}")
 
-        # Pick first
+            if suggestion_list:
+                # Present suggestions if found
+                movielist = [clean_series_name(name) for name in suggestion_list]
+                movielist = list(dict.fromkeys(movielist))
+                
+                # Limit to 3 suggestions
+                if len(movielist) > 3:
+                    movielist = movielist[:3]
+                
+                user_id = message.from_user.id
+                
+                btn = [[
+                    InlineKeyboardButton(
+                        text=movie,
+                        # New callback for suggestion selection: sugg_select|user_id|series_name
+                        callback_data=f"sugg_select|{user_id}|{movie}",
+                    )
+                ] for movie in movielist]
+                
+                btn.append([InlineKeyboardButton(text="Close", callback_data=f'close_suggestion|{user_id}')])
+                
+                sent_message = await message.reply(
+                    f"I couldn't find anything related to `<code>{query}</code>`.\nDid you mean any one of these?",
+                    reply_markup=InlineKeyboardMarkup(btn),
+                    parse_mode=enums.ParseMode.HTML
+                )
+                
+                # Implement auto-delete for this message
+                auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+                if auto_delete_timer and int(auto_delete_timer) > 0:
+                    asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
+                
+                return # Suggestion displayed, stop here
+
+            else:
+                # 3. No results at all
+                await message.reply_text(f"❌ No series found `<code>{query}</code>`", parse_mode=enums.ParseMode.HTML)
+                return
+
+        # 4. If primary search was successful, continue with main search logic
         series_to_display = clean_series_name(unique_names[0])
 
         # Determine poster: prefer shelve cache -> OMDb -> DEFAULT_POSTER
@@ -273,10 +308,8 @@ def register_conversation_handlers(app: Client):
         seasons_count = len(summary.get("seasons", []))
         qualities_list = ", ".join(summary.get("qualities", []))
 
-        # Response based on spell check
-        response_prefix = f"⚠️ **Did you mean: {corrected_query}?**\n\n" if is_suggestion else ""
+        # Response based on successful search
         response = (
-            f"{response_prefix}"
             f"**○ Title:** {series_to_display}\n"
             f"**○ Language:** {languages_list or 'N/A'}\n"
             f"**○ Season Available:** {seasons_count}\n"
@@ -289,9 +322,6 @@ def register_conversation_handlers(app: Client):
         for season in summary.get("seasons", []):
             callback_data = f"ss|{series_name_short}|{season}"
             keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
-
-        if is_suggestion:
-            keyboard.append([InlineKeyboardButton(f"🔎 Search Original: {query}", callback_data=f"search_original|{query}")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
@@ -310,69 +340,69 @@ def register_conversation_handlers(app: Client):
         if auto_delete_timer and int(auto_delete_timer) > 0:
             asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
 
-    # Search Original handler
-    @app.on_callback_query(filters.regex(r"^search_original\|"))
-    async def search_original_handler(app, query):
-        data = query.data.split("|", 1)
-        if len(data) < 2:
-            await query.answer("❌ Error: Invalid original search data.", show_alert=True)
+
+    # --- NEW CALLBACK HANDLERS FOR SUGGESTIONS ---
+
+    # Suggestion selection handler
+    @app.on_callback_query(filters.regex(r"^sugg_select\|"))
+    async def sugg_select_handler(app, query):
+        data = query.data.split("|", 2) # split into 3 parts: 'sugg_select', user_id, series_name
+        if len(data) < 3:
+            await query.answer("❌ Error: Invalid suggestion data.", show_alert=True)
             return
 
-        original_query = data[1]
-        await query.answer(f"Searching for '{original_query}'...", cache_time=0)
+        # data[2] contains the series name selected by the user
+        series_name = data[2]
+        await query.answer(f"Selected: {series_name}...", cache_time=0)
 
-        unique_names = await search_series(original_query)
-        if not unique_names:
-            try:
-                await query.message.edit_caption(f"❌ No series found `<code>{original_query}</code>`", parse_mode=enums.ParseMode.HTML)
-            except Exception:
-                pass
-            return
-
-        series_to_display = clean_series_name(unique_names[0])
-
+        # 1. Fetch poster and summary (same logic as in back_to_search)
         poster_url = DEFAULT_POSTER
         try:
             imdb_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
         except Exception:
             imdb_enabled = True
+
         try:
             cache_file = OMDB_CACHE_DB or "/tmp/omdb_cache.db"
-            with shelve.open(cache_file) as db_cache:
-                key = f"poster::{series_to_display.strip().lower()}"
-                if key in db_cache:
-                    poster_url = db_cache[key]
+            with shelve.open(cache_file) as db:
+                key = f"poster::{series_name.strip().lower()}"
+                if key in db:
+                    poster_url = db[key]
         except Exception:
             pass
 
         if (not poster_url or poster_url == DEFAULT_POSTER) and imdb_enabled:
             try:
-                poster_tmp = await get_series_poster_async(series_to_display)
+                poster_tmp = await get_series_poster_async(series_name)
                 poster_url = poster_tmp or DEFAULT_POSTER
             except Exception as e:
-                logger.warning(f"[OMDB FETCH FAIL - search_original] {series_to_display} -> {e}")
+                logger.warning(f"[OMDB FETCH FAIL - sugg_select] {series_name} -> {e}")
                 poster_url = DEFAULT_POSTER
 
-        summary = await get_series_summary(series_to_display)
+        summary = await get_series_summary(series_name)
         languages_list = ", ".join(summary.get("languages", []))
         seasons_count = len(summary.get("seasons", []))
         qualities_list = ", ".join(summary.get("qualities", []))
 
         response = (
-            f"**○ Title:** {series_to_display}\n"
+            f"**○ Title:** {series_name}\n"
             f"**○ Language:** {languages_list or 'N/A'}\n"
             f"**○ Season Available:** {seasons_count}\n"
             f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
             f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
         )
-
+        
+        # 2. Build Season Selection Keyboard
         keyboard = []
-        series_name_short = series_to_display[:MAX_CALLBACK_LENGTH]
+        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
         for season in summary.get("seasons", []):
             callback_data = f"ss|{series_name_short}|{season}"
             keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
+        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+
+        # 3. Edit Message to show Season Menu
         try:
             await query.message.edit_media(
                 media=InputMediaPhoto(media=poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
@@ -380,11 +410,28 @@ def register_conversation_handlers(app: Client):
             )
         except MessageNotModified:
             pass
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to edit media for sugg_select: {e}. Falling back to edit_text.")
             try:
                 await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
             except Exception:
                 pass
+
+        if auto_delete_timer and int(auto_delete_timer) > 0:
+            asyncio.create_task(delete_message_later(app, query.message.chat.id, query.message.id, int(auto_delete_timer)))
+
+
+    # Close suggestion menu handler
+    @app.on_callback_query(filters.regex(r"^close_suggestion\|"))
+    async def close_suggestion_handler(app, query):
+        try:
+            await app.delete_messages(query.message.chat.id, query.message.id)
+        except Exception as e:
+            logger.warning(f"Failed to delete suggestion message: {e}")
+            await query.answer("❌ Failed to close message.", show_alert=True)
+            return
+        await query.answer("Closed.", show_alert=False)
+
 
     # Season select
     @app.on_callback_query(filters.regex(r"^ss\|"))
@@ -625,18 +672,153 @@ def register_conversation_handlers(app: Client):
             "<i>If you see 'No series found', try a slightly different or shorter name.</i>"
         )
 
-        HELP_KEYBOARD = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🏡 Home", callback_data="cyber|"), InlineKeyboardButton("🕹 Admins", callback_data="admin_cmd|")]]
-        )
+        HELP_KEYBOARD = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏡 Home", callback_data="cyber|"),
+             InlineKeyboardButton("🕹 Admins", callback_data="admin_cmd|")]
+        ])
         reply_markup = HELP_KEYBOARD
 
         try:
-            await query.message.edit_caption(help_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+            await query.message.edit_caption(
+                help_text,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML
+            )
         except MessageNotModified:
             pass
         except Exception as e:
             logger.error(f"Error editing message caption in help_menu_handler: {e}")
             try:
-                await query.message.edit_text(help_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+                await query.message.edit_text(
+                    help_text,
+                    reply_markup=reply_markup,
+                    parse_mode=enums.ParseMode.HTML
+                )
             except Exception:
                 pass
+
+        await query.answer("Showing help menu.")
+
+    # Home
+    @app.on_callback_query(filters.regex(r"^cyber\|"))
+    async def cyber_menu_handler(app, query):
+        home_text = (
+            "<b>👋 Hey Bro</b>\n\n"
+            "<b>I Am Your Series-Filter Bot</b> - advanced, powerful and designed to make your group a Series Request Group! You Can Also Search Series Here\n\n"
+            "<b>Let's get started! 🚀</b>"
+        )
+        CYBER_KEYBOARD = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚙️Help", callback_data="help|"),
+             InlineKeyboardButton("🤠About", callback_data="about|")]
+        ])
+        reply_markup = CYBER_KEYBOARD
+        try:
+            await query.message.edit_caption(
+                home_text,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+        except MessageNotModified:
+            pass
+        except Exception as e:
+            logger.error(f"Error editing message caption in cyber_menu_handler: {e}")
+            try:
+                await query.message.edit_text(
+                    home_text,
+                    reply_markup=reply_markup,
+                    parse_mode=enums.ParseMode.HTML
+                )
+            except Exception:
+                pass
+
+        await query.answer("Back To Home")
+
+    # Admin menu (supports list or single int)
+    @app.on_callback_query(filters.regex(r"^admin_cmd\|"))
+    async def admin_menu_handler(app, query):
+        user_id = query.from_user.id
+        is_authorized = False
+        try:
+            if isinstance(ADMIN_USERS, (list, tuple, set)):
+                is_authorized = user_id in ADMIN_USERS
+            else:
+                is_authorized = (user_id == int(ADMIN_USERS))
+        except Exception:
+            is_authorized = False
+
+        if not is_authorized:
+            await query.answer("You are not authorized. Only the admin can open this menu.", show_alert=True)
+            return
+
+        about_text = ADMIN_TEXT
+        ABOUT_KEYBOARD = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back", callback_data="cyber|"),
+             InlineKeyboardButton("Close", callback_data="close")]
+        ])
+        reply_markup = ABOUT_KEYBOARD
+        try:
+            await query.message.edit_caption(
+                about_text,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+        except MessageNotModified:
+            pass
+        except Exception as e:
+            logger.error(f"Error editing message caption in admin_menu_handler: {e}")
+            try:
+                await query.message.edit_text(
+                    about_text,
+                    reply_markup=reply_markup,
+                    parse_mode=enums.ParseMode.HTML
+                )
+            except Exception:
+                pass
+
+        await query.answer("Showing about information.")
+
+    # About
+    @app.on_callback_query(filters.regex(r"^about\|"))
+    async def about_menu_handler(app, query):
+        about_text = ABOUT_TEXT
+        ABOUT_KEYBOARD = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to Home", callback_data="cyber|"),
+             InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/CyberTGx")]
+        ])
+        reply_markup = ABOUT_KEYBOARD
+        try:
+            await query.message.edit_caption(
+                about_text,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+        except MessageNotModified:
+            pass
+        except Exception as e:
+            logger.error(f"Error editing message caption in about_menu_handler: {e}")
+            try:
+                await query.message.edit_text(
+                    about_text,
+                    reply_markup=reply_markup,
+                    parse_mode=enums.ParseMode.HTML
+                )
+            except Exception:
+                pass
+
+        await query.answer("Showing about information.")
+
+    @app.on_callback_query(filters.regex(r"close"))
+    async def close_menu_handler(_, query):
+        try:
+            await query.message.delete()
+            await query.answer("Closed.")
+        except Exception:
+            await query.answer("Can't close.")
+
+    return [
+        media_handler, search_handler, season_select_handler, language_select_handler,
+        back_to_language_handler, quality_select_handler, file_select_handler,
+        back_to_search_handler, help_menu_handler, about_menu_handler,
+        admin_menu_handler, cyber_menu_handler, close_menu_handler,
+        search_original_handler,
+    ]
