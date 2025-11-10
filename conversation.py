@@ -218,12 +218,38 @@ def register_conversation_handlers(app: Client):
             return
 
         # Pick first
-        series_to_display = clean_series_name(unique_names[0])
+series_to_display = clean_series_name(unique_names[0])
 
-        # Always use default poster (IMDb disabled by design)
+# Determine poster: prefer cached -> OMDb (if enabled) -> DEFAULT_POSTER
+poster_url = DEFAULT_POSTER
+try:
+    imdb_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
+except Exception:
+    imdb_enabled = True
+
+# try shelve cache first (in case utils saved it there on DB-save failure)
+try:
+    import shelve
+    from config import OMDB_CACHE_DB
+    cache_file = OMDB_CACHE_DB or "/tmp/omdb_cache.db"
+    with shelve.open(cache_file) as db:
+        key = f"poster::{series_to_display.strip().lower()}"
+        if key in db:
+            poster_url = db[key]
+except Exception:
+    pass
+
+if (not poster_url or poster_url == DEFAULT_POSTER) and imdb_enabled:
+    try:
+        poster_tmp = await get_series_poster_async(series_to_display)
+        poster_url = poster_tmp or DEFAULT_POSTER
+    except Exception as e:
+        logger.warning(f"[OMDB FETCH FAIL - search_handler] {series_to_display} -> {e}")
         poster_url = DEFAULT_POSTER
 
-        summary = await get_series_summary(series_to_display)
+summary = await get_series_summary(series_to_display)
+
+
         languages_list = ", ".join(summary.get('languages', []))
         seasons_count = len(summary.get('seasons', []))
         qualities_list = ", ".join(summary.get('qualities', []))
@@ -499,7 +525,32 @@ def register_conversation_handlers(app: Client):
             return
 
         series_name = data[1]
+# resolve poster: shelve -> OMDb -> default
+poster_url = DEFAULT_POSTER
+try:
+    imdb_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
+except Exception:
+    imdb_enabled = True
+
+try:
+    import shelve
+    from config import OMDB_CACHE_DB
+    cache_file = OMDB_CACHE_DB or "/tmp/omdb_cache.db"
+    with shelve.open(cache_file) as db:
+        key = f"poster::{series_name.strip().lower()}"
+        if key in db:
+            poster_url = db[key]
+except Exception:
+    pass
+
+if (not poster_url or poster_url == DEFAULT_POSTER) and imdb_enabled:
+    try:
+        poster_tmp = await get_series_poster_async(series_name)
+        poster_url = poster_tmp or DEFAULT_POSTER
+    except Exception as e:
+        logger.warning(f"[OMDB FETCH FAIL - back_to_search] {series_name} -> {e}")
         poster_url = DEFAULT_POSTER
+
 
         summary = await get_series_summary(series_name)
         languages_list = ", ".join(summary.get('languages', []))
