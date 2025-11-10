@@ -1,5 +1,3 @@
-# conversation.py
-
 import asyncio
 import re
 import requests
@@ -20,10 +18,9 @@ from database import (
     get_unique_qualities_by_lang_season,
     get_file_by_message_id_and_channel_id
 )
-# DEFAULT_POSTER_URL is removed from config, so we remove the import as well
-from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS, ABOUT_TEXT, ADMIN_USERS, ADMIN_TEXT
+# Assuming DEFAULT_POSTER_URL is available in config
+from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS, DEFAULT_POSTER_URL, ABOUT_TEXT, ADMIN_USERS, ADMIN_TEXT
 from utils import clean_series_name, save_series_file_for_bulk_index
-from imdb import get_imdb_data
 import difflib
 
 SERIES_CACHE = []
@@ -182,7 +179,7 @@ def register_conversation_handlers(app: Client):
 
 
 
-    @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"]))
+    @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"])) # <--- ADD forcesub
     async def search_handler(app, message: Message):
         query = message.text.strip()
         if query.startswith('/') and query.lower() not in ["/index"]:
@@ -219,7 +216,7 @@ def register_conversation_handlers(app: Client):
                     
                     await message.reply_text(
                         f"❌ No exact match found for `<code>{query}</code>`\n\n**Maybe you meant?**",
-                        reply_markup=suggestions_markup,
+                        reply_markup=suggestions_markup, # Ensure reply_markup is used
                         parse_mode=enums.ParseMode.HTML,
                     )
                     return
@@ -227,49 +224,43 @@ def register_conversation_handlers(app: Client):
                 f"❌ No series found `<code>{query}</code>`",
                 parse_mode=enums.ParseMode.HTML
             ) 
-            return
+            return # This return is essential, preventing the IndexError below
         
+        # Use the first series found, skipping complex matching logic
+        # Execution reaches here ONLY if unique_names is NOT empty
         series_to_display = clean_series_name(unique_names[0])
 
-        # --- MODIFIED: Image Content Fetching ---
-        imdb_data = None
-        poster_content = None # Stores the binary content of the poster
-        
-        imdb_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
-        
-        if imdb_enabled:
-            try:
-                imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_to_display)
-            except Exception as e:
-                logger.error(f"Failed to fetch IMDB data for {series_to_display}: {e}")
-                
-            # Check for binary content
-            if imdb_data and imdb_data.get('poster_content'):
-                poster_content = imdb_data.get('poster_content')
+        # --- MODIFICATION: Removed IMDB Poster Fetching Logic ---
+        # imdb_data = None # REMOVED
+        poster_url = DEFAULT_POSTER_URL # Always use the default poster URL
 
-        # --- FIX: Extract IMDb details more robustly ---
-        if imdb_data and not imdb_data.get('error'):
-            imdb_rating = imdb_data.get('rating', 'N/A')
-            imdb_plot = imdb_data.get('plot', 'Plot information not available.')
-        else:
-            imdb_rating = 'N/A'
-            imdb_plot = 'Plot information not available.'
-        # ---------------------------------------------------
+        # # REMOVED IMDB CHECK
+        # imdb_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True) 
+        
+        # if imdb_enabled:
+        #     try:
+        #         # Fetch IMDB data asynchronously
+        #         imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_to_display)
+        #     except Exception as e:
+        #         logger.error(f"Failed to fetch IMDB data for {series_to_display}: {e}")
+        #         pass # Use DEFAULT_POSTER_URL on failure
+
+        #     # Determine the poster URL: IMDb poster if available, otherwise use default
+        #     if imdb_data and imdb_data.get('poster'):
+        #         poster_url = imdb_data.get('poster')
+        # # --- END MODIFICATION ---
 
         summary = await get_series_summary(series_to_display)
         
         languages_list = ", ".join(summary.get('languages', []))
         seasons_count = len(summary.get('seasons', []))
-        # FIX APPLIED: Corrected the unterminated string literal
         qualities_list = ", ".join(summary.get('qualities', []))
         
         response = (
             f"**○ Title:** {series_to_display}\n"
-            f"**⭐ IMDb Rating:** {imdb_rating}\n"
             f"**○ Language:** {languages_list}\n"
             f"**○ Season Available:** {seasons_count}\n"
             f"**○ Quality Available:** {qualities_list}\n\n"
-            f"**📖 Plot:** {imdb_plot}\n\n"
             f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
         )
         
@@ -284,25 +275,21 @@ def register_conversation_handlers(app: Client):
 
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
-        # --- CHANGE: Conditional reply based on poster_content ---
-        sent_message = None
-        if poster_content: # If binary content was found
-            try:
-                sent_message = await message.reply_photo(
-                    photo=poster_content, # Pass bytes content directly
-                    caption=response,
-                    reply_markup=reply_markup,
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-            except Exception as e:
-                # If photo sending fails (even with bytes), fall back to text.
-                logger.error(f"Photo Reply failed for {series_to_display} (content): {e}. Falling back to text.")
-                sent_message = await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        else: # No poster content, send text only
+        # --- CHANGE: Reply immediately with the final result photo/media ---
+        try:
+            sent_message = await message.reply_photo(
+                photo=poster_url, 
+                caption=response,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.error(f"Failed to reply with photo for search result: {e}. Falling back to reply_text.")
+            # Fallback to plain text if photo sending fails
             sent_message = await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
 
-        if auto_delete_timer > 0 and sent_message:
+        if auto_delete_timer > 0:
             asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, auto_delete_timer))
 
 
@@ -499,46 +486,37 @@ def register_conversation_handlers(app: Client):
             return
             
         series_name = data[1]
-        imdb_data = None
-        poster_content = None # Initialize as None
         
-        # 🚀 Get IMDB_POSTER_ENABLED setting, default to True
-        imdb_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
+        # --- MODIFICATION: Removed IMDB Poster Fetching Logic ---
+        # imdb_data = None # REMOVED
+        poster_url = DEFAULT_POSTER_URL # Always use the default poster URL
+        
+        # # REMOVED IMDB CHECK
+        # imdb_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
 
-        if imdb_enabled:
-            try:
-                # We still fetch IMDB data here to get the poster when going back
-                imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_name)
-            except:
-                pass
+        # if imdb_enabled:
+        #     try:
+        #         # We still fetch IMDB data here to get the poster when going back
+        #         imdb_data = await asyncio.get_event_loop().run_in_executor(None, get_imdb_data, series_name)
+        #     except:
+        #         pass
             
-            # 🎯 Check for poster_content instead of poster_url
-            if imdb_data and imdb_data.get('poster_content'):
-                 poster_content = imdb_data.get('poster_content')
-        
-        # --- FIX: Extract IMDb details more robustly ---
-        if imdb_data and not imdb_data.get('error'):
-            imdb_rating = imdb_data.get('rating', 'N/A')
-            imdb_plot = imdb_data.get('plot', 'Plot information not available.')
-        else:
-            imdb_rating = 'N/A'
-            imdb_plot = 'Plot information not available.'
-        # ---------------------------------------------------
-        
+        #     # Get poster URL for back action
+        #     if imdb_data and imdb_data.get('poster'):
+        #          poster_url = imdb_data.get('poster')
+        # --- END MODIFICATION ---
+
         summary = await get_series_summary(series_name)
         
         languages_list = ", ".join(summary.get('languages', []))
         seasons_count = len(summary.get('seasons', []))
-        # FIX APPLIED: Corrected the unterminated string literal
         qualities_list = ", ".join(summary.get('qualities', []))
         
         response = (
             f"**○ Title:** {series_name}\n"
-            f"**⭐ IMDb Rating:** {imdb_rating}\n"
             f"**○ Language:** {languages_list}\n"
             f"**○ Season Available:** {seasons_count}\n"
             f"**○ Quality Available:** {qualities_list}\n\n"
-            f"**📖 Plot:** {imdb_plot}\n\n"
             f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
         )
         
@@ -552,31 +530,22 @@ def register_conversation_handlers(app: Client):
 
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
-        # --- MODIFIED: Conditional media editing based on poster_content ---
-        if poster_content: # If binary content was fetched
-            try:
-                # Use the binary content directly
-                await query.message.edit_media(
-                    media=InputMediaPhoto(media=poster_content, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
-                    reply_markup=reply_markup
-                )
-            except MessageNotModified:
-                pass
-            except Exception as e:
-                logger.error(f"Failed to edit media with content for back_to_search: {e}. Falling back to edit_text.")
-                try:
-                    # Fallback to text if editing media fails
-                    await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-                except:
-                    pass
-        else: # No poster content, edit to text only
+        # --- FIX: Moved parse_mode inside InputMediaPhoto to resolve the error ---
+        try:
+            await query.message.edit_media(
+                media=InputMediaPhoto(media=poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
+                reply_markup=reply_markup
+                # Removed the redundant 'parse_mode' argument here
+            )
+        except MessageNotModified:
+            pass
+        except Exception as e:
+            logger.error(f"Failed to edit media for back_to_search: {e}. Falling back to edit_text.")
+            # Fallback to plain text if photo editing fails
             try:
                 await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            except MessageNotModified:
+            except:
                 pass
-            except Exception as e:
-                logger.error(f"Failed to edit_text for back_to_search (no poster): {e}.")
-
 
         if auto_delete_timer > 0:
             asyncio.create_task(delete_message_later(app, query.message.chat.id, query.message.id, auto_delete_timer))
@@ -668,7 +637,8 @@ def register_conversation_handlers(app: Client):
         print(f"User ID who clicked: {user_id}")
         print(f"Expected Admin ID: {ADMIN_USERS}")
         
-        # NOTE: This assumes ADMIN_USERS is a single integer, as in the original code.
+        # NOTE: If ADMIN_USERS is a single integer, the comparison below is correct.
+        # If ADMIN_USERS is a list, you'd need `if user_id not in ADMIN_USERS:`
         if user_id != ADMIN_USERS:
             await query.answer("You are not authorized. Only the admin can open this menu.", show_alert=True)
             return # Added return here to prevent unauthorized users from proceeding
