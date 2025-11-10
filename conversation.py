@@ -1,5 +1,4 @@
-# conversation.py (fixed)
-# conversation.py (fixed search logic for better spell check experience)
+# conversation.py (spell check removed)
 import asyncio
 import re
 import shelve
@@ -35,12 +34,7 @@ from config import (
 from utils import clean_series_name, save_series_file_for_bulk_index
 from poster import get_series_poster_async
 
-# --- NEW: Spell Checker Import and Initialization ---
-from spellchecker import SpellChecker
-
-# Initialize SpellChecker with English dictionary
-SPELL = SpellChecker()
-# --- END NEW ---
+# --- Spell Checker Import and Initialization REMOVED ---
 
 MAX_CALLBACK_LENGTH = 50
 
@@ -217,30 +211,12 @@ def register_conversation_handlers(app: Client):
             )
             return
 
-        # NEW LOGIC: 
-        # 1. ALWAYS search original query first for accuracy.
-        # 2. Only search corrected query as a fallback if the original fails.
-        unique_names = []
+        # Search original query directly
         try:
-            # 1. Try original search
             unique_names = await search_series(query)
         except Exception as e:
-            logger.warning(f"[SEARCH ERROR] search_series failed for ORIGINAL query `{query}`: {e}")
-            
-        corrected_query = " ".join(SPELL.correction(word) for word in query.split())
-        is_suggestion = False
-        
-        if not unique_names and (query.lower() != corrected_query.lower()):
-            # 2. If original failed AND a correction exists, try corrected query
-            try:
-                unique_names_corrected = await search_series(corrected_query)
-                if unique_names_corrected:
-                    unique_names = unique_names_corrected
-                    # Mark as suggestion only if the corrected query found something 
-                    # that the original didn't.
-                    is_suggestion = True 
-            except Exception as e:
-                logger.warning(f"[SEARCH ERROR] search_series failed for CORRECTED query `{corrected_query}`: {e}")
+            logger.warning(f"[SEARCH ERROR] search_series failed for `{query}`: {e}")
+            unique_names = []
 
         if not unique_names:
             await message.reply_text(f"❌ No series found `<code>{query}</code>`", parse_mode=enums.ParseMode.HTML)
@@ -280,10 +256,8 @@ def register_conversation_handlers(app: Client):
         seasons_count = len(summary.get("seasons", []))
         qualities_list = ", ".join(summary.get("qualities", []))
 
-        # Response based on spell check
-        response_prefix = f"⚠️ **Did you mean: {corrected_query}?**\n\n" if is_suggestion else ""
+        # Response (without spell check suggestion prefix)
         response = (
-            f"{response_prefix}"
             f"**○ Title:** {series_to_display}\n"
             f"**○ Language:** {languages_list or 'N/A'}\n"
             f"**○ Season Available:** {seasons_count}\n"
@@ -297,8 +271,8 @@ def register_conversation_handlers(app: Client):
             callback_data = f"ss|{series_name_short}|{season}"
             keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
 
-        # Removed 'Search Original' button since the original query is prioritized now.
-        
+        # Removed 'Search Original' button/logic
+
         reply_markup = InlineKeyboardMarkup(keyboard)
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
@@ -316,8 +290,7 @@ def register_conversation_handlers(app: Client):
         if auto_delete_timer and int(auto_delete_timer) > 0:
             asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
 
-    # Removed the search_original_handler as the logic is now handled more effectively
-    # by prioritizing the original query in the main search_handler.
+    # Removed search_original_handler
 
     # Season select
     @app.on_callback_query(filters.regex(r"^ss\|"))
