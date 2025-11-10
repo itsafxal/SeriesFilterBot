@@ -1,4 +1,4 @@
-#conversation.py
+# conversation.py
 
 import asyncio
 import re
@@ -249,6 +249,7 @@ def register_conversation_handlers(app: Client):
                 pass # Use DEFAULT_POSTER_URL on failure
 
             # Determine the poster URL: IMDb poster if available, otherwise use default
+            # The URL from get_imdb_data (fetch_omdb) is already HTTPS or None/N/A
             if imdb_data and imdb_data.get('poster') and imdb_data.get('poster') != 'N/A':
                 poster_url = imdb_data.get('poster')
         # --- END MODIFICATION ---
@@ -291,6 +292,8 @@ def register_conversation_handlers(app: Client):
 
         # --- CHANGE: Reply immediately with the final result photo/media ---
         try:
+            # We use the determined poster_url here. If it's the IMDB one, it should be HTTPS.
+            # If IMDB failed, it's the DEFAULT_POSTER_URL.
             sent_message = await message.reply_photo(
                 photo=poster_url, 
                 caption=response,
@@ -298,6 +301,7 @@ def register_conversation_handlers(app: Client):
                 parse_mode=enums.ParseMode.MARKDOWN
             )
         except Exception as e:
+            # This handles cases where reply_photo fails (e.g., bad URL/inaccessible image)
             logger.error(f"Failed to reply with photo for search result: {e}. Falling back to reply_text.")
             # Fallback to plain text if photo sending fails
             sent_message = await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
@@ -513,7 +517,7 @@ def register_conversation_handlers(app: Client):
             except:
                 pass
             
-            # Get poster URL for back action
+            # Get poster URL for back action. It's already HTTPS or None/N/A
             if imdb_data and imdb_data.get('poster') and imdb_data.get('poster') != 'N/A':
                  poster_url = imdb_data.get('poster')
         
@@ -555,6 +559,7 @@ def register_conversation_handlers(app: Client):
         # --- FIX: Moved parse_mode inside InputMediaPhoto to resolve the error ---
         try:
             await query.message.edit_media(
+                # Use the InputMediaPhoto object to update the photo AND the caption
                 media=InputMediaPhoto(media=poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
                 reply_markup=reply_markup
                 # Removed the redundant 'parse_mode' argument here
@@ -629,7 +634,7 @@ def register_conversation_handlers(app: Client):
             InlineKeyboardButton("⚙️Help", callback_data="help|"),
             InlineKeyboardButton("🤠About", callback_data="about|")
         ]])
-        reply_markup = CYBER_KEYBOARD    
+        reply_markup = CYBER_KEYBOARD     
         try:
             # Edit the caption (since it should be a photo message)
             await query.message.edit_caption(
