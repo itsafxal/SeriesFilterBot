@@ -1,4 +1,5 @@
 # conversation.py (fixed)
+# conversation.py (fixed search logic for better spell check experience)
 import asyncio
 import re
 import shelve
@@ -216,24 +217,30 @@ def register_conversation_handlers(app: Client):
             )
             return
 
-        # Spell check
-        corrected_query = " ".join(SPELL.correction(word) for word in query.split())
-
-        # Search corrected query first
+        # NEW LOGIC: 
+        # 1. ALWAYS search original query first for accuracy.
+        # 2. Only search corrected query as a fallback if the original fails.
+        unique_names = []
         try:
-            unique_names = await search_series(corrected_query)
+            # 1. Try original search
+            unique_names = await search_series(query)
         except Exception as e:
-            logger.warning(f"[SEARCH ERROR] search_series failed for `{corrected_query}`: {e}")
-            unique_names = []
-
-        is_suggestion = (query.lower() != corrected_query.lower()) and bool(unique_names)
-
-        if not unique_names and not is_suggestion:
+            logger.warning(f"[SEARCH ERROR] search_series failed for ORIGINAL query `{query}`: {e}")
+            
+        corrected_query = " ".join(SPELL.correction(word) for word in query.split())
+        is_suggestion = False
+        
+        if not unique_names and (query.lower() != corrected_query.lower()):
+            # 2. If original failed AND a correction exists, try corrected query
             try:
-                unique_names = await search_series(query)
+                unique_names_corrected = await search_series(corrected_query)
+                if unique_names_corrected:
+                    unique_names = unique_names_corrected
+                    # Mark as suggestion only if the corrected query found something 
+                    # that the original didn't.
+                    is_suggestion = True 
             except Exception as e:
-                logger.warning(f"[SEARCH ERROR] search_series failed for `{query}`: {e}")
-                unique_names = []
+                logger.warning(f"[SEARCH ERROR] search_series failed for CORRECTED query `{corrected_query}`: {e}")
 
         if not unique_names:
             await message.reply_text(f"❌ No series found `<code>{query}</code>`", parse_mode=enums.ParseMode.HTML)
@@ -290,9 +297,8 @@ def register_conversation_handlers(app: Client):
             callback_data = f"ss|{series_name_short}|{season}"
             keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
 
-        if is_suggestion:
-            keyboard.append([InlineKeyboardButton(f"🔎 Search Original: {query}", callback_data=f"search_original|{query}")])
-
+        # Removed 'Search Original' button since the original query is prioritized now.
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
@@ -310,81 +316,8 @@ def register_conversation_handlers(app: Client):
         if auto_delete_timer and int(auto_delete_timer) > 0:
             asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
 
-    # Search Original handler
-    @app.on_callback_query(filters.regex(r"^search_original\|"))
-    async def search_original_handler(app, query):
-        data = query.data.split("|", 1)
-        if len(data) < 2:
-            await query.answer("❌ Error: Invalid original search data.", show_alert=True)
-            return
-
-        original_query = data[1]
-        await query.answer(f"Searching for '{original_query}'...", cache_time=0)
-
-        unique_names = await search_series(original_query)
-        if not unique_names:
-            try:
-                await query.message.edit_caption(f"❌ No series found `<code>{original_query}</code>`", parse_mode=enums.ParseMode.HTML)
-            except Exception:
-                pass
-            return
-
-        series_to_display = clean_series_name(unique_names[0])
-
-        poster_url = DEFAULT_POSTER
-        try:
-            imdb_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
-        except Exception:
-            imdb_enabled = True
-        try:
-            cache_file = OMDB_CACHE_DB or "/tmp/omdb_cache.db"
-            with shelve.open(cache_file) as db_cache:
-                key = f"poster::{series_to_display.strip().lower()}"
-                if key in db_cache:
-                    poster_url = db_cache[key]
-        except Exception:
-            pass
-
-        if (not poster_url or poster_url == DEFAULT_POSTER) and imdb_enabled:
-            try:
-                poster_tmp = await get_series_poster_async(series_to_display)
-                poster_url = poster_tmp or DEFAULT_POSTER
-            except Exception as e:
-                logger.warning(f"[OMDB FETCH FAIL - search_original] {series_to_display} -> {e}")
-                poster_url = DEFAULT_POSTER
-
-        summary = await get_series_summary(series_to_display)
-        languages_list = ", ".join(summary.get("languages", []))
-        seasons_count = len(summary.get("seasons", []))
-        qualities_list = ", ".join(summary.get("qualities", []))
-
-        response = (
-            f"**○ Title:** {series_to_display}\n"
-            f"**○ Language:** {languages_list or 'N/A'}\n"
-            f"**○ Season Available:** {seasons_count}\n"
-            f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
-            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
-        )
-
-        keyboard = []
-        series_name_short = series_to_display[:MAX_CALLBACK_LENGTH]
-        for season in summary.get("seasons", []):
-            callback_data = f"ss|{series_name_short}|{season}"
-            keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        try:
-            await query.message.edit_media(
-                media=InputMediaPhoto(media=poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
-                reply_markup=reply_markup,
-            )
-        except MessageNotModified:
-            pass
-        except Exception:
-            try:
-                await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            except Exception:
-                pass
+    # Removed the search_original_handler as the logic is now handled more effectively
+    # by prioritizing the original query in the main search_handler.
 
     # Season select
     @app.on_callback_query(filters.regex(r"^ss\|"))
