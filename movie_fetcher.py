@@ -17,7 +17,8 @@ def fetch_omdb(title: str, year: Optional[str] = None, timeout: int = 8) -> Dict
         return r.json()
 
     # ------------ 1) TRY EXACT TITLE (t=) ------------
-    params = {"t": title, "apikey": OMDB_API_KEY}
+    params = {"t": title, "type": "series", "apikey": OMDB_API_KEY}
+    
     if year:
         params["y"] = str(year)
 
@@ -30,7 +31,7 @@ def fetch_omdb(title: str, year: Optional[str] = None, timeout: int = 8) -> Dict
 
     # ------------ 2) IF FAIL → DO SEARCH (s=) ------------
     if data.get("Response") == "False":
-        s = _request({"s": title, "apikey": OMDB_API_KEY})
+        s = _request({"s": title, "type": "series", "apikey": OMDB_API_KEY})
         if s.get("Response") != "True":
             raise RuntimeError(f"OMDb: {s.get('Error','Movie not found')}")
 
