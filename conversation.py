@@ -22,7 +22,13 @@ from database import (
 from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS, DEFAULT_POSTER_URL, ABOUT_TEXT, ADMIN_USERS, ADMIN_TEXT
 from utils import clean_series_name, save_series_file_for_bulk_index
 
-# REMOVED: global SERIES_CACHE, SERIES_CACHE_LC
+# --- NEW: Spell Checker Import and Initialization ---
+from spellchecker import SpellChecker
+
+# Initialize SpellChecker with English dictionary
+SPELL = SpellChecker() 
+# --- END NEW ---
+
 MAX_CALLBACK_LENGTH = 50
 
 # --- Helper Functions ---
@@ -168,7 +174,6 @@ def register_conversation_handlers(app: Client):
             saved, count = await save_series_file_for_bulk_index(message)
             if saved:
                 logger.info(f"RTI: Indexed {count} new file(s) from channel {message.chat.id}")
-                # Removed: cache update logic
 
     @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"]))
     async def search_handler(app, message: Message):
@@ -188,8 +193,21 @@ def register_conversation_handlers(app: Client):
             )
             return
 
-        # This database call is now the only search mechanism
-        unique_names = await search_series(query)
+        # --- NEW: Spell Check Logic ---
+        # 1. Get the corrected query
+        corrected_query = " ".join(SPELL.correction(word) for word in query.split())
+        
+        # 2. Try searching with the corrected query first
+        unique_names = await search_series(corrected_query)
+        
+        # Determine if a suggestion is necessary
+        is_suggestion = (query.lower() != corrected_query.lower()) and unique_names
+        
+        # 3. If no results found with corrected query, fall back to the original query
+        if not unique_names and not is_suggestion:
+            unique_names = await search_series(query)
+        # --- END NEW: Spell Check Logic ---
+
 
         if not unique_names:
             await message.reply_text(
@@ -202,6 +220,83 @@ def register_conversation_handlers(app: Client):
         series_to_display = clean_series_name(unique_names[0])
 
         # Always use default poster (IMDb disabled by design)
+        poster_url = DEFAULT_POSTER_URL
+
+        summary = await get_series_summary(series_to_display)
+        languages_list = ", ".join(summary.get('languages', []))
+        seasons_count = len(summary.get('seasons', []))
+        qualities_list = ", ".join(summary.get('qualities', []))
+
+        # --- NEW: Response based on spell check ---
+        if is_suggestion:
+            response_prefix = (
+                f"⚠️ **Did you mean: {corrected_query}?**\n\n"
+            )
+        else:
+            response_prefix = ""
+            
+        response = (
+            f"{response_prefix}"
+            f"**○ Title:** {series_to_display}\n"
+            f"**○ Language:** {languages_list}\n"
+            f"**○ Season Available:** {seasons_count}\n"
+            f"**○ Quality Available:** {qualities_list}\n\n"
+            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
+        )
+        # --- END NEW: Response based on spell check ---
+
+        keyboard = []
+        series_name_short = series_to_display[:MAX_CALLBACK_LENGTH]
+        for season in summary.get('seasons', []):
+            callback_data = f'ss|{series_name_short}|{season}'
+            keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
+            
+        # --- NEW: Add a button to search the original query if a suggestion was made ---
+        if is_suggestion:
+             keyboard.append([InlineKeyboardButton(f"🔎 Search Original: {query}", callback_data=f'search_original|{query}')])
+        # --- END NEW ---
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+
+        try:
+            sent_message = await message.reply_photo(
+                photo=poster_url,
+                caption=response,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.error(f"Failed to reply with photo for search result: {e}. Falling back to reply_text.")
+            sent_message = await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+
+        if auto_delete_timer and int(auto_delete_timer) > 0:
+            asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
+
+    # --- NEW: Handler for the "Search Original" button ---
+    @app.on_callback_query(filters.regex(r"^search_original\|"))
+    async def search_original_handler(app, query):
+        data = query.data.split("|")
+        if len(data) < 2:
+            await query.answer("❌ Error: Invalid original search data.", show_alert=True)
+            return
+            
+        original_query = data[1]
+        await query.answer(f"Searching for '{original_query}'...", cache_time=0)
+        
+        # Search using the original, uncorrected query
+        unique_names = await search_series(original_query)
+        
+        if not unique_names:
+            # Edit the message to show no results for the original query
+            await query.message.edit_caption(
+                f"❌ No series found `<code>{original_query}</code>`",
+                reply_markup=InlineKeyboardMarkup([]),
+                parse_mode=enums.ParseMode.HTML
+            )
+            return
+
+        series_to_display = clean_series_name(unique_names[0])
         poster_url = DEFAULT_POSTER_URL
 
         summary = await get_series_summary(series_to_display)
@@ -224,21 +319,22 @@ def register_conversation_handlers(app: Client):
             keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
-        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
         try:
-            sent_message = await message.reply_photo(
-                photo=poster_url,
-                caption=response,
-                reply_markup=reply_markup,
-                parse_mode=enums.ParseMode.MARKDOWN
+            await query.message.edit_media(
+                media=InputMediaPhoto(media=poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
+                reply_markup=reply_markup
             )
+        except MessageNotModified:
+            pass
         except Exception as e:
-            logger.error(f"Failed to reply with photo for search result: {e}. Falling back to reply_text.")
-            sent_message = await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-
-        if auto_delete_timer and int(auto_delete_timer) > 0:
-            asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
+            logger.error(f"Failed to edit media for search_original_handler: {e}. Falling back to edit_text.")
+            try:
+                await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            except Exception:
+                pass
+        
+    # --- END NEW: Handler for the "Search Original" button ---
 
     # Season select
     @app.on_callback_query(filters.regex(r"^ss\|"))
@@ -604,4 +700,5 @@ def register_conversation_handlers(app: Client):
         back_to_language_handler, quality_select_handler, file_select_handler,
         back_to_search_handler, help_menu_handler, about_menu_handler,
         admin_menu_handler, cyber_menu_handler, close_menu_handler,
+        search_original_handler, # Register the new handler
     ]
