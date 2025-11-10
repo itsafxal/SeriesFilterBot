@@ -20,7 +20,7 @@ from database import (
     get_unique_qualities_by_lang_season,
     get_file_by_message_id_and_channel_id,
 )
-# Assuming DEFAULT_POSTER_URL is available in config
+# Assuming DEFAULT_POSTER is available in config
 from config import (
     logger,
     CUSTOM_CAPTION_TEXT,
