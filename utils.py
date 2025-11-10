@@ -5,7 +5,7 @@ import re
 from pyrogram import types, enums
 from config import logger
 from database import save_file_to_db, get_all_files_by_season_and_quality
-from .poster import get_series_poster_async
+from poster import get_series_poster_async
 from info import DEFAULT_POSTER
 
 
