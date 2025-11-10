@@ -1,13 +1,10 @@
-
 # utils.py
 
 import re
 from pyrogram import types, enums
-from config import logger
+from config import logger, DEFAULT_POSTER, OMDB_CACHE_DB
 from database import save_file_to_db, get_all_files_by_season_and_quality
 from poster import get_series_poster_async
-from config import DEFAULT_POSTER
-
 
 ###################################################
 ## UTILITY & PARSING (Name Unification Logic) ##
@@ -20,7 +17,7 @@ LANGUAGE_CODES = {
     "TAM": "Tamil",
     "TEL": "Telugu",
     "MALA": "Malayalam",
-    "DUB": "Hindi" # Often used alone to indicate Hindi dub
+    "DUB": "Hindi"  # Often used alone to indicate Hindi dub
 }
 # Create a pattern string for the regex to match any of the known codes
 LANG_CODE_PATTERN = "|".join(LANGUAGE_CODES.keys())
@@ -31,13 +28,13 @@ def clean_series_name(name: str) -> str:
     name = re.sub(r"[. _]+", " ", name).strip()
     name = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', name)
     common_terms = [
-        "4K", "1080P", "720P", "HDRIP", "WEB-DL", "WEBRIP", "BLURAY", "HDTV", 
-        "AMZN", "NETFLIX", "HULU", "DDP5.1", "X265", "x264", "10BIT", "HEVC", 
+        "4K", "1080P", "720P", "HDRIP", "WEB-DL", "WEBRIP", "BLURAY", "HDTV",
+        "AMZN", "NETFLIX", "HULU", "DDP5.1", "X265", "x264", "10BIT", "HEVC",
         "MKV", "AAC", "PSA", "REPACK", "COMPLETE", "WEB",
-        r"(19|20)\d{2}",  
-        "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", 
+        r"(19|20)\d{2}",
+        "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10",
     ]
-    
+
     for term in common_terms:
         flags = re.IGNORECASE
         if r"(19|20)\d{2}" not in term:
@@ -45,25 +42,26 @@ def clean_series_name(name: str) -> str:
         name = re.sub(term, " ", name, flags=flags).strip()
 
     name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", name).strip()
-    
-    channel_tags = ["CK", "UB", "TG", "MOVIE HUB", "FILM"] 
+
+    channel_tags = ["CK", "UB", "TG", "MOVIE HUB", "FILM"]
     for tag in channel_tags:
         tag_regex = rf"(?:^|[\W_]+){re.escape(tag)}(?:$|[\W_]+)"
         name = re.sub(tag_regex, " ", name, flags=re.IGNORECASE).strip()
-        
+
     name = re.sub(r"\s+", " ", name).strip()
     name = re.sub(
-    r'^(?:collection|pack|set|series|season|episode|ep|vol|volume|batch|complete|full|合集|koleksi|release|mux|rip|hq|ultra|theatre|theater|bluray|remux|webdl|webrip|web|netflix|prime|amzn|hulu|hotstar|disney|hbo|tgx|yts|subs|dub|audio|team|group)\b',
-    ' ',
-    name,
-    flags=re.IGNORECASE
+        r'^(?:collection|pack|set|series|season|episode|ep|vol|volume|batch|complete|full|合集|koleksi|release|mux|rip|hq|ultra|theatre|theater|bluray|remux|webdl|webrip|web|netflix|prime|amzn|hulu|hotstar|disney|hbo|tgx|yts|subs|dub|audio|team|group)\b',
+        ' ',
+        name,
+        flags=re.IGNORECASE
     )
 
     return name.title()
 
+
 def extract_quality(file_name: str) -> str:
     """Extracts common quality tags from a filename."""
-    name = file_name.upper()
+    name = (file_name or "").upper()
     if "2160P" in name or "4K" in name:
         return "4K"
     if "1080P" in name:
@@ -72,7 +70,7 @@ def extract_quality(file_name: str) -> str:
         return "720P"
     if "480P" in name:
         return "480P"
-    
+
     return "480P"
 
 
@@ -117,6 +115,7 @@ def extract_language(file_name: str) -> str:
     # Multi-audio: canonicalize order to avoid 'Hindi-English' vs 'English-Hindi' duplicates
     return "-".join(sorted(found))
 
+
 def parse_series_info(file_name: str):
     """
     Extracts Series Name, Season (SXX), Episode (EXX), Quality, AND Language.
@@ -152,6 +151,7 @@ def parse_series_info(file_name: str):
         normalized_name = " ".join(parts[:5])
 
     return normalized_name.title(), season, episode, quality, language
+
 
 async def save_series_file_for_bulk_index(message: types.Message):
     file_name = ""
@@ -209,5 +209,41 @@ async def save_series_file_for_bulk_index(message: types.Message):
         "timestamp": message.date
     }
 
-    saved = await save_file_to_db(file_doc)
-    return (True, 1) if saved else (False, 0)
+    # Try saving to DB; if DB rejects unknown keys, fall back to shelve cache for poster only.
+    try:
+        saved = await save_file_to_db(file_doc)
+        if saved:
+            return True, 1
+        else:
+            return False, 0
+    except Exception as e:
+        logger.warning(f"[DB SAVE FAILED] saving file_doc for {normalized_name} failed: {e}")
+        # Save bare minimum metadata to DB (without poster) if your DB expects strict keys
+        minimal_doc = {
+            "channel_id": message.chat.id,
+            "message_id": message.id,
+            "file_name": file_name,
+            "normalized_name": normalized_name,
+            "season": season,
+            "episode": episode,
+            "quality": quality,
+            "language": language,
+            "file_id": tg_file_id,
+            "timestamp": message.date
+        }
+        try:
+            saved = await save_file_to_db(minimal_doc)
+        except Exception as e2:
+            logger.error(f"[DB SAVE FAILED - minimal_doc] {e2}")
+            saved = False
+
+        # Store poster separately in a shelve cache keyed by normalized_name
+        try:
+            cache_file = OMDB_CACHE_DB or "/tmp/omdb_cache.db"
+            with shelve.open(cache_file) as db:
+                key = f"poster::{normalized_name.strip().lower()}"
+                db[key] = poster_url or DEFAULT_POSTER
+        except Exception as e3:
+            logger.warning(f"[SHELVE SAVE FAIL] could not cache poster for {normalized_name}: {e3}")
+
+        return (True, 1) if saved else (False, 0)
