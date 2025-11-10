@@ -1,4 +1,4 @@
-# command.py - MODIFIED for interactive, link-based indexing AND RESUMPTION
+# command.py - MODIFIED for interactive, link-based indexing, resumption, AND /setskip command
 
 import asyncio
 import re
@@ -24,10 +24,12 @@ from utils import save_series_file_for_bulk_index
 lock = asyncio.Lock()
 media_filter = filters.document | filters.video | filters.audio
 index_task = None
-link_pattern = r"https://t\.me/c/(\d+)/(\d+)" # Pattern to match c/channel_id/message_id links
+link_pattern = r"https://t\.me/c/(\d+)/(\d+)" 
 
 # Global key to track if an index is running and where it is
 INDEX_STATUS_KEY = "CURRENT_INDEX_TASK" 
+# Global key for the message ID to skip up to
+INDEX_SKIP_ID_KEY = "INDEX_SKIP_ID" 
 
 def extract_links(links):
     """
@@ -68,8 +70,16 @@ async def index_files_task(bot, msg, chat_id, start_msg_id, last_msg_id):
     chat_key = f"index_{chat_id}"
     last_processed_id = await get_bot_state(chat_key) 
     
-    # current starts at the *higher* of the requested start ID or the last saved checkpoint
-    current = max(int(last_processed_id or 0), int(start_msg_id))
+    # Check global skip ID
+    skip_id = await get_global_setting(INDEX_SKIP_ID_KEY, 0)
+    
+    # current starts at the *highest* of: requested start ID, last saved checkpoint, or the global skip ID
+    current = max(int(last_processed_id or 0), int(start_msg_id), int(skip_id) + 1)
+    
+    # If the current start ID is less than the skip ID + 1, we must adjust the message
+    if current > int(skip_id) + 1:
+        logger.info(f"Indexing start adjusted from base {start_msg_id} to {current} due to resume/skip ID.")
+
 
     total_files = 0
     counter = 0
@@ -81,9 +91,9 @@ async def index_files_task(bot, msg, chat_id, start_msg_id, last_msg_id):
         await set_global_setting(INDEX_STATUS_KEY, f"RUNNING|{chat_id}|{current}|{last_msg_id}")
 
         try:
-            # Inform admin if this is a resumed task
+            # Inform admin if this is a resumed or skip-adjusted task
             if current > start_msg_id:
-                await msg.edit_text(f"Indexing resumed for `{chat_id}` from message ID **{current}**...")
+                await msg.edit_text(f"Indexing resumed/started for `{chat_id}` from message ID **{current}** (Skipping to {skip_id + 1} if set)...")
             
             while current < total:
                 try:
@@ -208,7 +218,46 @@ def register_command_handlers(app: Client):
             reply_markup=keyboard
         )
 
-    # --- NEW HANDLERS FOR ADMIN COMMANDS ---
+    # --- NEW HANDLER: /setskip ---
+    
+    @app.on_message(filters.command("setskip") & filters.user(ADMIN_USERS) & filters.private)
+    async def setskip_command(_, message: Message):
+        """Allows admin to set a message ID to skip up to during indexing."""
+        try:
+            if len(message.command) > 1:
+                skip_id = int(message.command[1])
+                if skip_id < 0:
+                    skip_id = 0
+
+                await set_global_setting(INDEX_SKIP_ID_KEY, skip_id)
+
+                if skip_id > 0:
+                    status = f"✅ **ON**: Indexing will skip all messages up to ID **{skip_id}**."
+                else:
+                    status = "❌ **OFF**: Indexing skip is disabled (Starts from 2 or resume point)."
+
+                await message.reply_text(
+                    f"⏭️ Index Skip feature is now set to: {status}\n\n"
+                    f"Set to 0 to disable.",
+                    parse_mode=enums.ParseMode.MARKDOWN
+                )
+            else:
+                current_skip = await get_global_setting(INDEX_SKIP_ID_KEY, 0)
+                status = f"Current index skip ID is: **{current_skip}**."
+                await message.reply_text(
+                    f"Usage: `/setskip <message_id>` (e.g., `/setskip 1000`)\n"
+                    f"{status}",
+                    parse_mode=enums.ParseMode.MARKDOWN
+                )
+
+        except ValueError:
+            await message.reply_text("❌ Invalid number provided. Please use an integer for the message ID.", parse_mode=enums.ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"Error in setskip_command: {e}")
+            await message.reply_text(f"An unexpected error occurred: `{e}`")
+
+
+    # --- OTHER ADMIN COMMANDS ---
 
     @app.on_message(filters.command("broadcast") & filters.user(ADMIN_USERS))
     async def broadcast_cmd(bot, msg):
@@ -260,7 +309,7 @@ def register_command_handlers(app: Client):
         await msg.reply(f"📦 Total Files: **{total}**\n👤 Total Users **{users}**", parse_mode=enums.ParseMode.MARKDOWN)
 
 
-    # --- NEW HANDLERS FOR INTERACTIVE INDEXING (FIXED) ---
+    # --- HANDLERS FOR INTERACTIVE INDEXING ---
 
     @app.on_message(
         filters.private & filters.forwarded & filters.user(ADMIN_USERS) & media_filter
@@ -298,12 +347,15 @@ def register_command_handlers(app: Client):
         if not str(final_chat_id).startswith("-100"):
             final_chat_id = final_chat_id if final_chat_id < 0 else int(f"-100{final_chat_id}")
 
-        # Check for existing checkpoint
+        # Check for existing checkpoint and global skip ID
         chat_key = f"index_{final_chat_id}"
         resume_id = await get_bot_state(chat_key)
-        start_id = resume_id if resume_id and resume_id > 2 else 2
-
-
+        skip_id = await get_global_setting(INDEX_SKIP_ID_KEY, 0)
+        
+        # Calculate effective starting ID
+        start_id_base = 2
+        start_id = max(resume_id or start_id_base, skip_id + 1)
+        
         try:
             # Simple check to see if bot can access the last message ID
             await bot.get_messages(chat_id=final_chat_id, message_ids=last_msg_id)
@@ -321,8 +373,10 @@ def register_command_handlers(app: Client):
             )
             
             resume_info = ""
-            if resume_id:
+            if resume_id and resume_id >= start_id_base:
                  resume_info = f"\n\n⚠️ **A previous index was interrupted. Resuming from ID {resume_id}.**"
+            elif start_id > start_id_base:
+                 resume_info = f"\n\n⏭️ **Skipping up to ID {skip_id + 1}** (as set by /setskip)."
 
             await bot.send_message(
                 user_id,
@@ -358,10 +412,13 @@ def register_command_handlers(app: Client):
         try:
             chat_id, start_msg_id_base, last_msg_id = extract_links(args)
 
-            # Check for existing checkpoint
+            # Check for existing checkpoint and global skip ID
             chat_key = f"index_{chat_id}"
             resume_id = await get_bot_state(chat_key)
-            start_id = max(resume_id or 0, start_msg_id_base)
+            skip_id = await get_global_setting(INDEX_SKIP_ID_KEY, 0)
+            
+            # Calculate effective starting ID
+            start_id = max(resume_id or start_msg_id_base, skip_id + 1)
 
             # Simple check to see if bot can access the last message ID
             await bot.get_messages(chat_id=chat_id, message_ids=last_msg_id)
@@ -379,8 +436,10 @@ def register_command_handlers(app: Client):
             )
             
             resume_info = ""
-            if resume_id:
+            if resume_id and resume_id >= start_msg_id_base:
                  resume_info = f"\n\n⚠️ **A previous index was interrupted. Resuming from ID {resume_id}.**"
+            elif start_id > start_msg_id_base:
+                 resume_info = f"\n\n⏭️ **Skipping up to ID {skip_id + 1}** (as set by /setskip)."
                  
             await bot.send_message(
                 user_id,
@@ -400,7 +459,6 @@ def register_command_handlers(app: Client):
         global index_task
         user_id = query.from_user.id
         
-        # Note: map(int, ...) will correctly handle the negative chat_id
         chat_id, start_msg_id, last_msg_id = map(int, query.data.split()[1:])
 
         await query.message.delete()
@@ -450,7 +508,7 @@ def register_command_handlers(app: Client):
             "To start indexing:\n\n"
             "1. **Forward the LAST file/message** of the channel (do NOT forward as a copy).\n"
             "2. **Use the link command:** `/indexlink <link>` or `/indexlink <start_link> <end_link>`\n\n"
-            "The bot must be an administrator in the channel."
+            "The bot must be an administrator in the channel. Use `/setskip` to skip old messages."
         )
 
 
@@ -568,6 +626,7 @@ def register_command_handlers(app: Client):
     # The function must return a list of handlers for registration in main.py
     return [
         start_command,
+        setskip_command, # NEWLY ADDED
         index_files_forwarded,
         manual_index,
         forcesub_command,
@@ -577,7 +636,6 @@ def register_command_handlers(app: Client):
         index_comm,
         poster_toggle_command,
         autodel_command,
-        # --- NEW HANDLERS ADDED HERE ---
         broadcast_cmd,
         deleteall_cmd,
         deletefile_cmd,
