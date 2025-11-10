@@ -1,8 +1,4 @@
-
-
-# command.py - MODIFIED for interactive and link-based indexing with deprecation fix
-# FIX: Changed enums.MessageOrigin.CHAT to enums.MessageOriginType.CHAT or similar
-# Based on the error, we assume the Enum Class name is MessageOriginType.
+# command.py - MODIFIED for interactive, link-based indexing AND RESUMPTION
 
 import asyncio
 import re
@@ -29,6 +25,9 @@ lock = asyncio.Lock()
 media_filter = filters.document | filters.video | filters.audio
 index_task = None
 link_pattern = r"https://t\.me/c/(\d+)/(\d+)" # Pattern to match c/channel_id/message_id links
+
+# Global key to track if an index is running and where it is
+INDEX_STATUS_KEY = "CURRENT_INDEX_TASK" 
 
 def extract_links(links):
     """
@@ -59,17 +58,33 @@ def extract_links(links):
     raise ValueError("Invalid number of links provided.")
 
 async def index_files_task(bot, msg, chat_id, start_msg_id, last_msg_id):
-    """The main background task for sequential indexing."""
+    """
+    The main background task for sequential indexing. 
+    start_msg_id is the desired starting point OR the resume checkpoint.
+    """
     global index_task
+    
+    # 1. Check for last processed ID to determine the *true* starting point
+    chat_key = f"index_{chat_id}"
+    last_processed_id = await get_bot_state(chat_key) 
+    
+    # current starts at the *higher* of the requested start ID or the last saved checkpoint
+    current = max(int(last_processed_id or 0), int(start_msg_id))
 
     total_files = 0
-    current = int(start_msg_id)
     counter = 0
     saved = 0
     total = last_msg_id + 1
 
     async with lock:
+        # 2. Set global status flag
+        await set_global_setting(INDEX_STATUS_KEY, f"RUNNING|{chat_id}|{current}|{last_msg_id}")
+
         try:
+            # Inform admin if this is a resumed task
+            if current > start_msg_id:
+                await msg.edit_text(f"Indexing resumed for `{chat_id}` from message ID **{current}**...")
+            
             while current < total:
                 try:
                     # Fetching messages one by one to respect start/end IDs
@@ -85,7 +100,7 @@ async def index_files_task(bot, msg, chat_id, start_msg_id, last_msg_id):
                     )
                 except asyncio.CancelledError:
                     logger.info("Indexing task was cancelled.")
-                    await msg.edit_text("Indexing process was cancelled.")
+                    await msg.edit_text(f"Indexing process was cancelled at ID **{current}**.")
                     return
                 except ChannelPrivate as e:
                     logger.warning(
@@ -111,6 +126,10 @@ async def index_files_task(bot, msg, chat_id, start_msg_id, last_msg_id):
                 
                 # Update status message every 200 messages checked
                 if counter >= 200:
+                    # 3. Save current checkpoint and update global status
+                    await save_bot_state(chat_key, current)
+                    await set_global_setting(INDEX_STATUS_KEY, f"RUNNING|{chat_id}|{current}|{last_msg_id}")
+                    
                     try:
                         kb = InlineKeyboardMarkup(
                             [
@@ -142,15 +161,23 @@ async def index_files_task(bot, msg, chat_id, start_msg_id, last_msg_id):
                     counter -= 200
             
         except asyncio.CancelledError:
-            logger.info("Indexing task was cancelled.")
-            await msg.edit_text("Indexing process was cancelled.")
+            # State already saved on last checkpoint; index_task is set to None in finally
+            pass
         except Exception as e:
+            # 4. Save final checkpoint before failing
+            await save_bot_state(chat_key, current)
             logger.exception(e)
-            await msg.edit_text(f"Error while indexing: {e}")
+            await msg.edit_text(f"Error while indexing: {e}. Checkpoint saved at ID **{current}**.")
+            
         else:
+            # 5. Clear checkpoint on successful completion
+            await save_bot_state(chat_key, None)
             logger.info("Complete: Total files saved: %s", saved)
-            await msg.edit_text(f"🥳 **Complete!** Total **{saved}** Files Saved To Database!")
+            await msg.edit_text(f"🥳 **Complete!** Total **{saved}** Files Saved To Database! Indexing state cleared.")
+            
         finally:
+            # 6. Clear the global status key
+            await set_global_setting(INDEX_STATUS_KEY, "IDLE")
             index_task = None
 
 def register_command_handlers(app: Client):
@@ -271,6 +298,11 @@ def register_command_handlers(app: Client):
         if not str(final_chat_id).startswith("-100"):
             final_chat_id = final_chat_id if final_chat_id < 0 else int(f"-100{final_chat_id}")
 
+        # Check for existing checkpoint
+        chat_key = f"index_{final_chat_id}"
+        resume_id = await get_bot_state(chat_key)
+        start_id = resume_id if resume_id and resume_id > 2 else 2
+
 
         try:
             # Simple check to see if bot can access the last message ID
@@ -280,17 +312,23 @@ def register_command_handlers(app: Client):
                 [
                     [
                         InlineKeyboardButton(
-                            "Proceed (Start at ID 2)",
-                            callback_data=f"index {final_chat_id} {2} {last_msg_id}",
+                            f"Proceed (Start at ID {start_id})",
+                            callback_data=f"index {final_chat_id} {start_id} {last_msg_id}",
                         ),
                         InlineKeyboardButton("Cancel", callback_data="can-index"),
                     ]
                 ]
             )
+            
+            resume_info = ""
+            if resume_id:
+                 resume_info = f"\n\n⚠️ **A previous index was interrupted. Resuming from ID {resume_id}.**"
+
             await bot.send_message(
                 user_id,
                 f"Please confirm if you want to start indexing channel `{final_chat_id}` "
-                f"from message ID 2 up to the forwarded message ID `{last_msg_id}`.",
+                f"from message ID `{start_id}` up to the forwarded message ID `{last_msg_id}`."
+                f"{resume_info}",
                 reply_markup=kb,
                 parse_mode=enums.ParseMode.MARKDOWN
             )
@@ -318,7 +356,12 @@ def register_command_handlers(app: Client):
             await message.reply("Invalid format. Use:\n`/indexlink <link>` (for 2 to link) \n`/indexlink <start_link> <end_link>` (to specify range)", parse_mode=enums.ParseMode.MARKDOWN)
             return
         try:
-            chat_id, start_msg_id, last_msg_id = extract_links(args)
+            chat_id, start_msg_id_base, last_msg_id = extract_links(args)
+
+            # Check for existing checkpoint
+            chat_key = f"index_{chat_id}"
+            resume_id = await get_bot_state(chat_key)
+            start_id = max(resume_id or 0, start_msg_id_base)
 
             # Simple check to see if bot can access the last message ID
             await bot.get_messages(chat_id=chat_id, message_ids=last_msg_id)
@@ -328,15 +371,21 @@ def register_command_handlers(app: Client):
                     [
                         InlineKeyboardButton(
                             "Proceed",
-                            callback_data=f"index {chat_id} {start_msg_id} {last_msg_id}",
+                            callback_data=f"index {chat_id} {start_id} {last_msg_id}",
                         ),
                         InlineKeyboardButton("Cancel", callback_data="can-index"),
                     ]
                 ]
             )
+            
+            resume_info = ""
+            if resume_id:
+                 resume_info = f"\n\n⚠️ **A previous index was interrupted. Resuming from ID {resume_id}.**"
+                 
             await bot.send_message(
                 user_id,
-                f"Chat ID: `{chat_id}`\nStart Message ID: `{start_msg_id}`\nLast Message ID: `{last_msg_id}`\nPlease confirm if you want to start indexing.",
+                f"Chat ID: `{chat_id}`\nStart Message ID: `{start_id}`\nLast Message ID: `{last_msg_id}`\nPlease confirm if you want to start indexing."
+                f"{resume_info}",
                 reply_markup=kb,
                 parse_mode=enums.ParseMode.MARKDOWN
             )
@@ -350,6 +399,7 @@ def register_command_handlers(app: Client):
         """Callback to initiate the indexing background task."""
         global index_task
         user_id = query.from_user.id
+        
         # Note: map(int, ...) will correctly handle the negative chat_id
         chat_id, start_msg_id, last_msg_id = map(int, query.data.split()[1:])
 
@@ -363,7 +413,7 @@ def register_command_handlers(app: Client):
         )
         msg = await bot.send_message(
             user_id,
-            "Processing Index...⏳\nStatus will be updated after every 200 messages checked.",
+            f"Processing Index for `{chat_id}`...⏳\nStatus will be updated after every 200 messages checked. Current ID: **{start_msg_id}**",
             reply_markup=kb,
             parse_mode=enums.ParseMode.MARKDOWN
         )
@@ -380,11 +430,12 @@ def register_command_handlers(app: Client):
         global index_task
         if index_task and not index_task.done():
             index_task.cancel()
-            await query.message.edit_text("Indexing cancelled.")
+            await query.answer("Cancelling index...")
             logger.info("User requested cancellation of indexing.. : %s", query.from_user.id)
+            # The task will update the message when it finishes cancellation
         else:
             await query.message.edit_text("No active indexing process to cancel.")
-        await query.answer()
+            await query.answer("No active index.")
 
     @app.on_callback_query(filters.regex(r"^can-index$"))
     async def cancel_index_confirmation(bot, query):
