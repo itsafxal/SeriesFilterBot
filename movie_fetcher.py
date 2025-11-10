@@ -7,22 +7,27 @@ def get_imdb_data(query: str):
         if not OMDB_API_KEY:
             return None
 
-        # 1) search
-        s = requests.get("https://www.omdbapi.com/", params={
-            "apikey": OMDB_API_KEY,
-            "s": query
-        }).json()
-
-        if s.get("Response") != "True":
-            return None
-
-        imdb_id = s["Search"][0]["imdbID"]    # first match
-
-        # 2) full
+        # try exact title first
         m = requests.get("https://www.omdbapi.com/", params={
             "apikey": OMDB_API_KEY,
-            "i": imdb_id
+            "t": query
         }).json()
+
+        # fallback to search
+        if m.get("Response") != "True":
+            s = requests.get("https://www.omdbapi.com/", params={
+                "apikey": OMDB_API_KEY,
+                "s": query
+            }).json()
+
+            if s.get("Response") != "True":
+                return None
+
+            imdb_id = s["Search"][0]["imdbID"]
+            m = requests.get("https://www.omdbapi.com/", params={
+                "apikey": OMDB_API_KEY,
+                "i": imdb_id
+            }).json()
 
         poster = m.get("Poster")
         if poster and poster.startswith("http://"):
@@ -34,7 +39,7 @@ def get_imdb_data(query: str):
             "genres": m.get("Genre", "?"),
             "rating": m.get("imdbRating", "?"),
             "poster": poster,
-            "link": f"https://www.imdb.com/title/{imdb_id}/"
+            "link": f"https://www.imdb.com/title/{m.get('imdbID')}/"
         }
 
     except:
