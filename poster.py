@@ -4,7 +4,7 @@ import asyncio
 import shelve
 
 try:
-    from info import OMDB_API_KEY, DEFAULT_POSTER, OMDB_CACHE_DB
+    from config import OMDB_API_KEY, DEFAULT_POSTER, OMDB_CACHE_DB
 except Exception:
     OMDB_API_KEY = None
     DEFAULT_POSTER = None
