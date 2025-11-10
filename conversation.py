@@ -21,6 +21,7 @@ from database import (
 # Assuming DEFAULT_POSTER_URL is available in config
 from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS, DEFAULT_POSTER, ABOUT_TEXT, ADMIN_USERS, ADMIN_TEXT
 from utils import clean_series_name, save_series_file_for_bulk_index
+from poster import get_series_poster_async
 
 # --- NEW: Spell Checker Import and Initialization ---
 from spellchecker import SpellChecker
@@ -297,7 +298,8 @@ def register_conversation_handlers(app: Client):
             return
 
         series_to_display = clean_series_name(unique_names[0])
-        poster_url = DEFAULT_POSTER
+        poster_url = await get_series_poster_async(series_to_display)
+        poster_url = poster_url or DEFAULT_POSTER
 
         summary = await get_series_summary(series_to_display)
         languages_list = ", ".join(summary.get('languages', []))
