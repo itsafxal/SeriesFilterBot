@@ -22,11 +22,7 @@ from database import (
 from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS, DEFAULT_POSTER_URL, ABOUT_TEXT, ADMIN_USERS, ADMIN_TEXT
 from utils import clean_series_name, save_series_file_for_bulk_index
 
-# NEW: better fuzzy match
-from rapidfuzz import process, fuzz
-
-SERIES_CACHE = []
-SERIES_CACHE_LC = []
+# REMOVED: global SERIES_CACHE, SERIES_CACHE_LC
 MAX_CALLBACK_LENGTH = 50
 
 # --- Helper Functions ---
@@ -78,37 +74,6 @@ async def check_force_subscribe(app: Client, user_id: int):
             return False, invite_link
         except Exception:
             return False, "https://t.me/telegram"  # Default fallback link
-
-# --- Cache Warm / Fuzzy ---
-
-async def warm_cache_once(force=False):
-    global SERIES_CACHE, SERIES_CACHE_LC
-    if SERIES_CACHE and not force:
-        return
-    SERIES_CACHE = await search_series("") or []
-    SERIES_CACHE_LC = [x.lower() for x in SERIES_CACHE]
-    logger.info(f"Spell cache warmed — {len(SERIES_CACHE)} titles")
-
-def fuzzy_suggestions(query_text: str, limit: int = 3, score_cutoff: int = 60):
-    """Return list of (real_name) suggestions using RapidFuzz."""
-    if not SERIES_CACHE_LC:
-        return []
-    # process.extract with a list returns tuples (choice, score, index)
-    matches = process.extract(
-        query_text.lower(),
-        SERIES_CACHE_LC,
-        scorer=fuzz.WRatio,
-        limit=limit,
-        score_cutoff=score_cutoff
-    )
-    suggestions = []
-    for choice, score, idx in matches:
-        try:
-            real = SERIES_CACHE[idx]
-            suggestions.append(real)
-        except Exception:
-            continue
-    return suggestions
 
 # --- Menus ---
 
@@ -197,31 +162,17 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
 
 def register_conversation_handlers(app: Client):
 
-    # Try warming cache in background if a loop is running
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(warm_cache_once())
-    except RuntimeError:
-        # no running loop now (called from bot.py before app.run()), we will warm on first search
-        pass
-
     @app.on_message((filters.document | filters.video | filters.audio) & filters.channel)
     async def media_handler(_, message: Message):
         if message.chat.id in INDEX_CHANNELS and message.media:
             saved, count = await save_series_file_for_bulk_index(message)
             if saved:
                 logger.info(f"RTI: Indexed {count} new file(s) from channel {message.chat.id}")
-                # Refresh cache after new index
-                global SERIES_CACHE, SERIES_CACHE_LC
-                SERIES_CACHE = await search_series("") or []
-                SERIES_CACHE_LC = [x.lower() for x in SERIES_CACHE]
+                # Removed: cache update logic
 
     @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"]))
     async def search_handler(app, message: Message):
-        # Ensure cache is warm even if register ran before loop existed
-        await warm_cache_once(force=True)
-
-
+        
         query = message.text.strip()
         if query.startswith('/') and query.lower() not in ["/index"]:
             return
@@ -237,21 +188,10 @@ def register_conversation_handlers(app: Client):
             )
             return
 
+        # This database call is now the only search mechanism
         unique_names = await search_series(query)
 
         if not unique_names:
-            # Fuzzy suggestions using RapidFuzz
-            suggestions = fuzzy_suggestions(query, limit=3, score_cutoff=60)
-            if suggestions:
-                rows = [[InlineKeyboardButton(f"🔍 {name}", callback_data=f"spellfix|{name}")] for name in suggestions]
-                suggestions_markup = InlineKeyboardMarkup(rows)
-                await message.reply_text(
-                    f"❌ No exact match found for `<code>{query}</code>`\n\n**Maybe you meant?**",
-                    reply_markup=suggestions_markup,
-                    parse_mode=enums.ParseMode.HTML,
-                )
-                return
-
             await message.reply_text(
                 f"❌ No series found `<code>{query}</code>`",
                 parse_mode=enums.ParseMode.HTML
@@ -651,25 +591,6 @@ def register_conversation_handlers(app: Client):
 
         await query.answer("Showing about information.")
 
-    # SPELLFIX ✅ (re-invokes search_handler directly)
-    @app.on_callback_query(filters.regex(r"^spellfix\|"))
-    async def spellfix_handler(app, query):
-        # payload is "spellfix|<series>"
-        parts = query.data.split("|", maxsplit=1)
-        if len(parts) < 2 or not parts[1]:
-            await query.answer("❌ Invalid suggestion.", show_alert=True)
-            return
-
-        series = parts[1]
-
-        # Fake a Message and call search_handler directly (no bot self-message)
-        fake = query.message
-        fake.text = series
-        fake.from_user = query.from_user  # ensure user context
-
-        await search_handler(app, fake)
-        await query.answer()
-
     @app.on_callback_query(filters.regex(r"close"))
     async def close_menu_handler(_, query):
         try:
@@ -683,5 +604,4 @@ def register_conversation_handlers(app: Client):
         back_to_language_handler, quality_select_handler, file_select_handler,
         back_to_search_handler, help_menu_handler, about_menu_handler,
         admin_menu_handler, cyber_menu_handler, close_menu_handler,
-        spellfix_handler
     ]
