@@ -249,13 +249,17 @@ def register_conversation_handlers(app: Client):
                 pass # Use DEFAULT_POSTER_URL on failure
 
             # Determine the poster URL: IMDb poster if available, otherwise use default
-            if imdb_data and imdb_data.get('poster'):
+            if imdb_data and imdb_data.get('poster') and imdb_data.get('poster') != 'N/A':
                 poster_url = imdb_data.get('poster')
         # --- END MODIFICATION ---
         
-        # --- FIX: Extract IMDb details or use placeholders ---
-        imdb_rating = imdb_data.get('rating', 'N/A') if imdb_data else 'N/A'
-        imdb_plot = imdb_data.get('plot', 'Plot information not available.') if imdb_data else 'Plot information not available.'
+        # --- FIX: Extract IMDb details more robustly ---
+        if imdb_data:
+            imdb_rating = imdb_data.get('rating', 'N/A')
+            imdb_plot = imdb_data.get('plot', 'Plot information not available.')
+        else:
+            imdb_rating = 'N/A'
+            imdb_plot = 'Plot information not available.'
         # ---------------------------------------------------
 
         summary = await get_series_summary(series_to_display)
@@ -510,14 +514,18 @@ def register_conversation_handlers(app: Client):
                 pass
             
             # Get poster URL for back action
-            if imdb_data and imdb_data.get('poster'):
+            if imdb_data and imdb_data.get('poster') and imdb_data.get('poster') != 'N/A':
                  poster_url = imdb_data.get('poster')
         
-        # --- FIX: Extract IMDb details or use placeholders ---
-        imdb_rating = imdb_data.get('rating', 'N/A') if imdb_data else 'N/A'
-        imdb_plot = imdb_data.get('plot', 'Plot information not available.') if imdb_data else 'Plot information not available.'
+        # --- FIX: Extract IMDb details more robustly ---
+        if imdb_data:
+            imdb_rating = imdb_data.get('rating', 'N/A')
+            imdb_plot = imdb_data.get('plot', 'Plot information not available.')
+        else:
+            imdb_rating = 'N/A'
+            imdb_plot = 'Plot information not available.'
         # ---------------------------------------------------
-
+        
         summary = await get_series_summary(series_name)
         
         languages_list = ", ".join(summary.get('languages', []))
