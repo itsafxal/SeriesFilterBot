@@ -19,7 +19,7 @@ from database import (
     get_file_by_message_id_and_channel_id
 )
 # Assuming DEFAULT_POSTER_URL is available in config
-from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS, DEFAULT_POSTER_URL, ABOUT_TEXT, ADMIN_USERS, ADMIN_TEXT
+from config import logger, CUSTOM_CAPTION_TEXT, INDEX_CHANNELS, DEFAULT_POSTER, ABOUT_TEXT, ADMIN_USERS, ADMIN_TEXT
 from utils import clean_series_name, save_series_file_for_bulk_index
 
 # --- NEW: Spell Checker Import and Initialization ---
