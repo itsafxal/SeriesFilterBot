@@ -1,7 +1,6 @@
 import requests
 import os
-
-OMDB_API_KEY = os.getenv("OMDB_API_KEY")  # or hardcode your key
+from config import OMDB_API_KEY
 
 def get_imdb_data(query: str):
     try:
