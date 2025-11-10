@@ -160,9 +160,9 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
         f"📌 Quality Selector\n\n"
         f"Tap a quality below —\n"
         f"▶️ Bot will instantly auto-send the WHOLE SEASON (all episodes) in that same resolution.\n\n"
-        f"⚡ Lightning Fast\n"
-        f"📦 Full Season Pack\n"
-        f"🎥 Download And Watch:"
+        f">⚡ Lightning Fast\n"
+        f">📦 Full Season Pack\n"
+        f">🎥 Download And Watch:"
     )
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
