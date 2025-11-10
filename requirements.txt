@@ -9,3 +9,4 @@ git+https://github.com/Joelkb/cinemagoer
 requests
 beautifulsoup4
 pyspellchecker
+aiohttp
