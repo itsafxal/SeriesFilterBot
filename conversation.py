@@ -81,17 +81,13 @@ async def check_force_subscribe(app: Client, user_id: int):
 
 # --- Cache Warm / Fuzzy ---
 
-async def warm_cache_once():
-    """Warm series cache once (idempotent)."""
+async def warm_cache_once(force=False):
     global SERIES_CACHE, SERIES_CACHE_LC
-    if SERIES_CACHE:
+    if SERIES_CACHE and not force:
         return
-    try:
-        SERIES_CACHE = await search_series("") or []
-        SERIES_CACHE_LC = [x.lower() for x in SERIES_CACHE]
-        logger.info(f"Spell cache warmed — {len(SERIES_CACHE)} titles")
-    except Exception as e:
-        logger.error(f"Failed to warm spell cache: {e}")
+    SERIES_CACHE = await search_series("") or []
+    SERIES_CACHE_LC = [x.lower() for x in SERIES_CACHE]
+    logger.info(f"Spell cache warmed — {len(SERIES_CACHE)} titles")
 
 def fuzzy_suggestions(query_text: str, limit: int = 3, score_cutoff: int = 60):
     """Return list of (real_name) suggestions using RapidFuzz."""
@@ -223,7 +219,8 @@ def register_conversation_handlers(app: Client):
     @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"]))
     async def search_handler(app, message: Message):
         # Ensure cache is warm even if register ran before loop existed
-        await warm_cache_once()
+        await warm_cache_once(force=True)
+
 
         query = message.text.strip()
         if query.startswith('/') and query.lower() not in ["/index"]:
