@@ -3,7 +3,7 @@
 import asyncio
 from pyrogram import Client
 from command import register_command_handlers, index_files_task, lock, INDEX_STATUS_KEY
-from conversation import register_conversation_handlers, SERIES_CACHE, SERIES_CACHE_LC
+from conversation import register_conversation_handlers
 from database import initialize_sql_db, search_series, get_global_setting, set_global_setting # ADD get_global_setting, set_global_setting
 from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS # ADD ADMIN_USERS
 
@@ -61,10 +61,6 @@ async def run_bot_async(app: Client):
     # 1. Start the client to establish the connection.
     await app.start()
     
-    # Load Series Cache
-    SERIES_CACHE[:] = await search_series("")
-    SERIES_CACHE_LC[:] = [x.lower() for x in SERIES_CACHE]
-    logger.info(f"SERIES CACHE LOADED: {len(SERIES_CACHE)} entries")
     
     logger.info("Bot is running. Waiting for updates...")
     
