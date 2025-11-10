@@ -8,3 +8,4 @@ aiosqlite
 git+https://github.com/Joelkb/cinemagoer
 requests
 beautifulsoup4
+rapidfuzz
