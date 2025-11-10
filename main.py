@@ -1,17 +1,56 @@
-# main.py - FINAL WORKING IMPLEMENTATION without app.idle()
+# main.py - FINAL WORKING IMPLEMENTATION with index resumption
 
 import asyncio
 from pyrogram import Client
-# Removed 'from pyrogram.errors import FloodWait' as it's no longer needed in this file
-from command import register_command_handlers
+from command import register_command_handlers, index_files_task, lock, INDEX_STATUS_KEY
 from conversation import register_conversation_handlers, SERIES_CACHE, SERIES_CACHE_LC
-# Removed 'get_all_users' as it's no longer used
-from database import initialize_sql_db, search_series # Kept initialize_sql_db and search_series
-from config import API_ID, API_HASH, BOT_TOKEN, logger
+from database import initialize_sql_db, search_series, get_global_setting, set_global_setting # ADD get_global_setting, set_global_setting
+from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS # ADD ADMIN_USERS
 
-# --- Notification Function ---
-# The notify_users_of_restart function is entirely removed.
+# --- New Index Resumption Checker ---
+async def check_and_resume_index(app: Client):
+    """Checks for an interrupted indexing task and resumes it."""
+    global index_task
+    
+    # Only try to resume if the lock isn't currently held (shouldn't be)
+    if lock.locked():
+        logger.warning("Index lock is held on startup, skipping resume check.")
+        return
 
+    status = await get_global_setting(INDEX_STATUS_KEY, "IDLE")
+    if not status.startswith("RUNNING"):
+        logger.info("No interrupted index task found to resume.")
+        return
+
+    try:
+        # Format: RUNNING|<chat_id>|<current_id>|<last_msg_id>
+        _, chat_id_str, start_msg_id_str, last_msg_id_str = status.split("|")
+        chat_id, start_msg_id, last_msg_id = map(int, [chat_id_str, start_msg_id_str, last_msg_id_str])
+
+        logger.warning(f"Resuming interrupted index for {chat_id} from checkpoint {start_msg_id} to {last_msg_id}...")
+        
+        # We need an admin's chat ID to send the status updates.
+        # Fallback to a message object that sends new updates to the primary admin
+        admin_id = ADMIN_USERS[0] 
+        
+        # Send a starting notification and get the message object for updates
+        msg = await app.send_message(
+            admin_id,
+            f"**[RESUMED INDEX]**\nIndexing channel `{chat_id}` resumed from ID **{start_msg_id}**.\nStatus will update every 200 messages checked.",
+            parse_mode="markdown"
+        )
+
+        # Start the background task (start_msg_id is now the checkpoint ID)
+        index_task = asyncio.create_task(
+            # Pass the checkpoint as the starting ID
+            index_files_task(app, msg, chat_id, start_msg_id, last_msg_id) 
+        )
+        logger.info("Index resumption task started.")
+
+    except Exception as e:
+        logger.error(f"Failed to check or resume index task, clearing status: {e}")
+        # Clear status so bot doesn't try to resume a broken task again
+        await set_global_setting(INDEX_STATUS_KEY, "IDLE") 
 
 # --- Main Asynchronous Bot Runner ---
 async def run_bot_async(app: Client):
@@ -27,17 +66,15 @@ async def run_bot_async(app: Client):
     SERIES_CACHE_LC[:] = [x.lower() for x in SERIES_CACHE]
     logger.info(f"SERIES CACHE LOADED: {len(SERIES_CACHE)} entries")
     
-    # 2. Removed the line: asyncio.create_task(notify_users_of_restart(app))
-    
     logger.info("Bot is running. Waiting for updates...")
     
+    # 2. Check and Resume Index Task AFTER client start and cache load
+    asyncio.create_task(check_and_resume_index(app)) 
+    
     # 3. Keep the script alive and listening for updates.
-    # REPLACED: await app.idle() with an infinite await
     try:
-        # Await a Future that will never be done, keeping the loop running indefinitely
         await asyncio.Future() 
     except KeyboardInterrupt:
-        # Allows cleanup on Ctrl+C or process termination
         pass
     
     # 4. Cleanly stop the client on exit.
@@ -70,7 +107,6 @@ def main():
     
     # --- Start the bot ---
     logger.info("Starting bot client main loop...")
-    # This is the blocking call that executes the async function run_bot_async
     app.run(run_bot_async(app))
 
 if __name__ == "__main__":
