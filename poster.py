@@ -1,29 +1,49 @@
-# utils/poster.py
+# poster.py
 import aiohttp
 import asyncio
 import shelve
+import re
+from typing import Optional
 
 try:
     from config import OMDB_API_KEY, DEFAULT_POSTER, OMDB_CACHE_DB
 except Exception:
+    # fallback defaults (please update config.py with real values)
     OMDB_API_KEY = None
     DEFAULT_POSTER = None
-    OMDB_CACHE_DB = "/tmp/omdb_poster_cache.db"
+    OMDB_CACHE_DB = "/tmp/omdb_cache.db"
 
 _cache = {}
 DISK_CACHE_FILE = OMDB_CACHE_DB or "/tmp/omdb_poster_cache.db"
 
-async def get_series_poster_async(title: str, use_disk_cache: bool = True, timeout: int = 6) -> str:
+def _normalize_title_for_omdb(title: str) -> str:
+    """Light normalization: strip outer whitespace, remove trailing year (e.g. 2019), parentheses, and extra punctuation."""
+    if not title:
+        return title
+    t = title.strip()
+    # remove (TV) or similar trailing tags
+    t = re.sub(r"\s*\(.*?\)\s*$", "", t)
+    # remove trailing year like " - 2019" or " 2019"
+    t = re.sub(r"[-\s]+(?:19|20)\d{2}$", "", t)
+    return t.strip()
+
+async def get_series_poster_async(title: str, use_disk_cache: bool = True, timeout: int = 6) -> Optional[str]:
     """
-    Query OMDb for a series poster (type=series). Return poster URL or DEFAULT_POSTER if none found.
+    Query OMDb for a series poster (type=series).
+    Returns poster URL (string) or DEFAULT_POSTER (string) on failure.
+    Caches results in-memory and (optionally) on-disk via shelve to avoid rate limits.
     """
     if not title:
         return DEFAULT_POSTER
 
-    key = title.strip().lower()
+    norm_title = _normalize_title_for_omdb(title)
+    key = norm_title.strip().lower()
+
+    # in-memory cache hit
     if key in _cache:
         return _cache[key]
 
+    # disk cache hit
     if use_disk_cache:
         try:
             with shelve.open(DISK_CACHE_FILE) as db:
@@ -31,13 +51,15 @@ async def get_series_poster_async(title: str, use_disk_cache: bool = True, timeo
                     _cache[key] = db[key]
                     return db[key]
         except Exception:
+            # ignore cache read errors
             pass
 
+    # no API key configured -> fallback
     if not OMDB_API_KEY:
         return DEFAULT_POSTER
 
     url = "http://www.omdbapi.com/"
-    params = {"apikey": OMDB_API_KEY, "t": title, "type": "series"}
+    params = {"apikey": OMDB_API_KEY, "t": norm_title, "type": "series"}
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -48,11 +70,14 @@ async def get_series_poster_async(title: str, use_disk_cache: bool = True, timeo
     except asyncio.TimeoutError:
         return DEFAULT_POSTER
     except Exception:
+        # network/parse error
         return DEFAULT_POSTER
 
+    # OMDb format: {"Response": "True", "Poster": "https://..."} or Response:"False"
     if data.get("Response", "False") == "True":
         poster = data.get("Poster")
         if poster and poster != "N/A":
+            # cache and persist
             _cache[key] = poster
             if use_disk_cache:
                 try:
