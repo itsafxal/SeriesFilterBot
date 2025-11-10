@@ -220,7 +220,7 @@ def register_conversation_handlers(app: Client):
         series_to_display = clean_series_name(unique_names[0])
 
         # Always use default poster (IMDb disabled by design)
-        poster_url = DEFAULT_POSTER_URL
+        poster_url = DEFAULT_POSTER
 
         summary = await get_series_summary(series_to_display)
         languages_list = ", ".join(summary.get('languages', []))
@@ -297,7 +297,7 @@ def register_conversation_handlers(app: Client):
             return
 
         series_to_display = clean_series_name(unique_names[0])
-        poster_url = DEFAULT_POSTER_URL
+        poster_url = DEFAULT_POSTER
 
         summary = await get_series_summary(series_to_display)
         languages_list = ", ".join(summary.get('languages', []))
@@ -497,7 +497,7 @@ def register_conversation_handlers(app: Client):
             return
 
         series_name = data[1]
-        poster_url = DEFAULT_POSTER_URL
+        poster_url = DEFAULT_POSTER
 
         summary = await get_series_summary(series_name)
         languages_list = ", ".join(summary.get('languages', []))
