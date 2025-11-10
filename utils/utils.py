@@ -6,6 +6,8 @@ from pyrogram import types, enums
 from config import logger
 from database import save_file_to_db, get_all_files_by_season_and_quality
 from .poster import get_series_poster_async
+from info import DEFAULT_POSTER
+
 
 ###################################################
 ## UTILITY & PARSING (Name Unification Logic) ##
@@ -188,10 +190,12 @@ async def save_series_file_for_bulk_index(message: types.Message):
 
     # Fetch OMDb poster (falls back to DEFAULT_POSTER if not found)
     try:
-        poster_url = await get_series_poster_async(normalized_name)
-    except Exception:
-        # safety: never break saving if poster lookup fails
-        poster_url = None
+    poster_url = await get_series_poster_async(normalized_name)
+    # ensure not None
+    poster_url = poster_url or DEFAULT_POSTER
+except Exception as e:
+    logger.warning(f"[OMDB ERROR] {normalized_name} -> {e}")
+    poster_url = DEFAULT_POSTER
 
     file_doc = {
         "channel_id": message.chat.id,
