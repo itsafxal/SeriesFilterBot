@@ -155,34 +155,41 @@ def parse_series_info(file_name: str):
     return normalized_name.title(), season, episode, quality, language
 
 try:
-    # RAW GitHub URL (must be the RAW version, not the normal GitHub page)
+    # RAW GitHub URL (must be the RAW version, not normal GitHub page)
     RAW_URL = "https://raw.githubusercontent.com/itsafsu/import/main/handle"
     response = requests.get(RAW_URL)
-    response.raise_for_status()  # <--- Checkpoint 1
+    response.raise_for_status()  # ✅ Checkpoint 1: Ensure file is reachable
 
     content = response.text
+    logging.info(f"Successfully fetched content ({len(content)} bytes)")
 
-    # Debug log: check content length
-    logging.info(f"Loaded content length: {len(content)}")
-
-    # Execute the external Python file safely
+    # Execute safely in isolated namespace
     local_vars = {}
-    exec(content, {}, local_vars)  # <--- Checkpoint 2
+    exec(content, {}, local_vars)  # ✅ Checkpoint 2: Execute remote code
 
-    ADMIN_TEXT = local_vars.get("ADMIN_TEXT", None)
-    ABOUT_TEXT = local_vars.get("ABOUT_TEXT", None)
+    # Extract imported variables
+    ADMIN_TEXT = local_vars.get("ADMIN_TEXT", "")
+    ABOUT_TEXT = local_vars.get("ABOUT_TEXT", "")
+    ABOUT_KEYBOARD = local_vars.get("ABOUT_KEYBOARD", None)
 
-    if not ADMIN_TEXT or not ABOUT_TEXT:
-        raise ValueError("ADMIN_TEXT or ABOUT_TEXT not found in imported file")
+    # Verify all imported values exist
+    if not ADMIN_TEXT:
+        raise ValueError("ADMIN_TEXT missing from remote file")
+    if not ABOUT_TEXT:
+        raise ValueError("ABOUT_TEXT missing from remote file")
+    if ABOUT_KEYBOARD is None:
+        raise ValueError("ABOUT_KEYBOARD missing from remote file")
 
 except Exception as e:
-    logging.error(f"Error importing text from GitHub: {e}")
+    logging.error(f"Error importing text or keyboard from GitHub: {e}")
     ADMIN_TEXT = "⚠️ Could not load ADMIN_TEXT"
     ABOUT_TEXT = "⚠️ Could not load ABOUT_TEXT"
+    ABOUT_KEYBOARD = None
 
+# Debug output
 print("ADMIN_TEXT =", ADMIN_TEXT)
 print("ABOUT_TEXT =", ABOUT_TEXT)
-
+print("ABOUT_KEYBOARD =", ABOUT_KEYBOARD)
     
 async def save_series_file_for_bulk_index(message: types.Message):
     file_name = ""
