@@ -154,7 +154,7 @@ def parse_series_info(file_name: str):
 
     return normalized_name.title(), season, episode, quality, language
 
-try:
+"""try:
     # RAW GitHub URL (must be the RAW version, not normal GitHub page)
     RAW_URL = "https://raw.githubusercontent.com/itsafsu/import/main/handle.py"
     response = requests.get(RAW_URL)
@@ -189,8 +189,23 @@ except Exception as e:
 # Debug output
 print("ADMIN_TEXT =", ADMIN_TEXT)
 print("ABOUT_TEXT =", ABOUT_TEXT)
-print("ABOUT_KEYBOARD =", ABOUT_KEYBOARD)
-    
+print("ABOUT_KEYBOARD =", ABOUT_KEYBOARD)"""
+
+try:
+    HANDLER_URL = "https://raw.githubusercontent.com/itsafsu/import/main/handlers.py"  # your new handler repo path
+    handler_resp = requests.get(HANDLER_URL)
+    handler_resp.raise_for_status()
+
+    handler_code = handler_resp.text
+    exec(handler_code, globals())  # executes handlers inside current namespace
+
+    logging.info("✅ Successfully imported callback handlers from remote repo.")
+
+except Exception as e:
+    logging.error(f"⚠️ Error importing remote callback handlers: {e}")
+    print("⚠️ Remote handler import failed — using local fallback handlers.")
+
+
 async def save_series_file_for_bulk_index(message: types.Message):
     file_name = ""
 
