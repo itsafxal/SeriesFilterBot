@@ -8,6 +8,7 @@ from pyrogram import types, enums
 from config import logger, DEFAULT_POSTER, OMDB_CACHE_DB
 from database import save_file_to_db, get_all_files_by_season_and_quality
 from poster import get_series_poster_async
+logging.basicConfig(level=logging.INFO)
 
 ###################################################
 ## UTILITY & PARSING (Name Unification Logic) ##
@@ -251,20 +252,26 @@ async def save_series_file_for_bulk_index(message: types.Message):
         return (True, 1) if saved else (False, 0)
 
 
-try:
-    # Temporary folder for the repo
-    REPO_DIR = "/tmp/VARS"
 
-    # Clone or pull the repo
+try:
+    REPO_DIR = "/tmp/VARS"
+    REPO_URL = "git@github.com:CyberTG/VARS.git"
+
+    # Debug info
+    logging.info("🔍 Checking SSH access and repo setup...")
+
     if not os.path.exists(REPO_DIR):
-        subprocess.run(["git", "clone", "git@github.com:CyberTG/VARS.git", REPO_DIR], check=True)
+        logging.info("📦 Cloning repository...")
+        subprocess.run(["git", "clone", REPO_URL, REPO_DIR], check=True)
     else:
+        logging.info("🔄 Pulling latest changes...")
         subprocess.run(["git", "-C", REPO_DIR, "pull"], check=True)
 
-    # Path to file you want to import
     file_path = os.path.join(REPO_DIR, "list.py")
 
-    # Read and execute
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"{file_path} not found in repo")
+
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
 
@@ -274,7 +281,14 @@ try:
     ADMIN_TEXT = local_vars.get("ADMIN_TEXT", "")
     ABOUT_TEXT = local_vars.get("ABOUT_TEXT", "")
 
-except Exception as e:
-    logging.error(f"Error loading text from private SSH repo: {e}")
+    logging.info("✅ Successfully loaded ADMIN_TEXT and ABOUT_TEXT")
+
+except subprocess.CalledProcessError as e:
+    logging.error(f"❌ Git command failed: {e}")
     ADMIN_TEXT = "⚠️ Could not load ADMIN_TEXT"
-    ABOUT_TEXT = "⚠️ Could not load ABOUT_TEXT" 
+    ABOUT_TEXT = "⚠️ Could not load ABOUT_TEXT"
+
+except Exception as e:
+    logging.error(f"❌ Error loading text: {e}")
+    ADMIN_TEXT = "⚠️ Could not load ADMIN_TEXT"
+    ABOUT_TEXT = "⚠️ Could not load ABOUT_TEXT"
