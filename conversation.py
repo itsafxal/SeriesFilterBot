@@ -41,12 +41,12 @@ MAX_CALLBACK_LENGTH = 50
 # --- Helper Functions ---
 
 
-async def delete_message_later(app: Client, chat_id, message_id, delay):
+async def delete_message_later(cyber: Client, chat_id, message_id, delay):
     if delay <= 0:
         return
     await asyncio.sleep(delay)
     try:
-        await app.delete_messages(chat_id, message_id)
+        await cyber.delete_messages(chat_id, message_id)
     except Exception:
         pass
 
@@ -66,7 +66,7 @@ async def _normalize_channel_id(val):
 # --- Force Subscribe Helper ---
 
 
-async def check_force_subscribe(app: Client, user_id: int):
+async def check_force_subscribe(cyber: Client, user_id: int):
     """Checks if the user is a member of the required force subscribe channel."""
     channel_id_raw = await get_global_setting("FORCE_SUB_CHANNEL_ID", None)
     if not channel_id_raw:
@@ -75,7 +75,7 @@ async def check_force_subscribe(app: Client, user_id: int):
     channel_id = await _normalize_channel_id(channel_id_raw)
 
     try:
-        member = await app.get_chat_member(channel_id, user_id)
+        member = await cyber.get_chat_member(channel_id, user_id)
         if member.status in [
             enums.ChatMemberStatus.MEMBER,
             enums.ChatMemberStatus.ADMINISTRATOR,
@@ -83,14 +83,14 @@ async def check_force_subscribe(app: Client, user_id: int):
         ]:
             return True, None
         else:
-            chat = await app.get_chat(channel_id)
+            chat = await cyber.get_chat(channel_id)
             invite_link = chat.invite_link or (f"https://t.me/{chat.username}" if chat.username else "N/A")
             return False, invite_link
 
     except Exception as e:
         logger.error(f"Force Sub check failed for channel {channel_id_raw} and user {user_id}: {e}")
         try:
-            chat = await app.get_chat(channel_id)
+            chat = await cyber.get_chat(channel_id)
             invite_link = chat.invite_link or (f"https://t.me/{chat.username}" if chat.username else "N/A")
             return False, invite_link
         except Exception:
@@ -100,7 +100,7 @@ async def check_force_subscribe(app: Client, user_id: int):
 # --- Menus ---
 
 
-async def show_language_menu(app: Client, query, series_name: str, season: int):
+async def show_language_menu(cyber: Client, query, series_name: str, season: int):
     languages = await get_unique_languages_by_season(series_name, season)
     if not languages:
         await query.answer(f"❌ No languages found for {series_name} S{season}.", show_alert=True)
@@ -137,10 +137,10 @@ async def show_language_menu(app: Client, query, series_name: str, season: int):
             pass
 
     if auto_delete_timer and int(auto_delete_timer) > 0:
-        asyncio.create_task(delete_message_later(app, query.message.chat.id, query.message.id, int(auto_delete_timer)))
+        asyncio.create_task(delete_message_later(cyber, query.message.chat.id, query.message.id, int(auto_delete_timer)))
 
 
-async def show_quality_menu(app: Client, query, series_name: str, language: str, season: int):
+async def show_quality_menu(cyber: Client, query, series_name: str, language: str, season: int):
     qualities = await get_unique_qualities_by_lang_season(series_name, language, season)
     if not qualities:
         await query.answer(f"❌ No quality files found for S{season} ({language}).", show_alert=True)
@@ -180,28 +180,28 @@ async def show_quality_menu(app: Client, query, series_name: str, language: str,
             pass
 
     if auto_delete_timer and int(auto_delete_timer) > 0:
-        asyncio.create_task(delete_message_later(app, query.message.chat.id, query.message.id, int(auto_delete_timer)))
+        asyncio.create_task(delete_message_later(cyber, query.message.chat.id, query.message.id, int(auto_delete_timer)))
 
 
 # --- Handler Registration ---
 
 
-def register_conversation_handlers(app: Client):
-    @app.on_message((filters.document | filters.video | filters.audio) & filters.channel)
+def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
+    @cyber.on_message((filters.document | filters.video | filters.audio) & filters.channel) # Changed 'app' to 'cyber'
     async def media_handler(_, message: Message):
         if message.chat.id in INDEX_CHANNELS and message.media:
             saved, count = await save_series_file_for_bulk_index(message)
             if saved:
                 logger.info(f"RTI: Indexed {count} new file(s) from channel {message.chat.id}")
 
-    @app.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"]))
-    async def search_handler(app, message: Message):
+    @cyber.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"])) # Changed 'app' to 'cyber'
+    async def search_handler(cyber, message: Message): # Changed 'app' to 'cyber'
         query = message.text.strip()
         if query.startswith("/") and query.lower() not in ["/index"]:
             return
 
         # Force Subscribe
-        is_member, invite_link = await check_force_subscribe(app, message.from_user.id)
+        is_member, invite_link = await check_force_subscribe(cyber, message.from_user.id)
         if not is_member:
             await message.reply_text(
                 "🛑 **Please join our channel to get search results.**\n\n"
@@ -265,7 +265,7 @@ def register_conversation_handlers(app: Client):
                 # Implement auto-delete for this message
                 auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
                 if auto_delete_timer and int(auto_delete_timer) > 0:
-                    asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
+                    asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, int(auto_delete_timer))) # Changed 'app' to 'cyber'
                 
                 return # Suggestion displayed, stop here
 
@@ -338,14 +338,14 @@ def register_conversation_handlers(app: Client):
             sent_message = await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
         if auto_delete_timer and int(auto_delete_timer) > 0:
-            asyncio.create_task(delete_message_later(app, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
+            asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, int(auto_delete_timer))) # Changed 'app' to 'cyber'
 
 
     # --- NEW CALLBACK HANDLERS FOR SUGGESTIONS ---
 
     # Suggestion selection handler
-    @app.on_callback_query(filters.regex(r"^sugg_select\|"))
-    async def sugg_select_handler(app, query):
+    @cyber.on_callback_query(filters.regex(r"^sugg_select\|")) # Changed 'app' to 'cyber'
+    async def sugg_select_handler(cyber, query): # Changed 'app' to 'cyber'
         data = query.data.split("|", 2) # split into 3 parts: 'sugg_select', user_id, series_name
         if len(data) < 3:
             await query.answer("❌ Error: Invalid suggestion data.", show_alert=True)
@@ -418,14 +418,14 @@ def register_conversation_handlers(app: Client):
                 pass
 
         if auto_delete_timer and int(auto_delete_timer) > 0:
-            asyncio.create_task(delete_message_later(app, query.message.chat.id, query.message.id, int(auto_delete_timer)))
+            asyncio.create_task(delete_message_later(cyber, query.message.chat.id, query.message.id, int(auto_delete_timer))) # Changed 'app' to 'cyber'
 
 
     # Close suggestion menu handler
-    @app.on_callback_query(filters.regex(r"^close_suggestion\|"))
-    async def close_suggestion_handler(app, query):
+    @cyber.on_callback_query(filters.regex(r"^close_suggestion\|")) # Changed 'app' to 'cyber'
+    async def close_suggestion_handler(cyber, query): # Changed 'app' to 'cyber'
         try:
-            await app.delete_messages(query.message.chat.id, query.message.id)
+            await cyber.delete_messages(query.message.chat.id, query.message.id) # Changed 'app' to 'cyber'
         except Exception as e:
             logger.warning(f"Failed to delete suggestion message: {e}")
             await query.answer("❌ Failed to close message.", show_alert=True)
@@ -434,8 +434,8 @@ def register_conversation_handlers(app: Client):
 
 
     # Season select
-    @app.on_callback_query(filters.regex(r"^ss\|"))
-    async def season_select_handler(app, query):
+    @cyber.on_callback_query(filters.regex(r"^ss\|")) # Changed 'app' to 'cyber'
+    async def season_select_handler(cyber, query): # Changed 'app' to 'cyber'
         data = query.data.split("|")
 
         if len(data) < 3:
@@ -451,12 +451,12 @@ def register_conversation_handlers(app: Client):
             await query.answer("❌ Error: Invalid season number format.", show_alert=True)
             return
 
-        await show_language_menu(app, query, series_name, season)
+        await show_language_menu(cyber, query, series_name, season) # Changed 'app' to 'cyber'
         await query.answer()
 
     # Language select
-    @app.on_callback_query(filters.regex(r"^ls\|"))
-    async def language_select_handler(app, query):
+    @cyber.on_callback_query(filters.regex(r"^ls\|")) # Changed 'app' to 'cyber'
+    async def language_select_handler(cyber, query): # Changed 'app' to 'cyber'
         data = query.data.split("|")
         if len(data) < 4:
             await query.answer("❌ Error: Invalid language selection data.", show_alert=True)
@@ -465,12 +465,12 @@ def register_conversation_handlers(app: Client):
         series_name = data[1]
         season = int(data[2])
         language = data[3]
-        await show_quality_menu(app, query, series_name, language, season)
+        await show_quality_menu(cyber, query, series_name, language, season) # Changed 'app' to 'cyber'
         await query.answer()
 
     # Back to language from quality
-    @app.on_callback_query(filters.regex(r"^bl\|"))
-    async def back_to_language_handler(app, query):
+    @cyber.on_callback_query(filters.regex(r"^bl\|")) # Changed 'app' to 'cyber'
+    async def back_to_language_handler(cyber, query): # Changed 'app' to 'cyber'
         data = query.data.split("|")
 
         if len(data) < 3:
@@ -484,12 +484,12 @@ def register_conversation_handlers(app: Client):
             await query.answer("❌ Error: Invalid season number format.", show_alert=True)
             return
 
-        await show_language_menu(app, query, series_name, season)
+        await show_language_menu(cyber, query, series_name, season) # Changed 'app' to 'cyber'
         await query.answer()
 
     # Quality select
-    @app.on_callback_query(filters.regex(r"^qs\|"))
-    async def quality_select_handler(app, query):
+    @cyber.on_callback_query(filters.regex(r"^qs\|")) # Changed 'app' to 'cyber'
+    async def quality_select_handler(cyber, query): # Changed 'app' to 'cyber'
         data = query.data.split("|")
         if len(data) < 5:
             await query.answer("❌ Error: Invalid quality selection data.", show_alert=True)
@@ -512,7 +512,7 @@ def register_conversation_handlers(app: Client):
             await query.answer("❌ No files found.", show_alert=True)
             return
 
-        bot_username = (await app.get_me()).username
+        bot_username = (await cyber.get_me()).username # Changed 'app' to 'cyber'
         sent_count = 0
 
         for file_entry in files:
@@ -525,14 +525,14 @@ def register_conversation_handlers(app: Client):
             try:
                 file_id = file_entry.get("file_id")
                 if file_id:
-                    await app.send_document(
+                    await cyber.send_document( # Changed 'app' to 'cyber'
                         chat_id=query.from_user.id,
                         document=file_id,
                         caption=custom_caption,
                         parse_mode=enums.ParseMode.MARKDOWN,
                     )
                 else:
-                    await app.copy_message(
+                    await cyber.copy_message( # Changed 'app' to 'cyber'
                         chat_id=query.from_user.id,
                         from_chat_id=channel_id,
                         message_id=message_id,
@@ -548,11 +548,11 @@ def register_conversation_handlers(app: Client):
             f"✅ Successfully sent {sent_count} files from "
             f"**{series_name}** — Season {season} ({quality})"
         )
-        await app.send_message(chat_id=query.from_user.id, text=success_text, parse_mode=enums.ParseMode.MARKDOWN)
+        await cyber.send_message(chat_id=query.from_user.id, text=success_text, parse_mode=enums.ParseMode.MARKDOWN) # Changed 'app' to 'cyber'
 
     # File select (single)
-    @app.on_callback_query(filters.regex(r"^fs\|"))
-    async def file_select_handler(app, query):
+    @cyber.on_callback_query(filters.regex(r"^fs\|")) # Changed 'app' to 'cyber'
+    async def file_select_handler(cyber, query): # Changed 'app' to 'cyber'
         data = query.data.split("|")
         if len(data) < 4:
             await query.answer("❌ Error: Invalid file selection data.", show_alert=True)
@@ -570,10 +570,10 @@ def register_conversation_handlers(app: Client):
         file_name = file_entry.get("file_name", f"S{file_entry.get('season',0)}E{file_entry.get('episode',99)}")
 
         try:
-            bot_username = (await app.get_me()).username
+            bot_username = (await cyber.get_me()).username # Changed 'app' to 'cyber'
             custom_caption = CUSTOM_CAPTION_TEXT.format(file_name=file_name, bot_username=bot_username)
 
-            await app.copy_message(
+            await cyber.copy_message( # Changed 'app' to 'cyber'
                 chat_id=query.from_user.id,
                 from_chat_id=channel_id,
                 message_id=message_id,
@@ -586,8 +586,8 @@ def register_conversation_handlers(app: Client):
             await query.answer("❌ Failed to send file.\nMake sure bot is admin.", show_alert=True)
 
     # Back to search (main)
-    @app.on_callback_query(filters.regex(r"^back_to_search\|"))
-    async def back_to_search_handler(app, query):
+    @cyber.on_callback_query(filters.regex(r"^back_to_search\|")) # Changed 'app' to 'cyber'
+    async def back_to_search_handler(cyber, query): # Changed 'app' to 'cyber'
         data = query.data.split("|")
         if len(data) < 2:
             await query.answer("❌ Error: Invalid back data.", show_alert=True)
@@ -656,13 +656,13 @@ def register_conversation_handlers(app: Client):
                 pass
 
         if auto_delete_timer and int(auto_delete_timer) > 0:
-            asyncio.create_task(delete_message_later(app, query.message.chat.id, query.message.id, int(auto_delete_timer)))
+            asyncio.create_task(delete_message_later(cyber, query.message.chat.id, query.message.id, int(auto_delete_timer))) # Changed 'app' to 'cyber'
 
         await query.answer()
 
     # Help
-    @app.on_callback_query(filters.regex(r"^help\|"))
-    async def help_menu_handler(app, query):
+    @cyber.on_callback_query(filters.regex(r"^help\|")) # Changed 'app' to 'cyber'
+    async def help_menu_handler(cyber, query): # Changed 'app' to 'cyber'
         help_text = (
             "<b>💡 Help & Instructions</b>\n\n"
             "1. <b>Search</b>: Simply send the <b>name</b> of the movie or series you are looking for.\n"
@@ -700,8 +700,8 @@ def register_conversation_handlers(app: Client):
         await query.answer("Showing help menu.")
 
     # Home
-    @app.on_callback_query(filters.regex(r"^cyber\|"))
-    async def cyber_menu_handler(app, query):
+    @cyber.on_callback_query(filters.regex(r"^cyber\|")) # Changed 'app' to 'cyber'
+    async def cyber_menu_handler(cyber, query): # Changed 'app' to 'cyber'
         home_text = (
             "<b>👋 Hey Bro</b>\n\n"
             "<b>I Am Your Series-Filter Bot</b> - advanced, powerful and designed to make your group a Series Request Group! You Can Also Search Series Here\n\n"
@@ -734,8 +734,8 @@ def register_conversation_handlers(app: Client):
         await query.answer("Back To Home")
 
     # Admin menu (supports list or single int)
-    @app.on_callback_query(filters.regex(r"^admin_cmd\|"))
-    async def admin_menu_handler(app, query):
+    @cyber.on_callback_query(filters.regex(r"^admin_cmd\|")) # Changed 'app' to 'cyber'
+    async def admin_menu_handler(cyber, query): # Changed 'app' to 'cyber'
         user_id = query.from_user.id
         is_authorized = False
         try:
@@ -778,8 +778,8 @@ def register_conversation_handlers(app: Client):
         await query.answer("Showing about information.")
 
     # About
-    @app.on_callback_query(filters.regex(r"^about\|"))
-    async def about_menu_handler(app, query):
+    @cyber.on_callback_query(filters.regex(r"^about\|")) # Changed 'app' to 'cyber'
+    async def about_menu_handler(cyber, query): # Changed 'app' to 'cyber'
         about_text = ABOUT_TEXT
         ABOUT_KEYBOARD = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 Back to Home", callback_data="cyber|"),
@@ -807,7 +807,7 @@ def register_conversation_handlers(app: Client):
 
         await query.answer("Showing about information.")
 
-    @app.on_callback_query(filters.regex(r"close"))
+    @cyber.on_callback_query(filters.regex(r"close")) # Changed 'app' to 'cyber'
     async def close_menu_handler(_, query):
         try:
             await query.message.delete()
