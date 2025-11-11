@@ -197,7 +197,7 @@ def register_command_handlers(cyber: Client):
     async def start_command(_, message: Message):
         """Handles the /start command."""
         await add_user(message.from_user.id)
-        bot = await client.get_me()
+        bot = await cyber.get_me()
         bot_username = bot_info.username
         user = message.from_user
         user_mention = user.mention if user else "User"
