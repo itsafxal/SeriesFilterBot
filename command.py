@@ -205,7 +205,7 @@ def register_command_handlers(cyber: Client):
         # Define the inline keyboard with 'Help' and 'About' buttons
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞", witch_inline_query_current_chat="")
+                InlineKeyboardButton("🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞", switch_inline_query_current_chat="")
             ],[
                 InlineKeyboardButton("⚡ ʜᴇʟᴘ", callback_data="help|menu"),
                 InlineKeyboardButton("ᴀʙᴏᴜᴛ ✨", callback_data="about|menu")
