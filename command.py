@@ -193,7 +193,7 @@ async def index_files_task(bot, msg, chat_id, start_msg_id, last_msg_id):
 def register_command_handlers(app: Client):
     """Registers all command-based message handlers with the Pyrogram client."""
 
-    @app.on_message(filters.command("start") & filters.private)
+    @cyber.on_message(filters.command("start") & filters.private)
     async def start_command(_, message: Message):
         """Handles the /start command."""
         await add_user(message.from_user.id)
@@ -220,7 +220,7 @@ def register_command_handlers(app: Client):
 
     # --- NEW HANDLER: /setskip ---
     
-    @app.on_message(filters.command("setskip") & filters.user(ADMIN_USERS) & filters.private)
+    @cyber.on_message(filters.command("setskip") & filters.user(ADMIN_USERS) & filters.private)
     async def setskip_command(_, message: Message):
         """Allows admin to set a message ID to skip up to during indexing."""
         try:
@@ -259,7 +259,7 @@ def register_command_handlers(app: Client):
 
     # --- OTHER ADMIN COMMANDS ---
 
-    @app.on_message(filters.command("broadcast") & filters.user(ADMIN_USERS))
+    @cyber.on_message(filters.command("broadcast") & filters.user(ADMIN_USERS))
     async def broadcast_cmd(bot, msg):
         """Broadcasts a replied-to message to all private chats."""
         if not msg.reply_to_message:
@@ -277,14 +277,14 @@ def register_command_handlers(app: Client):
 
         await msg.reply(f"✅ broadcast done — sent to **{sent}** users")
         
-    @app.on_message(filters.command("deleteall") & filters.user(ADMIN_USERS))
+    @cyber.on_message(filters.command("deleteall") & filters.user(ADMIN_USERS))
     async def deleteall_cmd(_, msg):
         """Deletes all indexed files."""
         await delete_all_files()
         await msg.reply("✅ all files deleted from mongo + sqlite")
 
 
-    @app.on_message(filters.command("deletefile") & filters.user(ADMIN_USERS))
+    @cyber.on_message(filters.command("deletefile") & filters.user(ADMIN_USERS))
     async def deletefile_cmd(_, msg):
         """Deletes a single indexed file by channel and message ID."""
         # usage: /deletefile <channel_id> <message_id>
@@ -301,7 +301,7 @@ def register_command_handlers(app: Client):
         await msg.reply(f"✅ deleted file **{cid} / {mid}**", parse_mode=enums.ParseMode.MARKDOWN)
 
 
-    @app.on_message(filters.command("total") & filters.user(ADMIN_USERS))
+    @cyber.on_message(filters.command("total") & filters.user(ADMIN_USERS))
     async def total_cmd(_, msg):
         """Displays the total number of indexed files."""
         total = await get_total_files()
@@ -311,7 +311,7 @@ def register_command_handlers(app: Client):
 
     # --- HANDLERS FOR INTERACTIVE INDEXING ---
 
-    @app.on_message(
+    @cyber.on_message(
         filters.private & filters.forwarded & filters.user(ADMIN_USERS) & media_filter
     )
     async def index_files_forwarded(bot, message):
@@ -394,7 +394,7 @@ def register_command_handlers(app: Client):
             )
 
 
-    @app.on_message(
+    @cyber.on_message(
         filters.private & filters.user(ADMIN_USERS) & filters.command("indexlink")
     )
     async def manual_index(bot, message):
@@ -453,7 +453,7 @@ def register_command_handlers(app: Client):
             await message.reply(f"Error on manual indexing: `{e}`", parse_mode=enums.ParseMode.MARKDOWN)
 
 
-    @app.on_callback_query(filters.regex(r"^index -?\d+ \d+ \d+"))
+    @cyber.on_callback_query(filters.regex(r"^index -?\d+ \d+ \d+"))
     async def start_index(bot, query):
         """Callback to initiate the indexing background task."""
         global index_task
@@ -482,7 +482,7 @@ def register_command_handlers(app: Client):
         )
         await query.answer("Indexing started in the background.")
 
-    @app.on_callback_query(filters.regex(r"^cancel_index$"))
+    @cyber.on_callback_query(filters.regex(r"^cancel_index$"))
     async def cancel_indexing(bot, query):
         """Callback to cancel the ongoing indexing task."""
         global index_task
@@ -495,13 +495,13 @@ def register_command_handlers(app: Client):
             await query.message.edit_text("No active indexing process to cancel.")
             await query.answer("No active index.")
 
-    @app.on_callback_query(filters.regex(r"^can-index$"))
+    @cyber.on_callback_query(filters.regex(r"^can-index$"))
     async def cancel_index_confirmation(bot, query):
         """Callback to cancel the initial confirmation menu."""
         await query.message.delete()
         await query.answer("Indexing confirmation cancelled.")
 
-    @app.on_message(filters.command(["index"]) & filters.user(ADMIN_USERS) & filters.private)
+    @cyber.on_message(filters.command(["index"]) & filters.user(ADMIN_USERS) & filters.private)
     async def index_comm(bot, update):
         """Provides instructions for the /index command."""
         await update.reply(
@@ -514,7 +514,7 @@ def register_command_handlers(app: Client):
 
     # --- OTHER ADMIN COMMANDS (Unmodified) ---
 
-    @app.on_message(filters.command("imdb") & filters.user(ADMIN_USERS) & filters.private)
+    @cyber.on_message(filters.command("imdb") & filters.user(ADMIN_USERS) & filters.private)
     async def poster_toggle_command(_, message: Message):
         """Allows admin to turn the IMDB poster feature on or off."""
         current_state = await get_global_setting("IMDB_POSTER_ENABLED", True)
@@ -527,7 +527,7 @@ def register_command_handlers(app: Client):
             parse_mode=enums.ParseMode.MARKDOWN
         )
 
-    @app.on_message(filters.command("fsub") & filters.user(ADMIN_USERS) & filters.private)
+    @cyber.on_message(filters.command("fsub") & filters.user(ADMIN_USERS) & filters.private)
     async def forcesub_command(bot, message: Message):
         """Allows admin to set or disable the force subscribe channel ID."""
         try:
@@ -588,7 +588,7 @@ def register_command_handlers(app: Client):
             logger.error(f"Error in forcesub_command: {e}")
             await message.reply_text(f"An unexpected error occurred: `{e}`")
 
-    @app.on_message(filters.command("autodel") & filters.user(ADMIN_USERS) & filters.private)
+    @cyber.on_message(filters.command("autodel") & filters.user(ADMIN_USERS) & filters.private)
     async def autodel_command(_, message: Message):
         """Allows admin to set the auto-delete timer for sent files."""
         try:
