@@ -5,7 +5,7 @@ import re
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, ChannelPrivate
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
-from config import logger, ADMIN_USERS, INDEX_CHANNELS, START_IMG
+from config import logger, ADMIN_USERS, INDEX_CHANNELS, START_IMG, START_TEXT
 from database import (
     add_user,
     get_all_users,
@@ -197,11 +197,7 @@ def register_command_handlers(cyber: Client):
     async def start_command(_, message: Message):
         """Handles the /start command."""
         await add_user(message.from_user.id)
-        welcome_text = (
-            "<b>👋 Hey Bro,</b>\n\n"
-            "<b>I Am Your Series-Filter Bot- advanced, powerful and designed to make your group to Series Request Group! You Can Also Search Series Here</b>\n\n"
-            "<b>Let's get started ! 🚀</b>"
-        )
+        welcome_text = START_TEXT
 
         # Define the inline keyboard with 'Help' and 'About' buttons
         keyboard = InlineKeyboardMarkup([
