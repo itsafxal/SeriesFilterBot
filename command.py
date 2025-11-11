@@ -190,7 +190,7 @@ async def index_files_task(bot, msg, chat_id, start_msg_id, last_msg_id):
             await set_global_setting(INDEX_STATUS_KEY, "IDLE")
             index_task = None
 
-def register_command_handlers(app: Client):
+def register_command_handlers(cyber: Client):
     """Registers all command-based message handlers with the Pyrogram client."""
 
     @cyber.on_message(filters.command("start") & filters.private)
