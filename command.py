@@ -202,7 +202,7 @@ def register_command_handlers(cyber: Client):
         user_mention = user.mention if user else "User"
         START_TEXT = (
             f"🖤 <b>Hey {user_mention}!</b>\n\n"
-            f"Welcome to <b>{bot_info.first_name}</b> — your private cinema in chat 🎭\n"
+            f"Welcome to <b>{bot.first_name}</b> — your private cinema in chat 🎭\n"
             "Just type what you’re looking for and I’ll fetch it faster than light ⚡\n\n"
             "<blockquote>Let’s dive into the world of entertainment 🌙</blockquote>"
         )
@@ -221,7 +221,7 @@ def register_command_handlers(cyber: Client):
 
         await message.reply_photo(
             photo=START_IMG,
-            caption=START_TEXT.format(user_mention, bot),
+            caption=START_TEXT,
             parse_mode=enums.ParseMode.HTML,
             reply_markup=keyboard
         )
