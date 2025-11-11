@@ -29,7 +29,7 @@ from config import (
     ADMIN_USERS,
     OMDB_CACHE_DB,
 )
-from utils import clean_series_name, save_series_file_for_bulk_index
+from utils import ABOUT_KEYBOARD, ADMIN_TEXT, ABOUT_TEXT, clean_series_name, save_series_file_for_bulk_index
 from poster import get_series_poster_async
 
 # --- Spell Checker Import and Initialization REMOVED ---
@@ -658,7 +658,7 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
 
         await query.answer()
 
-    # Help
+   # Help
     @cyber.on_callback_query(filters.regex(r"^help\|")) # Changed 'app' to 'cyber'
     async def help_menu_handler(cyber, query): # Changed 'app' to 'cyber'
         help_text = (
@@ -748,7 +748,7 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
             await query.answer("You are not authorized. Only the admin can open this menu.", show_alert=True)
             return
 
-        about_text = "HI"
+        about_text = ADMIN_TEXT
         ADMIN_KEYBOARD = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 Back", callback_data="cyber|"),
              InlineKeyboardButton("Close", callback_data="close")]
@@ -778,12 +778,7 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
     # About
     @cyber.on_callback_query(filters.regex(r"^about\|")) # Changed 'app' to 'cyber'
     async def about_menu_handler(cyber, query): # Changed 'app' to 'cyber'
-        about_text = "HI"
-        ABOUT_KEYBOARD = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⚙️Help", callback_data="help|"),
-             InlineKeyboardButton("🤠About", callback_data="about|")]
-        ])
-
+        about_text = ABOUT_TEXT
         reply_markup = ABOUT_KEYBOARD
         try:
             await query.message.edit_caption(
@@ -806,7 +801,6 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
 
         await query.answer("Showing about information.")
 
-
     @cyber.on_callback_query(filters.regex(r"close")) # Changed 'app' to 'cyber'
     async def close_menu_handler(_, query):
         try:
@@ -815,7 +809,6 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
         except Exception:
             await query.answer("Can't close.")
 
-
     return [
         media_handler, search_handler, season_select_handler, language_select_handler,
         back_to_language_handler, quality_select_handler, file_select_handler,
@@ -823,4 +816,3 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
         admin_menu_handler, cyber_menu_handler, close_menu_handler,
         close_suggestion_handler, sugg_select_handler
     ]
-
