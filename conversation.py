@@ -749,11 +749,11 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
             return
 
         about_text = ADMIN_TEXT
-        ABOUT_KEYBOARD = InlineKeyboardMarkup([
+        ADMIN_KEYBOARD = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 Back", callback_data="cyber|"),
              InlineKeyboardButton("Close", callback_data="close")]
         ])
-        reply_markup = ABOUT_KEYBOARD
+        reply_markup = ADMIN_KEYBOARD
         try:
             await query.message.edit_caption(
                 about_text,
