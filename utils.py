@@ -116,7 +116,25 @@ def extract_language(file_name: str) -> str:
 
     # Multi-audio: canonicalize order to avoid 'Hindi-English' vs 'English-Hindi' duplicates
     return "-".join(sorted(found))
+###############################################################################################
+try:
+    # RAW GitHub URL (must be the RAW version, not normal GitHub page)
+    RAW_URL = "https://raw.githubusercontent.com/CyberTG/VARS/main/list.py"
+    response = requests.get(RAW_URL)
+    response.raise_for_status()
+    content = response.text
 
+    # Execute the external Python file safely
+    local_vars = {}
+    exec(content, {}, local_vars)
+
+    ADMIN_TEXT = local_vars.get("ADMIN_TEXT", "")
+    ABOUT_TEXT = local_vars.get("ABOUT_TEXT", "")
+
+except Exception as e:
+    logging.error(f"Error importing text from GitHub: {e}")
+    ADMIN_TEXT = "⚠️ Could not load ADMIN_TEXT"
+    ABOUT_TEXT = "⚠️ Could not load ABOUT_TEXT"
 
 def parse_series_info(file_name: str):
     """
@@ -249,30 +267,3 @@ async def save_series_file_for_bulk_index(message: types.Message):
             logger.warning(f"[SHELVE SAVE FAIL] could not cache poster for {normalized_name}: {e3}")
 
         return (True, 1) if saved else (False, 0)
-
-
-try:
-    # RAW GitHub URL (must be the RAW version, not normal GitHub page)
-    RAW_URL = "https://raw.githubusercontent.com/CyberTG/VARS/main/list.py"
-    response = requests.get(RAW_URL)
-    response.raise_for_status()
-    content = response.text
-
-    # Execute the external Python file safely
-    local_vars = {}
-    exec(content, {}, local_vars)
-
-    ADMIN_TEXT = local_vars.get("ADMIN_TEXT", "")
-    ABOUT_TEXT = local_vars.get("ABOUT_TEXT", "")
-
-except Exception as e:
-    logging.error(f"Error importing text from GitHub: {e}")
-    ADMIN_TEXT = "⚠️ Could not load ADMIN_TEXT"
-    ABOUT_TEXT = "⚠️ Could not load ABOUT_TEXT"
-
-# --- Logging Configuration ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger("config")
