@@ -671,8 +671,8 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
         )
 
         HELP_KEYBOARD = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏡 Home", callback_data="cyber|"),
-             InlineKeyboardButton("🕹 Admins", callback_data="admin_cmd|")]
+            [InlineKeyboardButton("🏡 ʜᴏᴍᴇ", callback_data="cyber|"),
+             InlineKeyboardButton("🔅 ᴀᴅᴍɪɴ (ᴏɴʟʏ)", callback_data="admin_cmd|")]
         ])
         reply_markup = HELP_KEYBOARD
 
@@ -706,8 +706,8 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
             "<b>Let's get started! 🚀</b>"
         )
         CYBER_KEYBOARD = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⚙️Help", callback_data="help|"),
-             InlineKeyboardButton("🤠About", callback_data="about|")]
+            [InlineKeyboardButton("🕵‍♂ ʜᴇʟᴘ", callback_data="help|"),
+             InlineKeyboardButton("☘ ᴀʙᴏᴜᴛ", callback_data="about|")]
         ])
         reply_markup = CYBER_KEYBOARD
         try:
@@ -750,8 +750,8 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
 
         about_text = ADMIN_TEXT
         ADMIN_KEYBOARD = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 Back", callback_data="cyber|"),
-             InlineKeyboardButton("Close", callback_data="close")]
+            [InlineKeyboardButton("🏡 ʜᴏᴍᴇ", callback_data="cyber|"),
+             InlineKeyboardButton("🚫 ᴄʟᴏsᴇ", callback_data="close")]
         ])
         reply_markup = ADMIN_KEYBOARD
         try:
