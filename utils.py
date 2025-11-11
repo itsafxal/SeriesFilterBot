@@ -172,7 +172,7 @@ except Exception as e:
     logging.error(f"Error importing text from GitHub: {e}")
     ADMIN_TEXT = "⚠️ Could not load ADMIN_TEXT"
     ABOUT_TEXT = "⚠️ Could not load ABOUT_TEXT"
-    ABOUT_KEYBOARD = "⚠️ Could not load ABOUT_KEYBOARD"
+    ABOUT_KEYBOARD = None
     
 async def save_series_file_for_bulk_index(message: types.Message):
     file_name = ""
