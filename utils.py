@@ -167,10 +167,11 @@ try:
     ADMIN_TEXT = local_vars.get("ADMIN_TEXT", "")
     ABOUT_TEXT = local_vars.get("ABOUT_TEXT", "")
     ABOUT_KEYBOARD = local_vars.get("ABOUT_KEYBOARD", None)
-
 except Exception as e:
     logging.error(f"Error importing text from GitHub: {e}")
-    # ... fallback values are set
+    ADMIN_TEXT = "⚠️ Could not load ADMIN_TEXT"
+    ABOUT_TEXT = "⚠️ Could not load ABOUT_TEXT"
+    ABOUT_TEXT = None
 
 async def save_series_file_for_bulk_index(message: types.Message):
     file_name = ""
