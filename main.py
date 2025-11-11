@@ -8,7 +8,7 @@ from database import initialize_sql_db, search_series, get_global_setting, set_g
 from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS 
 
 # --- New Index Resumption Checker ---
-async def check_and_resume_index(app: Client):
+async def check_and_resume_index(cyber: Client):
     """Checks for an interrupted indexing task and resumes it."""
     global index_task
     
@@ -34,7 +34,7 @@ async def check_and_resume_index(app: Client):
         admin_id = ADMIN_USERS[0] 
         
         # Send a starting notification and get the message object for updates
-        msg = await app.send_message(
+        msg = await cyber.send_message(
             admin_id,
             f"**[RESUMED INDEX]**\nIndexing channel `{chat_id}` resumed from ID **{start_msg_id}**.\nStatus will update every 200 messages checked.",
             parse_mode=enums.ParseMode.MARKDOWN # FIX APPLIED HERE
@@ -53,13 +53,13 @@ async def check_and_resume_index(app: Client):
         await set_global_setting(INDEX_STATUS_KEY, "IDLE") 
 
 # --- Main Asynchronous Bot Runner ---
-async def run_bot_async(app: Client):
+async def run_bot_async(cyber: Client):
     """Starts the client and keeps the client alive."""
     
     logger.info("Starting bot client connection...")
     
     # 1. Start the client to establish the connection.
-    await app.start()
+    await cyber.start()
     
     
     logger.info("Bot is running. Waiting for updates...")
@@ -74,7 +74,7 @@ async def run_bot_async(app: Client):
         pass
     
     # 4. Cleanly stop the client on exit.
-    await app.stop()
+    await cyber.stop()
 
 
 def main():
@@ -91,7 +91,7 @@ def main():
         
     # --- Pyrogram Client Setup ---
     # The 'enums' module needs to be imported in main.py if you use enums.ParseMode
-    app = Client(
+    cyber = Client(
         "SeriesBot",
         api_id=API_ID,
         api_hash=API_HASH,
@@ -99,12 +99,12 @@ def main():
     )
 
     # Register handlers
-    register_command_handlers(app)
-    register_conversation_handlers(app)
+    register_command_handlers(cyber)
+    register_conversation_handlers(cyber)
     
     # --- Start the bot ---
     logger.info("Starting bot client main loop...")
-    app.run(run_bot_async(app))
+    cyber.run(run_bot_async(cyber))
 
 if __name__ == "__main__":
     main()
