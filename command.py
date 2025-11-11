@@ -200,7 +200,6 @@ def register_command_handlers(cyber: Client):
         user = message.from_user
         bot = await cyber.get_me()
         user_mention = user.mention if user else "User"
-        welcome_text = START_TEXT.format(user_mention, bot)
 
         # Define the inline keyboard with 'Help' and 'About' buttons
         keyboard = InlineKeyboardMarkup([
@@ -216,7 +215,7 @@ def register_command_handlers(cyber: Client):
 
         await message.reply_photo(
             photo=START_IMG,
-            caption=welcome_text,
+            caption=START_TEXT.format(user_mention, bot),
             parse_mode=enums.ParseMode.HTML,
             reply_markup=keyboard
         )
