@@ -659,7 +659,7 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
         await query.answer()
 
     # Help
-    @cyber.on_callback_query(filters.regex(r"^help\|")) # Changed 'app' to 'cyber'
+   """ @cyber.on_callback_query(filters.regex(r"^help\|")) # Changed 'app' to 'cyber'
     async def help_menu_handler(cyber, query): # Changed 'app' to 'cyber'
         help_text = (
             "<b>💡 Help & Instructions</b>\n\n"
@@ -799,7 +799,7 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
             except Exception:
                 pass
 
-        await query.answer("Showing about information.")
+        await query.answer("Showing about information.")"""
 
     @cyber.on_callback_query(filters.regex(r"close")) # Changed 'app' to 'cyber'
     async def close_menu_handler(_, query):
