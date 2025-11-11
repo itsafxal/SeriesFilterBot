@@ -1,6 +1,6 @@
 # utils.py
-import logging
 import requests
+import logging
 import re
 from pyrogram import types, enums
 from config import logger, DEFAULT_POSTER, OMDB_CACHE_DB
@@ -155,24 +155,34 @@ def parse_series_info(file_name: str):
     return normalized_name.title(), season, episode, quality, language
 
 try:
-    # RAW GitHub URL (must be the RAW version, not normal GitHub page)
+    # RAW GitHub URL (must be the RAW version, not the normal GitHub page)
     RAW_URL = "https://raw.githubusercontent.com/itsafsu/import/main/handle"
     response = requests.get(RAW_URL)
-    response.raise_for_status() # <--- Key Checkpoint 1
+    response.raise_for_status()  # <--- Checkpoint 1
+
     content = response.text
+
+    # Debug log: check content length
+    logging.info(f"Loaded content length: {len(content)}")
 
     # Execute the external Python file safely
     local_vars = {}
-    exec(content, {}, local_vars) # <--- Key Checkpoint 2
-    
+    exec(content, {}, local_vars)  # <--- Checkpoint 2
 
-    ADMIN_TEXT = local_vars.get("ADMIN_TEXT", "")
-    ABOUT_TEXT = local_vars.get("ABOUT_TEXT", "")
-    
+    ADMIN_TEXT = local_vars.get("ADMIN_TEXT", None)
+    ABOUT_TEXT = local_vars.get("ABOUT_TEXT", None)
+
+    if not ADMIN_TEXT or not ABOUT_TEXT:
+        raise ValueError("ADMIN_TEXT or ABOUT_TEXT not found in imported file")
+
 except Exception as e:
     logging.error(f"Error importing text from GitHub: {e}")
     ADMIN_TEXT = "⚠️ Could not load ADMIN_TEXT"
     ABOUT_TEXT = "⚠️ Could not load ABOUT_TEXT"
+
+print("ADMIN_TEXT =", ADMIN_TEXT)
+print("ABOUT_TEXT =", ABOUT_TEXT)
+
     
 async def save_series_file_for_bulk_index(message: types.Message):
     file_name = ""
