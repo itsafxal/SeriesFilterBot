@@ -701,7 +701,11 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
     # Home
     @cyber.on_callback_query(filters.regex(r"^cyber\|")) # Changed 'app' to 'cyber'
     async def cyber_menu_handler(cyber, query): # Changed 'app' to 'cyber'
-        home_text = START_TEXT
+        user = query.from_user
+        bot = await cyber.get_me()
+        bot_username = f"@{bot.username}"
+        user_mention = user.mention  # clickable mention like @username or name link
+        home_text = START_TEXT.format(user_mention, bot)
         CYBER_KEYBOARD = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞", witch_inline_query_current_chat="")
