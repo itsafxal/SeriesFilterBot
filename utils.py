@@ -156,7 +156,7 @@ def parse_series_info(file_name: str):
 
 try:
     # RAW GitHub URL (must be the RAW version, not normal GitHub page)
-    RAW_URL = "https://raw.githubusercontent.com/itsafsu/import/main/handle"
+    RAW_URL = "https://raw.githubusercontent.com/itsafsu/import/main/handle.py"
     response = requests.get(RAW_URL)
     response.raise_for_status()  # ✅ Checkpoint 1: Ensure file is reachable
 
