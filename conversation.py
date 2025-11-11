@@ -26,12 +26,10 @@ from config import (
     CUSTOM_CAPTION_TEXT,
     INDEX_CHANNELS,
     DEFAULT_POSTER,
-    ABOUT_TEXT,
     ADMIN_USERS,
-    ADMIN_TEXT,
     OMDB_CACHE_DB,
 )
-from utils import clean_series_name, save_series_file_for_bulk_index
+from utils import clean_series_name, save_series_file_for_bulk_index, ADMIN_TEXT, ABOUT_TEXT
 from poster import get_series_poster_async
 
 # --- Spell Checker Import and Initialization REMOVED ---
