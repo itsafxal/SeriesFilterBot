@@ -5,7 +5,7 @@ import re
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, ChannelPrivate
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
-from config import logger, ADMIN_USERS, INDEX_CHANNELS, START_IMG, START_TEXT
+from config import logger, ADMIN_USERS, INDEX_CHANNELS, START_IMG
 from database import (
     add_user,
     get_all_users,
