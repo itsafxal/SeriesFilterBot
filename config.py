@@ -27,6 +27,14 @@ DEFAULT_POSTER = "https://sanishtech.com/i/690ceab460363-1762454196.jpg"
 # Optional: where to persist disk cache
 OMDB_CACHE_DB = "/tmp/omdb_cache.db"
 
+START_TEXT = """
+🖤 <b>Hey !</b>
+
+Welcome to me — your private cinema in the chatroom 🎭  
+Just type what you’re looking for — I’ll find it faster than light ⚡
+
+<blockquote>Let’s dive into the world of entertainment 🌙</blockquote>"""
+
 #captions
 CUSTOM_CAPTION_TEXT = """
 `{file_name}`
