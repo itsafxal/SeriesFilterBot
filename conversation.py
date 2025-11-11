@@ -809,10 +809,18 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
         except Exception:
             await query.answer("Can't close.")
 
-    return [
+"""    return [
         media_handler, search_handler, season_select_handler, language_select_handler,
         back_to_language_handler, quality_select_handler, file_select_handler,
         back_to_search_handler, help_menu_handler, about_menu_handler,
         admin_menu_handler, cyber_menu_handler, close_menu_handler,
         close_suggestion_handler, sugg_select_handler
+    ]"""
+
+    return [
+        media_handler, search_handler, season_select_handler, language_select_handler,
+        back_to_language_handler, quality_select_handler, file_select_handler,
+        back_to_search_handler, close_menu_handler,
+        close_suggestion_handler, sugg_select_handler
     ]
+
