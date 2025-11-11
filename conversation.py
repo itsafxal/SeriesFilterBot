@@ -706,7 +706,7 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
         user_mention = user.mention  # clickable mention like @username or name link
         START_TEXT = (
             f"🖤 <b>Hey {user_mention}!</b>\n\n"
-            f"Welcome to <b>{bot_info.first_name}</b> — your private cinema in chat 🎭\n"
+            f"Welcome to <b>{bot.first_name}</b> — your private cinema in chat 🎭\n"
             "Just type what you’re looking for and I’ll fetch it faster than light ⚡\n\n"
             "<blockquote>Let’s dive into the world of entertainment 🌙</blockquote>"
         )
@@ -723,7 +723,7 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
         reply_markup = CYBER_KEYBOARD
         try:
             await query.message.edit_caption(
-                START_TEXT.format(user_mention, bot),
+                START_TEXT,
                 reply_markup=reply_markup,
                 parse_mode=enums.ParseMode.HTML
             )
@@ -733,7 +733,7 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
             logger.error(f"Error editing message caption in cyber_menu_handler: {e}")
             try:
                 await query.message.edit_text(
-                    START_TEXT.format(user_mention, bot),
+                    START_TEXT,
                     reply_markup=reply_markup,
                     parse_mode=enums.ParseMode.HTML
                 )
