@@ -200,6 +200,12 @@ def register_command_handlers(cyber: Client):
         user = message.from_user
         bot = await cyber.get_me()
         user_mention = user.mention if user else "User"
+        START_TEXT = (
+            f"🖤 <b>Hey {user_mention}!</b>\n\n"
+            f"Welcome to <b>{bot_info.first_name}</b> — your private cinema in chat 🎭\n"
+            "Just type what you’re looking for and I’ll fetch it faster than light ⚡\n\n"
+            "<blockquote>Let’s dive into the world of entertainment 🌙</blockquote>"
+        )
 
         # Define the inline keyboard with 'Help' and 'About' buttons
         keyboard = InlineKeyboardMarkup([
