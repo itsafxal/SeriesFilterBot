@@ -779,10 +779,6 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
     @cyber.on_callback_query(filters.regex(r"^about\|")) # Changed 'app' to 'cyber'
     async def about_menu_handler(cyber, query): # Changed 'app' to 'cyber'
         about_text = ABOUT_TEXT
-        ABOUT_KEYBOARD = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 Back to Home", callback_data="cyber|"),
-             InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/CyberTGx")]
-        ])
         reply_markup = ABOUT_KEYBOARD
         try:
             await query.message.edit_caption(
