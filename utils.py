@@ -157,16 +157,20 @@ try:
     # RAW GitHub URL (must be the RAW version, not normal GitHub page)
     RAW_URL = "https://raw.githubusercontent.com/itsafsu/import/main/handle"
     response = requests.get(RAW_URL)
-    response.raise_for_status()
+    response.raise_for_status() # <--- Key Checkpoint 1
     content = response.text
 
     # Execute the external Python file safely
     local_vars = {}
-    exec(content, {}, local_vars)
+    exec(content, {}, local_vars) # <--- Key Checkpoint 2
 
     ADMIN_TEXT = local_vars.get("ADMIN_TEXT", "")
     ABOUT_TEXT = local_vars.get("ABOUT_TEXT", "")
     ABOUT_KEYBOARD = local_vars.get("ABOUT_KEYBOARD", None)
+
+except Exception as e:
+    logging.error(f"Error importing text from GitHub: {e}")
+    # ... fallback values are set
 
 except Exception as e:
     logging.error(f"Error importing text from GitHub: {e}")
