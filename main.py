@@ -65,7 +65,7 @@ async def run_bot_async(cyber: Client):
     logger.info("Bot is running. Waiting for updates...")
     
     # 2. Check and Resume Index Task AFTER client start and cache load
-    asyncio.create_task(check_and_resume_index(app)) 
+    asyncio.create_task(check_and_resume_index(cyber)) 
     
     # 3. Keep the script alive and listening for updates.
     try:
