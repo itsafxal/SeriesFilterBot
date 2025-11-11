@@ -164,26 +164,16 @@ try:
     # Execute the external Python file safely
     local_vars = {}
     exec(content, {}, local_vars) # <--- Key Checkpoint 2
-    ADMIN_TEXT = "👮 Admin details or commands here"
-    ABOUT_TEXT = "ℹ️ About this bot: built with ❤️ by Afsu"
-    ABOUT_KEYBOARD = InlineKeyboardMarkup([
-         [InlineKeyboardButton("Support", url="https://t.me/YourSupportChannel")],
-    ])
+    
 
-    ADMIN_TEXT = local_vars.get("ADMIN_TEXT", "ADMIN_TEXT")
-    ABOUT_TEXT = local_vars.get("ABOUT_TEXT", "ABOUT_TEXT")
-    ABOUT_KEYBOARD = local_vars.get("ABOUT_KEYBOARD", "ABOUT_KEYBOARD")
-    if ABOUT_KEYBOARD is None:
-        ABOUT_KEYBOARD = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Try Again 🔄", callback_data="about_reload")]
-        ])
+    ADMIN_TEXT = local_vars.get("ADMIN_TEXT", "")
+    ABOUT_TEXT = local_vars.get("ABOUT_TEXT", "")
+    
 except Exception as e:
     logging.error(f"Error importing text from GitHub: {e}")
     ADMIN_TEXT = "⚠️ Could not load ADMIN_TEXT"
     ABOUT_TEXT = "⚠️ Could not load ABOUT_TEXT"
-    ABOUT_KEYBOARD = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚠️ Retry", callback_data="about_retry")]
-    ])
+    
 async def save_series_file_for_bulk_index(message: types.Message):
     file_name = ""
 
