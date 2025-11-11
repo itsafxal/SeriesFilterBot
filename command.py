@@ -197,7 +197,11 @@ def register_command_handlers(cyber: Client):
     async def start_command(_, message: Message):
         """Handles the /start command."""
         await add_user(message.from_user.id)
-        welcome_text = START_TEXT
+        bot = await bot.get_me()
+        bot_username = bot_info.username
+        user = message.from_user
+        user_mention = user.mention if user else "User"
+        welcome_text = START_TEXT.format(user_mention, bot)
 
         # Define the inline keyboard with 'Help' and 'About' buttons
         keyboard = InlineKeyboardMarkup([
