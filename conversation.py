@@ -703,8 +703,14 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
     async def cyber_menu_handler(cyber, query): # Changed 'app' to 'cyber'
         home_text = START_TEXT
         CYBER_KEYBOARD = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🕵‍♂ ʜᴇʟᴘ", callback_data="help|"),
-             InlineKeyboardButton("☘ ᴀʙᴏᴜᴛ", callback_data="about|")]
+            [
+                InlineKeyboardButton("🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞", witch_inline_query_current_chat="")
+            ],[
+                InlineKeyboardButton("⚡ ʜᴇʟᴘ", callback_data="help|menu"),
+                InlineKeyboardButton("ᴀʙᴏᴜᴛ ✨", callback_data="about|menu")
+            ],[
+                InlineKeyboardButton("🍷 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ 🍷", url="t.me/TomxSupport")
+            ]
         ])
         reply_markup = CYBER_KEYBOARD
         try:
