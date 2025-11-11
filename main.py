@@ -43,7 +43,7 @@ async def check_and_resume_index(cyber: Client):
         # Start the background task (start_msg_id is now the checkpoint ID)
         index_task = asyncio.create_task(
             # Pass the checkpoint as the starting ID
-            index_files_task(app, msg, chat_id, start_msg_id, last_msg_id) 
+            index_files_task(cyber, msg, chat_id, start_msg_id, last_msg_id) # <<-- FIX APPLIED: Changed 'app' to 'cyber'
         )
         logger.info("Index resumption task started.")
 
