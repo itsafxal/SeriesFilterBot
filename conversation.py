@@ -28,7 +28,6 @@ from config import (
     DEFAULT_POSTER,
     ADMIN_USERS,
     OMDB_CACHE_DB,
-    START_TEXT,
 )
 from utils import ABOUT_KEYBOARD, ADMIN_TEXT, ABOUT_TEXT, clean_series_name, save_series_file_for_bulk_index
 from poster import get_series_poster_async
@@ -705,7 +704,12 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
         bot = await cyber.get_me()
         bot_username = f"@{bot.username}"
         user_mention = user.mention  # clickable mention like @username or name link
-        home_text = START_TEXT.format(user_mention, bot)
+        START_TEXT = (
+            f"🖤 <b>Hey {user_mention}!</b>\n\n"
+            f"Welcome to <b>{bot_info.first_name}</b> — your private cinema in chat 🎭\n"
+            "Just type what you’re looking for and I’ll fetch it faster than light ⚡\n\n"
+            "<blockquote>Let’s dive into the world of entertainment 🌙</blockquote>"
+        )
         CYBER_KEYBOARD = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞", switch_inline_query_current_chat="")
@@ -719,7 +723,7 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
         reply_markup = CYBER_KEYBOARD
         try:
             await query.message.edit_caption(
-                home_text,
+                START_TEXT.format(user_mention, bot),
                 reply_markup=reply_markup,
                 parse_mode=enums.ParseMode.HTML
             )
@@ -729,7 +733,7 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
             logger.error(f"Error editing message caption in cyber_menu_handler: {e}")
             try:
                 await query.message.edit_text(
-                    home_text,
+                    START_TEXT.format(user_mention, bot),
                     reply_markup=reply_markup,
                     parse_mode=enums.ParseMode.HTML
                 )
