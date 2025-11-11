@@ -1,11 +1,11 @@
 # main.py - FINAL WORKING IMPLEMENTATION with index resumption
 
 import asyncio
-from pyrogram import Client
+from pyrogram import Client, enums # Import enums for ParseMode
 from command import register_command_handlers, index_files_task, lock, INDEX_STATUS_KEY
 from conversation import register_conversation_handlers
-from database import initialize_sql_db, search_series, get_global_setting, set_global_setting # ADD get_global_setting, set_global_setting
-from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS # ADD ADMIN_USERS
+from database import initialize_sql_db, search_series, get_global_setting, set_global_setting 
+from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS 
 
 # --- New Index Resumption Checker ---
 async def check_and_resume_index(app: Client):
@@ -37,7 +37,7 @@ async def check_and_resume_index(app: Client):
         msg = await app.send_message(
             admin_id,
             f"**[RESUMED INDEX]**\nIndexing channel `{chat_id}` resumed from ID **{start_msg_id}**.\nStatus will update every 200 messages checked.",
-            parse_mode="markdown"
+            parse_mode=enums.ParseMode.MARKDOWN # FIX APPLIED HERE
         )
 
         # Start the background task (start_msg_id is now the checkpoint ID)
@@ -90,6 +90,7 @@ def main():
         return
         
     # --- Pyrogram Client Setup ---
+    # The 'enums' module needs to be imported in main.py if you use enums.ParseMode
     app = Client(
         "SeriesBot",
         api_id=API_ID,
