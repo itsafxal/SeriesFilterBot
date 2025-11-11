@@ -28,6 +28,7 @@ from config import (
     DEFAULT_POSTER,
     ADMIN_USERS,
     OMDB_CACHE_DB,
+    START_TEXT,
 )
 from utils import ABOUT_KEYBOARD, ADMIN_TEXT, ABOUT_TEXT, clean_series_name, save_series_file_for_bulk_index
 from poster import get_series_poster_async
@@ -700,11 +701,7 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
     # Home
     @cyber.on_callback_query(filters.regex(r"^cyber\|")) # Changed 'app' to 'cyber'
     async def cyber_menu_handler(cyber, query): # Changed 'app' to 'cyber'
-        home_text = (
-            "<b>👋 Hey Bro</b>\n\n"
-            "<b>I Am Your Series-Filter Bot</b> - advanced, powerful and designed to make your group a Series Request Group! You Can Also Search Series Here\n\n"
-            "<b>Let's get started! 🚀</b>"
-        )
+        home_text = START_TEXT
         CYBER_KEYBOARD = InlineKeyboardMarkup([
             [InlineKeyboardButton("🕵‍♂ ʜᴇʟᴘ", callback_data="help|"),
              InlineKeyboardButton("☘ ᴀʙᴏᴜᴛ", callback_data="about|")]
