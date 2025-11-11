@@ -29,7 +29,7 @@ from config import (
     ADMIN_USERS,
     OMDB_CACHE_DB,
 )
-from utils import clean_series_name, save_series_file_for_bulk_index, ADMIN_TEXT, ABOUT_TEXT
+from utils import clean_series_name, save_series_file_for_bulk_index, ADMIN_TEXT, ABOUT_TEXT, ABOUT_KEYBOARD
 from poster import get_series_poster_async
 
 # --- Spell Checker Import and Initialization REMOVED ---
