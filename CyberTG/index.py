@@ -5,7 +5,7 @@ import re
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, ChannelPrivate
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
-from config import logger, ADMIN_USERS
+from config import logger, ADMIN_USERS, INDEX_CHANNELS
 from DB.database import (
     get_bot_state,
     save_bot_state,
@@ -191,8 +191,13 @@ def register_index_handlers(cyber: Client):
 
     global index_task
 
-    # --- NEW HANDLER: /setskip ---
-
+    @cyber.on_message((filters.document | filters.video | filters.audio) & filters.channel) # Changed 'app' to 'cyber'
+    async def media_handler(_, message: Message):
+        if message.chat.id in INDEX_CHANNELS and message.media:
+            saved, count = await save_series_file_for_bulk_index(message)
+            if saved:
+                logger.info(f"RTI: Indexed {count} new file(s) from channel {message.chat.id}")
+                
     @cyber.on_message(filters.command("setskip") & filters.user(ADMIN_USERS) & filters.private)
     async def setskip_command(_, message: Message):
         """Allows admin to set a message ID to skip up to during indexing."""
@@ -439,6 +444,7 @@ def register_index_handlers(cyber: Client):
 
     return [
         setskip_command,
+        media_handler,
         index_files_forwarded,
         manual_index,
         start_index,
