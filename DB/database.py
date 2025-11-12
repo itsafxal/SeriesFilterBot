@@ -29,7 +29,7 @@ except Exception as e:
 
 # --- SQLITE CONFIG AND IMPORT HOOK ---
 # Import necessary SQLite functions from the dedicated file
-from DB.sqlite_db import (
+from .sqlite_db import (
     SQLITE_DB_PATH,
     sql_db_lock,
     create_sql_schema,
