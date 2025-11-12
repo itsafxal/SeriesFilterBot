@@ -31,7 +31,7 @@ from config import (
     OMDB_CACHE_DB,
 )
 from utils import ABOUT_KEYBOARD, ADMIN_TEXT, ABOUT_TEXT, clean_series_name, save_series_file_for_bulk_index
-from poster import get_series_poster_async
+from CyberTG.poster import get_series_poster_async
 
 # --- Spell Checker Import and Initialization REMOVED ---
 
