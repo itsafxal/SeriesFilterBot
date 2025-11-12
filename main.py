@@ -2,9 +2,10 @@
 
 import asyncio
 from pyrogram import Client, enums # Import enums for ParseMode
-from command import register_command_handlers, index_files_task, lock, INDEX_STATUS_KEY
+from CyberTG.command import register_command_handlers, index_files_task, lock, INDEX_STATUS_KEY
+from CyberTG.index import index_files_task, lock, INDEX_STATUS_KEY
 from conversation import register_conversation_handlers
-from database import initialize_sql_db, search_series, get_global_setting, set_global_setting 
+from DB.database import initialize_sql_db, search_series, get_global_setting, set_global_setting 
 from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS 
 
 # --- New Index Resumption Checker ---
