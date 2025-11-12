@@ -48,6 +48,7 @@ from .sqlite_db import (
     delete_one_file_sync,
     get_total_files_sync,
     _normalized_series_from_filename, # Import helper for MongoDB save/migration context
+    save_file_to_sql_sync # Import sync function for use in save_file_to_db
 )
 
 # --- MIGRATION / INITIALIZATION ---
@@ -55,6 +56,7 @@ from .sqlite_db import (
 def initialize_sql_db():
     """Synchronously initializes the SQL database and runs the migration + repair."""
     logger.info("Starting migration from MongoDB to SQLite...")
+    # Pass MongoDB collection and logger to the sync function
     migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema, logger)
     try:
         repair_normalized_names_in_sqlite_sync(logger)
@@ -85,9 +87,8 @@ async def get_bot_state(chat_id):
 
 # --- GLOBAL SETTINGS (MongoDB) ---
 
-# ... set_global_setting and get_global_setting functions remain the same ...
-# (omitted for brevity, they are identical to the original)
 async def set_global_setting(key: str, value):
+    """Sets a global bot configuration setting."""
     GLOBAL_DOC_ID = "GLOBAL_CONFIG"
     def sync_set():
         state_collection.update_one(
@@ -100,6 +101,7 @@ async def set_global_setting(key: str, value):
 
 
 async def get_global_setting(key: str, default_value=None):
+    """Retrieves a global bot configuration setting."""
     GLOBAL_DOC_ID = "GLOBAL_CONFIG"
     def sync_get():
         doc = state_collection.find_one({"_id": GLOBAL_DOC_ID})
@@ -167,7 +169,6 @@ async def save_file_to_db(file_doc: dict):
             logger.error(f"Failed to insert/update file doc in MongoDB: {e}")
 
         # --- 2. Save to SQLITE (using its sync function) ---
-        from sqlite_db import save_file_to_sql_sync # Local import to avoid circular dependency
         sql_success = save_file_to_sql_sync(file_doc, logger) 
             
         return sql_success 
@@ -198,9 +199,6 @@ async def get_total_files():
         return await asyncio.to_thread(get_total_files_sync)
 
 # --- USER FUNCTIONS (MongoDB) ---
-
-# ... add_user, get_all_users, and get_total_users functions remain the same ...
-# (omitted for brevity, they are identical to the original)
 
 async def add_user(user_id: int):
     def sync_add():
