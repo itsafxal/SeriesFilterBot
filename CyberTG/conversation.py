@@ -108,10 +108,10 @@ async def show_language_menu(cyber: Client, query, series_name: str, season: int
     series_name_short = series_name[:MAX_CALLBACK_LENGTH]
     for lang in languages:
         callback_data = f"ls|{series_name_short}|{season}|{lang}"
-        display_text = f"🗣️ {lang}"
+        display_text = f"🪶 {lang} 🪶"
         keyboard.append([InlineKeyboardButton(display_text, callback_data=callback_data)])
 
-    keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data=f"back_to_search|{series_name_short}")])
+    keyboard.append([InlineKeyboardButton("↺ Bᴀᴄᴋ Tᴏ Sᴇᴀʀᴄʜ ↻", callback_data=f"back_to_search|{series_name_short}")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     caption = (
@@ -148,9 +148,9 @@ async def show_quality_menu(cyber: Client, query, series_name: str, language: st
     series_name_short = series_name[:MAX_CALLBACK_LENGTH]
     for quality in qualities:
         callback_data = f"qs|{series_name_short}|{season}|{language}|{quality}"
-        keyboard.append([InlineKeyboardButton(f"💾 {quality}", callback_data=callback_data)])
+        keyboard.append([InlineKeyboardButton(f"🔹 {quality} 🔹", callback_data=callback_data)])
 
-    keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data=f"bl|{series_name_short}|{season}")])
+    keyboard.append([InlineKeyboardButton("↺ Bᴀᴄᴋ Tᴏ Lᴀɴɢᴜɢᴇs ↻", callback_data=f"bl|{series_name_short}|{season}")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     caption = (
