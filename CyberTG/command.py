@@ -14,7 +14,7 @@ from DB.database import (
     get_total_files,
     get_total_users,
 )
-from index import register_index_handlers # NEW: Import index handlers
+from .index import register_index_handlers # NEW: Import index handlers
 
 # --- GLOBALS REMOVED: lock, media_filter, index_task, link_pattern, INDEX_STATUS_KEY, INDEX_SKIP_ID_KEY, extract_links, index_files_task ---
 # The above were moved to index.py
