@@ -1,19 +1,15 @@
 # utils.py
 import requests
 import logging
+import asyncio
 import re
 from pyrogram import types, enums
 from config import logger, DEFAULT_POSTER, OMDB_CACHE_DB
-from DB.database import save_file_to_db, get_all_files_by_season_and_quality
+from DB.database import save_file_to_db, get_all_files_by_season_and_quality, get_global_setting
 from CyberTG.poster import get_series_poster_async
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 logging.basicConfig(level=logging.INFO)
 
-###################################################
-## UTILITY & PARSING (Name Unification Logic) ##
-###################################################
-
-# Define common language terms and their full names for multi-audio parsing
 LANGUAGE_CODES = {
     "HIN": "Hindi",
     "ENG": "English",
@@ -285,3 +281,52 @@ async def save_series_file_for_bulk_index(message: types.Message):
             logger.warning(f"[SHELVE SAVE FAIL] could not cache poster for {normalized_name}: {e3}")
 
         return (True, 1) if saved else (False, 0)
+
+async def delete_message_later(cyber: Client, chat_id, message_id, delay):
+    """Deletes a message after a specified delay."""
+    if delay <= 0:
+        return
+    await asyncio.sleep(delay)
+    try:
+        await cyber.delete_messages(chat_id, message_id)
+    except Exception:
+        pass
+
+async def _normalize_channel_id(val):
+    """Convert channel id setting to int if possible."""
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except Exception:
+        return val
+
+async def check_force_subscribe(cyber: Client, user_id: int):
+    """Checks if the user is a member of the required force subscribe channel."""
+    channel_id_raw = await get_global_setting("FORCE_SUB_CHANNEL_ID", None)
+    if not channel_id_raw:
+        return True, None  # Force sub is disabled
+
+    channel_id = await _normalize_channel_id(channel_id_raw)
+
+    try:
+        member = await cyber.get_chat_member(channel_id, user_id)
+        if member.status in [
+            enums.ChatMemberStatus.MEMBER,
+            enums.ChatMemberStatus.ADMINISTRATOR,
+            enums.ChatMemberStatus.OWNER,
+        ]:
+            return True, None
+        else:
+            chat = await cyber.get_chat(channel_id)
+            invite_link = chat.invite_link or (f"https://t.me/{chat.username}" if chat.username else "N/A")
+            return False, invite_link
+
+    except Exception as e:
+        logger.error(f"Force Sub check failed for channel {channel_id_raw} and user {user_id}: {e}")
+        try:
+            chat = await cyber.get_chat(channel_id)
+            invite_link = chat.invite_link or (f"https://t.me/{chat.username}" if chat.username else "N/A")
+            return False, invite_link
+        except Exception:
+            return False, "https://t.me/telegram"  
