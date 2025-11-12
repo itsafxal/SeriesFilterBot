@@ -4,7 +4,7 @@ import asyncio
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from config import logger, ADMIN_USERS, START_IMG
-from database import (
+from DB.database import (
     add_user,
     get_all_users,
     get_global_setting,
