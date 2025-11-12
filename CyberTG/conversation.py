@@ -186,13 +186,6 @@ async def show_quality_menu(cyber: Client, query, series_name: str, language: st
 
 
 def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
-    @cyber.on_message((filters.document | filters.video | filters.audio) & filters.channel) # Changed 'app' to 'cyber'
-    async def media_handler(_, message: Message):
-        if message.chat.id in INDEX_CHANNELS and message.media:
-            saved, count = await save_series_file_for_bulk_index(message)
-            if saved:
-                logger.info(f"RTI: Indexed {count} new file(s) from channel {message.chat.id}")
-
     @cyber.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"])) # Changed 'app' to 'cyber'
     async def search_handler(cyber, message: Message): # Changed 'app' to 'cyber'
         query = message.text.strip()
@@ -543,8 +536,8 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
                 logger.error(f"Copy/Send fail for {message_id} in {channel_id}: {e}")
                 continue
                 
-            if sent_count < len(files): 
-            await asyncio.sleep(1.5)
+            if sent_count < len(files):
+                await asyncio.sleep(1.5)
 
         success_text = (
             f"✅ Successfully sent {sent_count} files from "
