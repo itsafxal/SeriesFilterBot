@@ -3,7 +3,7 @@ import requests
 import logging
 import asyncio
 import re
-from pyrogram import Client, enums
+from pyrogram import types, Client, enums
 from config import logger, DEFAULT_POSTER, OMDB_CACHE_DB
 from DB.database import save_file_to_db, get_all_files_by_season_and_quality, get_global_setting
 from CyberTG.poster import get_series_poster_async
