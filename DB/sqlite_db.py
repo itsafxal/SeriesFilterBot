@@ -103,8 +103,6 @@ def create_sql_schema(conn):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_normalized_season_language ON files (normalized_name, language, season)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_name_season_quality_language ON files (normalized_name, season, quality, language)")
     conn.commit()
-    # Note: logger info is logged in the calling function in database.py
-    # logger.info("✅ SQLite Schema ensured/created successfully.")
 
 def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func, logger):
     """Synchronously migrates all data from MongoDB's 'files' collection to SQLite."""
@@ -119,7 +117,7 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
     mongo_docs = files_collection.find({}, {
         "channel_id": 1, "message_id": 1, "file_name": 1, 
         "normalized_name": 1, "season": 1, "episode": 1, 
-        "quality": 1, "language": 1, "_id": 0
+        "quality": 1, "language": 1, "file_id": 1, "_id": 0 # Ensure file_id is retrieved
     })
     
     unique = {}
@@ -146,16 +144,18 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
             episode,
             quality,
             language,
-            doc.get("file_id") # Add file_id from mongo if present
+            doc.get("file_id") # <-- This is the 9th binding
         )
 
     insert_data = list(unique.values())
 
     if insert_data:
         try:
+            # FIX: Updated statement to explicitly list 9 columns and 9 placeholders
             cursor.executemany("""
-                INSERT OR IGNORE INTO files (channel_id, message_id, file_name, normalized_name, season, episode, quality, language)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO files 
+                (channel_id, message_id, file_name, normalized_name, season, episode, quality, language, file_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, insert_data)
             conn.commit()
             logger.info(f"✅ Migrated {len(insert_data)} unique documents from MongoDB to SQLite.")
