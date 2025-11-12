@@ -5,6 +5,7 @@ import asyncio
 import shelve
 import re
 from typing import Optional
+import logging, aiohttp, asyncio
 
 try:
     from config import OMDB_API_KEY, DEFAULT_POSTER, OMDB_CACHE_DB
@@ -27,6 +28,27 @@ def _normalize_title_for_omdb(title: str) -> str:
     # remove trailing year like " - 2019" or " 2019"
     t = re.sub(r"[-\s]+(?:19|20)\d{2}$", "", t)
     return t.strip()
+
+logging.basicConfig(level=logging.DEBUG)   # remove later if too noisy
+
+async def debug_get_omdb(title, key, timeout=8):
+    url = "https://www.omdbapi.com/"
+    params = {"apikey": key, "t": title, "type": "series"}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, params=params, timeout=timeout) as r:
+                text = await r.text()
+                logging.debug(f"[OMDB RAW {r.status}] params={params} text={text}")
+                try:
+                    return await r.json()
+                except Exception:
+                    return {"Response": "False", "Error": "non-json-response", "raw": text}
+    except asyncio.TimeoutError:
+        logging.warning("OMDb timeout")
+        return {"Response":"False","Error":"timeout"}
+    except Exception as e:
+        logging.exception("OMDb network error")
+        return {"Response":"False","Error": str(e)}
 
 async def get_series_poster_async(title: str, use_disk_cache: bool = True, timeout: int = 6) -> Optional[str]:
     """
