@@ -25,7 +25,6 @@ from DB.database import (
 from config import (
     logger,
     CUSTOM_CAPTION_TEXT,
-    INDEX_CHANNELS,
     DEFAULT_POSTER,
     ADMIN_USERS,
     OMDB_CACHE_DB,
@@ -818,7 +817,7 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
             await query.answer("Can't close.")
 
     return [
-        media_handler, search_handler, season_select_handler, language_select_handler,
+        search_handler, season_select_handler, language_select_handler,
         back_to_language_handler, quality_select_handler, file_select_handler,
         back_to_search_handler, help_menu_handler, about_menu_handler,
         admin_menu_handler, cyber_menu_handler, close_menu_handler,
