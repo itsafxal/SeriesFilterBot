@@ -12,7 +12,7 @@ from pyrogram.types import (
     InputMediaPhoto,
 )
 from pyrogram.errors import MessageNotModified
-from database import (
+from DB.database import (
     search_series,
     get_all_files_by_season_and_quality,
     get_series_summary,
