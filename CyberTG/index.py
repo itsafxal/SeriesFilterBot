@@ -6,7 +6,7 @@ from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, ChannelPrivate
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from config import logger, ADMIN_USERS
-from database import (
+from DB.database import (
     get_bot_state,
     save_bot_state,
     get_global_setting,
