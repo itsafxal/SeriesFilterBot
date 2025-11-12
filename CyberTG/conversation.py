@@ -542,6 +542,9 @@ def register_conversation_handlers(cyber: Client): # Changed 'app' to 'cyber'
             except Exception as e:
                 logger.error(f"Copy/Send fail for {message_id} in {channel_id}: {e}")
                 continue
+                
+            if sent_count < len(files): 
+            await asyncio.sleep(1.5)
 
         success_text = (
             f"✅ Successfully sent {sent_count} files from "
