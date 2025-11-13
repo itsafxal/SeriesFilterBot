@@ -19,13 +19,8 @@ START_IMG = "https://sanishtech.com/i/690cfef2312bd-1762459378.jpg"
 
 #Omdb poster config
 OMDB_API_KEY = "f93ab313"
-# DEFAULT_POSTER can be:
-# - a direct HTTP URL (string)
-# - a Telegram file_id (string) returned after uploading an image once
-# - a local path to an image that your bot can read ("/app/default.jpg")
-DEFAULT_POSTER = "https://sanishtech.com/i/690ceab460363-1762454196.jpg"
-# Optional: where to persist disk cache
 OMDB_CACHE_DB = "/tmp/omdb_cache.db"
+DEFAULT_POSTER = "https://sanishtech.com/i/690ceab460363-1762454196.jpg"
 
 #captions
 CUSTOM_CAPTION_TEXT = """
@@ -34,6 +29,7 @@ CUSTOM_CAPTION_TEXT = """
 🔗 **Please Use Our Bot **
 @{bot_username}
 """
+MAX_CALLBACK_LENGTH = 50
 
 # --- Logging Configuration ---
 logging.basicConfig(
