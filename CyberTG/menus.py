@@ -28,10 +28,7 @@ from utils import (
     ADMIN_TEXT, 
     ABOUT_TEXT
 )
-from CyberTG.poster import get_series_poster_async
-
-
-# --- Utility Functions for Series Selection ---
+from .poster import get_series_poster_async
 
 async def show_language_menu(cyber: Client, query: CallbackQuery, series_name: str, season: int):
     """Displays a menu for selecting the audio language for a specific season."""
@@ -48,7 +45,7 @@ async def show_language_menu(cyber: Client, query: CallbackQuery, series_name: s
     for lang in languages:
         # Callback: ls|series_name_short|season|lang
         callback_data = f"ls|{series_name_short}|{season}|{lang}"
-        display_text = f"🪶 {lang} 🪶"
+        display_text = f"🔸 {lang} 🔸"
         keyboard.append([InlineKeyboardButton(display_text, callback_data=callback_data)])
 
     # Callback: back_to_search|series_name_short
