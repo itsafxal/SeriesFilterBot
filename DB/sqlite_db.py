@@ -2,6 +2,7 @@
 import asyncio
 import re
 import sqlite3
+from functools import lru_cache # <--- NEW IMPORT
 
 # --- SQLITE CONFIG AND STATE ---
 # Note: logger and files_collection are passed from database.py context where needed
@@ -9,6 +10,7 @@ SQLITE_DB_PATH = "series_index.db"
 sql_db_lock = asyncio.Lock() # Defined here but imported/used in database.py for async wrappers
 
 # ---- Helpers to recompute normalized series names (Copied to avoid circular import)
+# ... (rest of the helper functions remain the same)
 
 _CLEAN_TAGS = [
     "4K","1080P","720P","HDRIP","WEB-DL","WEBRIP","BLURAY","HDTV",
@@ -81,6 +83,7 @@ def _extract_language_local(file_name: str) -> str:
 
 
 # --- SQLITE SCHEMA AND MIGRATION (SYNC) ---
+# ... (create_sql_schema, migrate_data_from_mongo_to_sql_sync, repair_normalized_names_in_sqlite_sync remain the same)
 
 def create_sql_schema(conn):
     """Creates the necessary table in the SQLite database, including 'language'."""
@@ -186,16 +189,17 @@ def repair_normalized_names_in_sqlite_sync(logger):
 
 # --- SEARCH AND RETRIEVAL FUNCTIONS (SYNC) ---
 
+@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
 def get_series_summary_sync(series_name: str):
     """Gets all unique languages, seasons, and qualities for a series, used for the initial summary."""
     conn = sqlite3.connect(SQLITE_DB_PATH)
     cursor = conn.cursor()
     
     cursor.execute("SELECT DISTINCT language FROM files WHERE normalized_name = ?", (series_name,))
-    languages = [row[0] for row in cursor.fetchall()]
+    languages = tuple([row[0] for row in cursor.fetchall()]) # Must return immutable type for caching
     
     cursor.execute("SELECT DISTINCT season FROM files WHERE normalized_name = ? AND season > 0 ORDER BY season ASC", (series_name,))
-    seasons = [row[0] for row in cursor.fetchall()]
+    seasons = tuple([row[0] for row in cursor.fetchall()]) # Must return immutable type for caching
     
     cursor.execute("SELECT DISTINCT quality FROM files WHERE normalized_name = ?", (series_name,))
     qualities = [row[0] for row in cursor.fetchall()]
@@ -204,10 +208,10 @@ def get_series_summary_sync(series_name: str):
 
     # Apply custom sort order to qualities
     sort_order = ["4K", "1080P", "720P", "480P", "360P", "UNKNOWN"]
-    sorted_qualities = sorted(
+    sorted_qualities = tuple(sorted( # Must return immutable type for caching
         [q for q in qualities if q in sort_order], 
         key=lambda x: sort_order.index(x)
-    )
+    ))
     
     return {
         'languages': languages,
@@ -215,6 +219,7 @@ def get_series_summary_sync(series_name: str):
         'qualities': sorted_qualities
     }
 
+@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
 def search_series_sync(query: str):
     conn = sqlite3.connect(SQLITE_DB_PATH)
     cursor = conn.cursor()
@@ -226,7 +231,7 @@ def search_series_sync(query: str):
         SELECT DISTINCT normalized_name FROM files 
         WHERE normalized_name = ? COLLATE NOCASE
     """, (q,))
-    rows = [r[0] for r in cursor.fetchall()]
+    rows = tuple([r[0] for r in cursor.fetchall()]) # Must return immutable type for caching
     if rows:
         conn.close()
         return rows
@@ -237,20 +242,22 @@ def search_series_sync(query: str):
         SELECT DISTINCT normalized_name FROM files 
         WHERE ' ' || normalized_name || ' ' LIKE ? COLLATE NOCASE
     """, (pattern,))
-    rows = [r[0] for r in cursor.fetchall()]
+    rows = tuple([r[0] for r in cursor.fetchall()]) # Must return immutable type for caching
 
     conn.close()
     return rows
 
+@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
 def get_unique_languages_by_name_sync(series_name: str):
     """Gets unique language strings for a given series from SQLITE."""
     conn = sqlite3.connect(SQLITE_DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT DISTINCT language FROM files WHERE normalized_name = ? ORDER BY language ASC", (series_name,))
-    languages = [row[0] for row in cursor.fetchall()]
+    languages = tuple([row[0] for row in cursor.fetchall()]) # Must return immutable type for caching
     conn.close()
     return languages
 
+@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
 def get_unique_seasons_by_name_sync(series_name: str, language: str):
     """Gets unique season numbers for a given series and language from SQLITE."""
     conn = sqlite3.connect(SQLITE_DB_PATH)
@@ -260,10 +267,11 @@ def get_unique_seasons_by_name_sync(series_name: str, language: str):
         WHERE normalized_name = ? AND language = ? AND season > 0
         ORDER BY season ASC
     """, (series_name, language))
-    seasons = [row[0] for row in cursor.fetchall()]
+    seasons = tuple([row[0] for row in cursor.fetchall()]) # Must return immutable type for caching
     conn.close()
     return seasons
 
+@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
 def get_unique_qualities_by_season_sync(series_name: str, language: str, season: int):
     """Gets unique quality strings for a given series, language, and season from SQLITE."""
     conn = sqlite3.connect(SQLITE_DB_PATH)
@@ -273,11 +281,13 @@ def get_unique_qualities_by_season_sync(series_name: str, language: str, season:
     conn.close()
 
     sort_order = ["4K", "1080P", "720P", "480P", "360P", "UNKNOWN"]
-    sorted_qualities = sorted(
+    sorted_qualities = tuple(sorted( # Must return immutable type for caching
         [q for q in qualities if q in sort_order], 
         key=lambda x: sort_order.index(x)
-    )
+    ))
     return sorted_qualities
+
+# NOTE: get_all_files_by_season_and_quality_sync is not cached because its return type (list of dicts) is mutable and the call frequency may be low/unique.
 
 def get_all_files_by_season_and_quality_sync(series_name: str, season: int, quality: str, language: str):
     """Gets file details filtered by series, season, quality, AND language from SQLITE."""
@@ -293,6 +303,7 @@ def get_all_files_by_season_and_quality_sync(series_name: str, season: int, qual
     conn.close()
     return files
 
+@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
 def get_unique_languages_by_season_sync(series_name: str, season: int):
     """Gets unique language strings for a given series and season from SQLITE."""
     conn = sqlite3.connect(SQLITE_DB_PATH)
@@ -302,10 +313,11 @@ def get_unique_languages_by_season_sync(series_name: str, season: int):
         WHERE normalized_name = ? AND season = ?
         ORDER BY language ASC
     """, (series_name, season))
-    languages = [row[0] for row in cursor.fetchall()]
+    languages = tuple([row[0] for row in cursor.fetchall()]) # Must return immutable type for caching
     conn.close()
     return languages
 
+@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
 def get_unique_qualities_by_lang_season_sync(series_name: str, language: str, season: int):
     """Gets unique quality strings for a given series, language, and season from SQLITE."""
     conn = sqlite3.connect(SQLITE_DB_PATH)
@@ -319,12 +331,13 @@ def get_unique_qualities_by_lang_season_sync(series_name: str, language: str, se
 
     # Apply custom sort order to qualities
     sort_order = ["4K", "1080P", "720P", "480P", "360P", "UNKNOWN"]
-    sorted_qualities = sorted(
+    sorted_qualities = tuple(sorted( # Must return immutable type for caching
         [q for q in qualities if q in sort_order], 
         key=lambda x: sort_order.index(x)
-    )
+    ))
     return sorted_qualities
 
+# NOTE: get_file_by_message_id_and_channel_id_sync and save_file_to_sql_sync are not cached as they perform write/unique read operations.
 
 def get_file_by_message_id_and_channel_id_sync(channel_id: int, message_id: int):
     """Synchronously retrieves a single file document based on its message and channel IDs."""
@@ -356,12 +369,29 @@ def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
         ))
         conn.commit()
         conn.close()
+        # Invalidate cache for relevant functions after a write operation
+        clear_all_caches() # <--- NEW: Clear all caches on a write/save operation
         return True
     except Exception as e:
         logger.error(f"Failed to insert/update file doc in SQLite: {e}")
         return False
 
+# --- Cache Management Function ---
+
+def clear_all_caches():
+    """Clears all lru_caches in this module."""
+    # List all cached functions explicitly
+    get_series_summary_sync.cache_clear()
+    search_series_sync.cache_clear()
+    get_unique_languages_by_name_sync.cache_clear()
+    get_unique_seasons_by_name_sync.cache_clear()
+    get_unique_qualities_by_season_sync.cache_clear()
+    get_unique_languages_by_season_sync.cache_clear()
+    get_unique_qualities_by_lang_season_sync.cache_clear()
+    # print("DEBUG: All SQLite caches cleared.") # Uncomment for debugging
+
 # --- DELETE AND COUNT FUNCTIONS (SYNC) ---
+# ... (rest of the delete and count functions remain the same)
 
 def delete_all_files_sync():
     """Synchronously deletes all files from sqlite"""
@@ -370,6 +400,7 @@ def delete_all_files_sync():
     cursor.execute("DELETE FROM files")
     conn.commit()
     conn.close()
+    clear_all_caches() # <--- NEW: Clear all caches on delete
 
 def delete_one_file_sync(channel_id: int, msg_id: int):
     """Synchronously deletes single file from sqlite"""
@@ -378,6 +409,7 @@ def delete_one_file_sync(channel_id: int, msg_id: int):
     cursor.execute("DELETE FROM files WHERE channel_id = ? AND message_id = ?", (channel_id, msg_id))
     conn.commit()
     conn.close()
+    clear_all_caches() # <--- NEW: Clear all caches on delete
 
 def get_total_files_sync():
     """Synchronously returns file count from sqlite"""
