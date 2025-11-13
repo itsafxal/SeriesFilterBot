@@ -18,7 +18,7 @@ FORCE_SUB_CHANNEL = None
 START_IMG = "https://sanishtech.com/i/690cfef2312bd-1762459378.jpg"
 
 #Omdb poster config
-OMDB_API_KEY = "a087acae"
+OMDB_API_KEY = "f93ab313"
 # DEFAULT_POSTER can be:
 # - a direct HTTP URL (string)
 # - a Telegram file_id (string) returned after uploading an image once
