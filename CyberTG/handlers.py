@@ -32,8 +32,8 @@ from utils import (
     delete_message_later,
     check_force_subscribe,
 )
-from CyberTG.poster import get_series_poster_async
-from menus import show_language_menu, show_quality_menu # Import from the new menus file
+from .poster import get_series_poster_async
+from .menus import show_language_menu, show_quality_menu # Import from the new menus file
 
 MAX_CALLBACK_LENGTH = 50
 
