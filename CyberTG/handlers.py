@@ -8,6 +8,7 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     InputMediaPhoto,
+    CallbackQuery,
 )
 from pyrogram.errors import MessageNotModified
 from DB.database import (
@@ -23,31 +24,28 @@ from config import (
     DEFAULT_POSTER,
     ADMIN_USERS,
     OMDB_CACHE_DB,
+    MAX_CALLBACK_LENGTH, # Keep MAX_CALLBACK_LENGTH in config/imported
 )
 from utils import (
-    ABOUT_KEYBOARD,
-    ADMIN_TEXT,
-    ABOUT_TEXT,
     clean_series_name,
     delete_message_later,
     check_force_subscribe,
 )
-from .poster import get_series_poster_async
-from .menus import show_language_menu, show_quality_menu # Import from the new menus file
-
-MAX_CALLBACK_LENGTH = 50
-
+from CyberTG.poster import get_series_poster_async
+from menus import (
+    show_language_menu, show_quality_menu, help_menu_handler, cyber_menu_handler, admin_menu_handler, 
+    about_menu_handler, close_menu_handler, back_to_language_handler, back_to_search_handler, 
+)
 
 def register_conversation_handlers(cyber: Client):
-    
+        
     @cyber.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"]))
     async def search_handler(cyber, message: Message):
         """Handles text messages for series search."""
         query = message.text.strip()
         if query.startswith("/") and query.lower() not in ["/index"]:
             return
-
-        # Force Subscribe Check
+            
         is_member, invite_link = await check_force_subscribe(cyber, message.from_user.id)
         if not is_member:
             await message.reply_text(
@@ -58,7 +56,6 @@ def register_conversation_handlers(cyber: Client):
             )
             return
 
-        # --- Primary Search ---
         try:
             unique_names = await search_series(query)
         except Exception as e:
@@ -66,7 +63,6 @@ def register_conversation_handlers(cyber: Client):
             unique_names = []
 
         if not unique_names:
-            # --- Cleaned Search/Suggestion Logic ---
             clean_query = re.sub(
                 r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil|file|that|find|und(o)*|kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*|aya(k)*(um(o)*)?|full\smovie|any(one)|with\ssubtitle(s)?)",
                 "", message.text, flags=re.IGNORECASE).strip()
@@ -178,9 +174,10 @@ def register_conversation_handlers(cyber: Client):
         if auto_delete_timer and int(auto_delete_timer) > 0:
             asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
 
+    # --- Suggestion Callbacks ---
 
     @cyber.on_callback_query(filters.regex(r"^sugg_select\|"))
-    async def sugg_select_handler(cyber, query):
+    async def sugg_select_handler(cyber, query: CallbackQuery):
         """Handles selection from search suggestions."""
         data = query.data.split("|", 2)
         if len(data) < 3:
@@ -239,7 +236,6 @@ def register_conversation_handlers(cyber: Client):
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
 
         try:
-            # Edit the suggestion message to display the series info
             await query.message.edit_media(
                 media=InputMediaPhoto(media=poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
                 reply_markup=reply_markup,
@@ -256,9 +252,9 @@ def register_conversation_handlers(cyber: Client):
         if auto_delete_timer and int(auto_delete_timer) > 0:
             asyncio.create_task(delete_message_later(cyber, query.message.chat.id, query.message.id, int(auto_delete_timer)))
 
-
+    
     @cyber.on_callback_query(filters.regex(r"^close_suggestion\|"))
-    async def close_suggestion_handler(cyber, query):
+    async def close_suggestion_handler(cyber, query: CallbackQuery):
         """Handles closing the suggestion message."""
         try:
             await cyber.delete_messages(query.message.chat.id, query.message.id)
@@ -268,12 +264,12 @@ def register_conversation_handlers(cyber: Client):
             return
         await query.answer("Closed.", show_alert=False)
 
+    # --- Selection Callbacks ---
 
     @cyber.on_callback_query(filters.regex(r"^ss\|"))
-    async def season_select_handler(cyber, query):
+    async def season_select_handler(cyber, query: CallbackQuery):
         """Handles season selection and shows the language menu."""
         data = query.data.split("|")
-
         if len(data) < 3:
             logger.error(f"Malformed callback data for season_select_handler: {query.data}")
             await query.answer("❌ Error: Invalid season selection data. Please try searching again.", show_alert=True)
@@ -287,13 +283,12 @@ def register_conversation_handlers(cyber: Client):
             await query.answer("❌ Error: Invalid season number format.", show_alert=True)
             return
 
-        # Use the function from menus.py
         await show_language_menu(cyber, query, series_name, season)
         await query.answer()
 
 
     @cyber.on_callback_query(filters.regex(r"^ls\|"))
-    async def language_select_handler(cyber, query):
+    async def language_select_handler(cyber, query: CallbackQuery):
         """Handles language selection and shows the quality menu."""
         data = query.data.split("|")
         if len(data) < 4:
@@ -308,34 +303,12 @@ def register_conversation_handlers(cyber: Client):
             return
         language = data[3]
         
-        # Use the function from menus.py
         await show_quality_menu(cyber, query, series_name, language, season)
-        await query.answer()
-
-
-    @cyber.on_callback_query(filters.regex(r"^bl\|"))
-    async def back_to_language_handler(cyber, query):
-        """Handles going back to the language selection menu."""
-        data = query.data.split("|")
-
-        if len(data) < 3:
-            await query.answer("❌ Error: Invalid back data.", show_alert=True)
-            return
-
-        series_name = data[1]
-        try:
-            season = int(data[2])
-        except ValueError:
-            await query.answer("❌ Error: Invalid season number format.", show_alert=True)
-            return
-
-        # Use the function from menus.py
-        await show_language_menu(cyber, query, series_name, season)
         await query.answer()
 
     
     @cyber.on_callback_query(filters.regex(r"^qs\|"))
-    async def quality_select_handler(cyber, query):
+    async def quality_select_handler(cyber, query: CallbackQuery):
         """Handles quality selection and sends all files for the season/quality/language."""
         data = query.data.split("|")
         if len(data) < 5:
@@ -404,7 +377,7 @@ def register_conversation_handlers(cyber: Client):
 
 
     @cyber.on_callback_query(filters.regex(r"^fs\|"))
-    async def file_select_handler(cyber, query):
+    async def file_select_handler(cyber, query: CallbackQuery):
         """Handles single file selection."""
         data = query.data.split("|")
         if len(data) < 4:
@@ -442,256 +415,39 @@ def register_conversation_handlers(cyber: Client):
         except Exception as e:
             logger.error(f"Failed to copy file {message_id} from {channel_id}: {e}")
             await query.answer("❌ Failed to send file.\nMake sure bot is admin.", show_alert=True)
-
-    
-    @cyber.on_callback_query(filters.regex(r"^back_to_search\|"))
-    async def back_to_search_handler(cyber, query):
-        """Handles going back to the main search result (season selection) menu."""
-        data = query.data.split("|")
-        if len(data) < 2:
-            await query.answer("❌ Error: Invalid back data.", show_alert=True)
-            return
-
-        series_name = data[1]
-
-        poster_url = DEFAULT_POSTER
-        imdb_enabled = True
-        try:
-            imdb_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
-        except Exception:
-            pass
-
-        # Check Cache for Poster
-        try:
-            cache_file = OMDB_CACHE_DB or "/tmp/omdb_cache.db"
-            with shelve.open(cache_file) as db:
-                key = f"poster::{series_name.strip().lower()}"
-                if key in db:
-                    poster_url = db[key]
-        except Exception:
-            pass
-
-        # Fetch Poster if needed
-        if (not poster_url or poster_url == DEFAULT_POSTER) and imdb_enabled:
-            try:
-                poster_tmp = await get_series_poster_async(series_name)
-                poster_url = poster_tmp or DEFAULT_POSTER
-            except Exception as e:
-                logger.warning(f"[OMDB FETCH FAIL - back_to_search] {series_name} -> {e}")
-                poster_url = DEFAULT_POSTER
-
-        summary = await get_series_summary(series_name)
-        languages_list = ", ".join(summary.get("languages", []))
-        seasons_count = len(summary.get("seasons", []))
-        qualities_list = ", ".join(summary.get("qualities", []))
-
-        response = (
-            f"**○ Title:** {series_name}\n"
-            f"**○ Language:** {languages_list or 'N/A'}\n"
-            f"**○ Season Available:** {seasons_count}\n"
-            f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
-            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
-        )
-
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for season in summary.get("seasons", []):
-            callback_data = f"ss|{series_name_short}|{season}"
-            keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
-
-        try:
-            await query.message.edit_media(
-                media=InputMediaPhoto(media=poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
-                reply_markup=reply_markup,
-            )
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.error(f"Failed to edit media for back_to_search: {e}. Falling back to edit_text.")
-            try:
-                await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            except Exception:
-                pass
-
-        if auto_delete_timer and int(auto_delete_timer) > 0:
-            asyncio.create_task(delete_message_later(cyber, query.message.chat.id, query.message.id, int(auto_delete_timer)))
-
-        await query.answer()
-
     
     @cyber.on_callback_query(filters.regex(r"^help\|"))
-    async def help_menu_handler(cyber, query):
-        """Displays the help menu."""
-        help_text = (
-            "<b>💡 Help & Instructions</b>\n\n"
-            "1. <b>Search</b>: Simply send the <b>name</b> of the movie or series you are looking for.\n"
-            "2. <b>Select</b>: Tap the <b>Season</b> button for a series.\n"
-            "3. <b>Filter</b>: Choose the <b>Language</b> and then the <b>Quality</b>.\n"
-            "4. <b>Receive</b>: The bot will automatically start sending the files to you.\n\n"
-            "<i>If you see 'No series found', try a slightly different or shorter name.</i>"
-        )
+    async def help_menu_proxy(cyber, query: CallbackQuery):
+        await help_menu_handler(cyber, query)
 
-        HELP_KEYBOARD = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏡 ʜᴏᴍᴇ", callback_data="cyber|"),
-             InlineKeyboardButton("🔅 ᴀᴅᴍɪɴ (ᴏɴʟʏ)", callback_data="admin_cmd|")]
-        ])
-        reply_markup = HELP_KEYBOARD
-
-        try:
-            await query.message.edit_caption(
-                help_text,
-                reply_markup=reply_markup,
-                parse_mode=enums.ParseMode.HTML
-            )
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.error(f"Error editing message caption in help_menu_handler: {e}")
-            try:
-                await query.message.edit_text(
-                    help_text,
-                    reply_markup=reply_markup,
-                    parse_mode=enums.ParseMode.HTML
-                )
-            except Exception:
-                pass
-
-        await query.answer("Showing help menu.")
-
-    
     @cyber.on_callback_query(filters.regex(r"^cyber\|"))
-    async def cyber_menu_handler(cyber, query):
-        """Displays the main bot/home menu."""
-        user = query.from_user
-        bot = await cyber.get_me()
-        user_mention = user.mention
-        START_TEXT = (
-            f"🖤 <b>Hey {user_mention}!</b>\n\n"
-            f"Welcome to <b>{bot.first_name}</b> — your private cinema in chat 🎭\n"
-            "Just type what you’re looking for and I’ll fetch it faster than light ⚡\n\n"
-            "<blockquote>Let’s dive into the world of entertainment 🌙</blockquote>"
-        )
-        CYBER_KEYBOARD = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞", switch_inline_query_current_chat="")
-            ],[
-                InlineKeyboardButton("⚡ ʜᴇʟᴘ", callback_data="help|menu"),
-                InlineKeyboardButton("ᴀʙᴏᴜᴛ ✨", callback_data="about|menu")
-            ],[
-                InlineKeyboardButton("🍷 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ 🍷", url="t.me/TomxSupport")
-            ]
-        ])
-        reply_markup = CYBER_KEYBOARD
-        try:
-            await query.message.edit_caption(
-                START_TEXT,
-                reply_markup=reply_markup,
-                parse_mode=enums.ParseMode.HTML
-            )
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.error(f"Error editing message caption in cyber_menu_handler: {e}")
-            try:
-                await query.message.edit_text(
-                    START_TEXT,
-                    reply_markup=reply_markup,
-                    parse_mode=enums.ParseMode.HTML
-                )
-            except Exception:
-                pass
+    async def cyber_menu_proxy(cyber, query: CallbackQuery):
+        await cyber_menu_handler(cyber, query)
 
-        await query.answer("Back To Home")
-
-    
     @cyber.on_callback_query(filters.regex(r"^admin_cmd\|"))
-    async def admin_menu_handler(cyber, query):
-        """Displays the admin menu (restricted)."""
-        user_id = query.from_user.id
-        is_authorized = False
-        try:
-            if isinstance(ADMIN_USERS, (list, tuple, set)):
-                is_authorized = user_id in ADMIN_USERS
-            else:
-                is_authorized = (user_id == int(ADMIN_USERS))
-        except Exception:
-            is_authorized = False
+    async def admin_menu_proxy(cyber, query: CallbackQuery):
+        await admin_menu_handler(cyber, query)
 
-        if not is_authorized:
-            await query.answer("You are not authorized. Only the admin can open this menu.", show_alert=True)
-            return
-
-        about_text = ADMIN_TEXT
-        ADMIN_KEYBOARD = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏡 ʜᴏᴍᴇ", callback_data="cyber|"),
-             InlineKeyboardButton("🚫 ᴄʟᴏsᴇ", callback_data="close")]
-        ])
-        reply_markup = ADMIN_KEYBOARD
-        try:
-            await query.message.edit_caption(
-                about_text,
-                reply_markup=reply_markup,
-                parse_mode=enums.ParseMode.HTML
-            )
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.error(f"Error editing message caption in admin_menu_handler: {e}")
-            try:
-                await query.message.edit_text(
-                    about_text,
-                    reply_markup=reply_markup,
-                    parse_mode=enums.ParseMode.HTML
-                )
-            except Exception:
-                pass
-
-        await query.answer("Showing about information.")
-
-    
     @cyber.on_callback_query(filters.regex(r"^about\|"))
-    async def about_menu_handler(cyber, query):
-        """Displays the about menu."""
-        about_text = ABOUT_TEXT
-        reply_markup = ABOUT_KEYBOARD
-        try:
-            await query.message.edit_caption(
-                about_text,
-                reply_markup=reply_markup,
-                parse_mode=enums.ParseMode.HTML
-            )
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.error(f"Error editing message caption in about_menu_handler: {e}")
-            try:
-                await query.message.edit_text(
-                    about_text,
-                    reply_markup=reply_markup,
-                    parse_mode=enums.ParseMode.HTML
-                )
-            except Exception:
-                pass
+    async def about_menu_proxy(cyber, query: CallbackQuery):
+        await about_menu_handler(cyber, query)
 
-        await query.answer("Showing about information.")
-
-    
     @cyber.on_callback_query(filters.regex(r"close"))
-    async def close_menu_handler(_, query):
-        """Deletes the message."""
-        try:
-            await query.message.delete()
-            await query.answer("Closed.")
-        except Exception:
-            await query.answer("Can't close.")
+    async def close_menu_proxy(cyber, query: CallbackQuery):
+        await close_menu_handler(cyber, query)
+        
+    @cyber.on_callback_query(filters.regex(r"^bl\|"))
+    async def back_to_language_proxy(cyber, query: CallbackQuery):
+        await back_to_language_handler(cyber, query)
+
+    @cyber.on_callback_query(filters.regex(r"^back_to_search\|"))
+    async def back_to_search_proxy(cyber, query: CallbackQuery):
+        await back_to_search_handler(cyber, query)
 
     return [
-        search_handler, season_select_handler, language_select_handler,
-        back_to_language_handler, quality_select_handler, file_select_handler,
-        back_to_search_handler, help_menu_handler, about_menu_handler,
-        admin_menu_handler, cyber_menu_handler, close_menu_handler,
-        close_suggestion_handler, sugg_select_handler
+        search_handler, sugg_select_handler, close_suggestion_handler,
+        season_select_handler, language_select_handler, quality_select_handler,
+        file_select_handler,
+        help_menu_proxy, cyber_menu_proxy, admin_menu_proxy, about_menu_proxy,
+        close_menu_proxy, back_to_language_proxy, back_to_search_proxy
     ]
