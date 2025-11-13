@@ -6,6 +6,7 @@ from pymongo import MongoClient, TEXT, DESCENDING
 from config import MONGO_URI, logger
 
 # --- MONGODB CONFIG & STATE ---
+# ... (MongoDB setup remains the same)
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["SeriesBotDB"]
 files_collection = db["files"] 
@@ -48,10 +49,12 @@ from .sqlite_db import (
     delete_one_file_sync,
     get_total_files_sync,
     _normalized_series_from_filename, # Import helper for MongoDB save/migration context
-    save_file_to_sql_sync # Import sync function for use in save_file_to_db
+    save_file_to_sql_sync, # Import sync function for use in save_file_to_db
+    clear_all_caches # <--- NEW IMPORT for cache invalidation
 )
 
 # --- MIGRATION / INITIALIZATION ---
+# ... (initialize_sql_db remains the same)
 
 def initialize_sql_db():
     """Synchronously initializes the SQL database and runs the migration + repair."""
@@ -66,6 +69,7 @@ def initialize_sql_db():
 
 
 # --- BOT STATE FUNCTIONS (MongoDB) ---
+# ... (save_bot_state, get_bot_state remain the same)
 
 async def save_bot_state(chat_id, last_msg_id):
     """Saves the last processed message ID for a given chat to resume later."""
@@ -86,6 +90,7 @@ async def get_bot_state(chat_id):
 
 
 # --- GLOBAL SETTINGS (MongoDB) ---
+# ... (set_global_setting, get_global_setting remain the same)
 
 async def set_global_setting(key: str, value):
     """Sets a global bot configuration setting."""
@@ -170,7 +175,11 @@ async def save_file_to_db(file_doc: dict):
 
         # --- 2. Save to SQLITE (using its sync function) ---
         sql_success = save_file_to_sql_sync(file_doc, logger) 
-            
+        
+        # Invalidate the cache after a successful write
+        if sql_success or mongo_success:
+            clear_all_caches() # <--- NEW CALL
+
         return sql_success 
 
     return await asyncio.to_thread(sync_save)
@@ -182,6 +191,7 @@ async def delete_all_files():
     def sync_clear():
         files_collection.delete_many({})
         delete_all_files_sync()
+        clear_all_caches() # <--- NEW CALL
     await asyncio.to_thread(sync_clear)
 
 
@@ -190,6 +200,7 @@ async def delete_one_file(channel_id: int, msg_id: int):
     def sync_delete():
         files_collection.delete_one({"channel_id": channel_id, "message_id": msg_id})
         delete_one_file_sync(channel_id, msg_id)
+        clear_all_caches() # <--- NEW CALL
     await asyncio.to_thread(sync_delete)
 
 
@@ -199,7 +210,7 @@ async def get_total_files():
         return await asyncio.to_thread(get_total_files_sync)
 
 # --- USER FUNCTIONS (MongoDB) ---
-
+# ... (user functions remain the same)
 async def add_user(user_id: int):
     def sync_add():
         users_collection.update_one(
