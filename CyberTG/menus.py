@@ -27,7 +27,7 @@ async def show_language_menu(cyber: Client, query, series_name: str, season: int
     for lang in languages:
         # Callback: ls|series_name_short|season|lang
         callback_data = f"ls|{series_name_short}|{season}|{lang}"
-        display_text = f"🪶 {lang} 🪶"
+        display_text = f"🔸 {lang} 🔸"
         keyboard.append([InlineKeyboardButton(display_text, callback_data=callback_data)])
 
     # Callback: back_to_search|series_name_short
