@@ -219,33 +219,98 @@ def get_series_summary_sync(series_name: str):
         'qualities': sorted_qualities
     }
 
-@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
+@lru_cache(maxsize=1024)
 def search_series_sync(query: str):
+    """
+    Ranked fuzzy search:
+    - exact match
+    - startswith
+    - contains
+    - soundex
+    - levenshtein fuzzy
+    Returns results sorted by score.
+    """
     conn = sqlite3.connect(SQLITE_DB_PATH)
+    conn.create_function("levenshtein", 2, levenshtein)
     cursor = conn.cursor()
 
     q = query.strip()
+    if not q:
+        conn.close()
+        return tuple()
 
-    # 1) exact match first
+    scored = {}
+
+    # Helper to add results with score
+    def add(names, score):
+        for name in names:
+            if name not in scored:
+                scored[name] = score
+            else:
+                scored[name] += score
+
+    # ------------------------------
+    # 1) EXACT MATCH (score 100)
+    # ------------------------------
     cursor.execute("""
         SELECT DISTINCT normalized_name FROM files 
         WHERE normalized_name = ? COLLATE NOCASE
     """, (q,))
-    rows = tuple([r[0] for r in cursor.fetchall()]) # Must return immutable type for caching
-    if rows:
-        conn.close()
-        return rows
+    add([r[0] for r in cursor.fetchall()], 100)
 
-    # 2) whole word match only
-    pattern = f"% {q} %"
+    # ------------------------------
+    # 2) STARTSWITH (score 80)
+    # ------------------------------
     cursor.execute("""
         SELECT DISTINCT normalized_name FROM files 
-        WHERE ' ' || normalized_name || ' ' LIKE ? COLLATE NOCASE
-    """, (pattern,))
-    rows = tuple([r[0] for r in cursor.fetchall()]) # Must return immutable type for caching
+        WHERE normalized_name LIKE ? COLLATE NOCASE
+    """, (q + "%",))
+    add([r[0] for r in cursor.fetchall()], 80)
+
+    # ------------------------------
+    # 3) CONTAINS (score 60)
+    # ------------------------------
+    cursor.execute("""
+        SELECT DISTINCT normalized_name FROM files 
+        WHERE normalized_name LIKE ? COLLATE NOCASE
+    """, ("%" + q + "%",))
+    add([r[0] for r in cursor.fetchall()], 60)
+
+    # ------------------------------
+    # 4) SOUNDEX (score 40)
+    # ------------------------------
+    cursor.execute("""
+        SELECT DISTINCT normalized_name FROM files 
+        WHERE soundex(normalized_name) = soundex(?)
+    """, (q,))
+    add([r[0] for r in cursor.fetchall()], 40)
+
+    # ------------------------------
+    # 5) LEVENSHTEIN (score based on distance)
+    # ------------------------------
+    try:
+        cursor.execute("""
+            SELECT DISTINCT normalized_name 
+            FROM files
+        """)
+        all_names = [r[0] for r in cursor.fetchall()]
+
+        for name in all_names:
+            dist = levenshtein(name.lower(), q.lower())
+            if dist <= 2:
+                add([name], 30 - (dist * 10))  # distance 0->30, 1->20, 2->10
+    except:
+        pass
 
     conn.close()
-    return rows
+
+    # ------------------------------
+    # FINAL SORTED OUTPUT
+    # ------------------------------
+    final = sorted(scored.items(), key=lambda x: x[1], reverse=True)
+
+    # return only names
+    return tuple([name for name, score in final])
 
 @lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
 def get_unique_languages_by_name_sync(series_name: str):
