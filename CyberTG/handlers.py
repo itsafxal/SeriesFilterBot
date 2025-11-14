@@ -37,6 +37,86 @@ from .menus import (
     about_menu_handler, close_menu_handler, back_to_language_handler, back_to_search_handler, 
 )
 
+# --- NEW SHARED FUNCTION FOR FILE DELIVERY ---
+
+async def send_files_to_user(cyber: Client, user_id: int, series_name: str, season: int, quality: str, language: str):
+    """Core logic to fetch and send files to a specific user ID, including FS check."""
+    
+    # 1. Force Subscription Check
+    is_member, invite_link = await check_force_subscribe(cyber, user_id)
+    if not is_member:
+        await cyber.send_message(
+            chat_id=user_id,
+            text="🛑 **Please join our channel to get the files.**\n\n"
+            "Click the button below to join:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📣 Join Channel", url=invite_link)]]),
+            parse_mode=enums.ParseMode.MARKDOWN,
+        )
+        return
+
+    # 2. Fetch Files
+    files = await get_all_files_by_season_and_quality(series_name, season, quality, language)
+    if not files:
+        await cyber.send_message(
+            chat_id=user_id, 
+            text=f"❌ No files found for **{series_name}** S{season} ({quality}/{language}).", 
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+        return
+
+    # 3. Send Files
+    bot_username = (await cyber.get_me()).username
+    sent_count = 0
+    
+    await cyber.send_message(
+        chat_id=user_id, 
+        text=f"Sending **{series_name}** S{season} ({quality}/{language}). Please wait...", 
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+
+    for file_entry in files:
+        channel_id = file_entry["channel_id"]
+        message_id = file_entry["message_id"]
+        file_name = file_entry.get("file_name", f"S{file_entry.get('season', 0)}E{file_entry.get('episode', 99)}")
+
+        custom_caption = CUSTOM_CAPTION_TEXT.format(file_name=file_name, bot_username=bot_username)
+
+        try:
+            file_id = file_entry.get("file_id")
+            if file_id:
+                # Send as document using file_id
+                await cyber.send_document(
+                    chat_id=user_id,
+                    document=file_id,
+                    caption=custom_caption,
+                    parse_mode=enums.ParseMode.MARKDOWN,
+                )
+            else:
+                # Fallback to copy_message using channel_id and message_id
+                await cyber.copy_message(
+                    chat_id=user_id,
+                    from_chat_id=channel_id,
+                    message_id=message_id,
+                    caption=custom_caption,
+                    parse_mode=enums.ParseMode.MARKDOWN,
+                )
+            sent_count += 1
+        except Exception as e:
+            logger.error(f"Copy/Send fail for {message_id} in {channel_id} to user {user_id}: {e}")
+            continue
+            
+        if sent_count < len(files):
+            await asyncio.sleep(1.5) # Throttle sending
+
+    success_text = (
+        f"✅ Successfully sent {sent_count} files from "
+        f"**{series_name}** — Season {season} ({quality})"
+    )
+    await cyber.send_message(chat_id=user_id, text=success_text, parse_mode=enums.ParseMode.MARKDOWN)
+
+
+# --- HANDLER REGISTRATION ---
+
 def register_conversation_handlers(cyber: Client):
         
     @cyber.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"]))
@@ -177,6 +257,69 @@ def register_conversation_handlers(cyber: Client):
         if auto_delete_timer and int(auto_delete_timer) > 0:
             asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
 
+
+    @cyber.on_message(filters.command("start") & filters.private)
+    async def deep_link_start_handler(cyber, message: Message):
+        """Handles deep links, specifically the 'file_request' payload from groups."""
+        if len(message.command) > 1:
+            payload = message.command[1]
+            
+            # Check if it's the file request payload from group
+            if payload.startswith("file_request|"):
+                parts = payload.split("|")
+                if len(parts) == 5:
+                    # parts: [0:'file_request', 1:series, 2:season, 3:lang, 4:quality]
+                    series_name = parts[1]
+                    try:
+                        season = int(parts[2])
+                    except ValueError:
+                        await message.reply_text("❌ Error: Invalid season number in request.", parse_mode=enums.ParseMode.MARKDOWN)
+                        return
+                    language = parts[3]
+                    quality = parts[4]
+                    user_id = message.from_user.id
+
+                    # Call the new shared function
+                    await send_files_to_user(cyber, user_id, series_name, season, quality, language)
+                    return
+        
+        # If not a file request, call the main menu logic (cyber_menu_handler logic repurposed for /start)
+        # To avoid circular dependency, we replicate the cyber_menu_handler logic here or call a simple welcome.
+        user = message.from_user
+        bot = await cyber.get_me()
+        user_mention = user.mention
+        START_TEXT = (
+            f"🖤 <b>Hey {user_mention}!</b>\n\n"
+            f"Welcome to <b>{bot.first_name}</b> — your private cinema in chat 🎭\n"
+            "Just type what you’re looking for and I’ll fetch it faster than light ⚡\n\n"
+            "<blockquote>Let’s dive into the world of entertainment 🌙</blockquote>"
+        )
+        CYBER_KEYBOARD = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞", switch_inline_query_current_chat="")
+            ],[
+                InlineKeyboardButton("⚡ ʜᴇʟᴘ", callback_data="help|menu"),
+                InlineKeyboardButton("ᴀʙᴏᴜᴛ ✨", callback_data="about|menu")
+            ],[
+                InlineKeyboardButton("🍷 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ 🍷", url="t.me/TomxSupport")
+            ]
+        ])
+        
+        try:
+            await message.reply_photo(
+                photo=DEFAULT_POSTER, 
+                caption=START_TEXT, 
+                reply_markup=CYBER_KEYBOARD, 
+                parse_mode=enums.ParseMode.HTML
+            )
+        except Exception:
+            await message.reply_text(
+                START_TEXT, 
+                reply_markup=CYBER_KEYBOARD, 
+                parse_mode=enums.ParseMode.HTML
+            )
+
+
     # --- Suggestion Callbacks ---
 
     @cyber.on_callback_query(filters.regex(r"^sugg_select\|"))
@@ -226,7 +369,7 @@ def register_conversation_handlers(cyber: Client):
             f"**○ Language:** {languages_list or 'N/A'}\n"
             f"**○ Season Available:** {seasons_count}\n"
             f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
-            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
+            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲d 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
         )
         
         keyboard = []
@@ -327,56 +470,12 @@ def register_conversation_handlers(cyber: Client):
 
         language = data[3]
         quality = data[4]
+        user_id = query.from_user.id
 
         await query.answer(f"Sending {quality}/{language} episodes for S{season}...", cache_time=0)
 
-        files = await get_all_files_by_season_and_quality(series_name, season, quality, language)
-        if not files:
-            await query.answer("❌ No files found.", show_alert=True)
-            return
-
-        bot_username = (await cyber.get_me()).username
-        sent_count = 0
-
-        for file_entry in files:
-            channel_id = file_entry["channel_id"]
-            message_id = file_entry["message_id"]
-            file_name = file_entry.get("file_name", f"S{file_entry.get('season', 0)}E{file_entry.get('episode', 99)}")
-
-            custom_caption = CUSTOM_CAPTION_TEXT.format(file_name=file_name, bot_username=bot_username)
-
-            try:
-                file_id = file_entry.get("file_id")
-                if file_id:
-                    # Send as document using file_id
-                    await cyber.send_document(
-                        chat_id=query.from_user.id,
-                        document=file_id,
-                        caption=custom_caption,
-                        parse_mode=enums.ParseMode.MARKDOWN,
-                    )
-                else:
-                    # Fallback to copy_message using channel_id and message_id
-                    await cyber.copy_message(
-                        chat_id=query.from_user.id,
-                        from_chat_id=channel_id,
-                        message_id=message_id,
-                        caption=custom_caption,
-                        parse_mode=enums.ParseMode.MARKDOWN,
-                    )
-                sent_count += 1
-            except Exception as e:
-                logger.error(f"Copy/Send fail for {message_id} in {channel_id}: {e}")
-                continue
-                
-            if sent_count < len(files):
-                await asyncio.sleep(1.5) # Throttle sending
-
-        success_text = (
-            f"✅ Successfully sent {sent_count} files from "
-            f"**{series_name}** — Season {season} ({quality})"
-        )
-        await cyber.send_message(chat_id=query.from_user.id, text=success_text, parse_mode=enums.ParseMode.MARKDOWN)
+        # Use the shared function for file sending
+        await send_files_to_user(cyber, user_id, series_name, season, quality, language)
 
 
     @cyber.on_callback_query(filters.regex(r"^fs\|"))
@@ -419,6 +518,8 @@ def register_conversation_handlers(cyber: Client):
             logger.error(f"Failed to copy file {message_id} from {channel_id}: {e}")
             await query.answer("❌ Failed to send file.\nMake sure bot is admin.", show_alert=True)
     
+    # --- Menu Proxies (Existing Handlers) ---
+    
     @cyber.on_callback_query(filters.regex(r"^help\|"))
     async def help_menu_proxy(cyber, query: CallbackQuery):
         await help_menu_handler(cyber, query)
@@ -448,7 +549,7 @@ def register_conversation_handlers(cyber: Client):
         await back_to_search_handler(cyber, query)
 
     return [
-        search_handler, sugg_select_handler, close_suggestion_handler,
+        search_handler, deep_link_start_handler, sugg_select_handler, close_suggestion_handler,
         season_select_handler, language_select_handler, quality_select_handler,
         file_select_handler,
         help_menu_proxy, cyber_menu_proxy, admin_menu_proxy, about_menu_proxy,
