@@ -232,7 +232,17 @@ async def admin_menu_handler(cyber: Client, query: CallbackQuery):
         await query.answer("You are not authorized. Only the admin can open this menu.", show_alert=True)
         return
 
-    about_text = ADMIN_TEXT
+    admin_text = (
+        f"**𝒯𝐻𝐼𝒮 𝒴𝒪𝒰𝑅 𝒜𝒟𝑀𝐼𝒩 𝒞𝒪𝑀𝑀𝒜𝒩𝒟𝒮**\n\n"
+        f"/setskip - To Skip Indexing File range\n"
+        f"/broadcast - To broadcast Message To users\n"
+        f"/deleteall - Delete All Files From Database\n"
+        f"/deletefile  - Delete a replyed File from database\n"
+        f"/total - Get Total Uses and Files\n"
+        f"/imdb - To Turn on and off Imdb\n"
+        f"/fsub - To Set Force Subscribe\n"
+        f"/autodel - To Set Autodelete Time\n"
+    )
     ADMIN_KEYBOARD = InlineKeyboardMarkup([
         [InlineKeyboardButton("🏡 ʜᴏᴍᴇ", callback_data="cyber|"),
          InlineKeyboardButton("🚫 ᴄʟᴏsᴇ", callback_data="close")]
@@ -240,7 +250,7 @@ async def admin_menu_handler(cyber: Client, query: CallbackQuery):
     reply_markup = ADMIN_KEYBOARD
     try:
         await query.message.edit_caption(
-            about_text,
+            admin_text,
             reply_markup=reply_markup,
             parse_mode=enums.ParseMode.HTML
         )
@@ -262,7 +272,16 @@ async def admin_menu_handler(cyber: Client, query: CallbackQuery):
 
 async def about_menu_handler(cyber: Client, query: CallbackQuery):
     """Displays the about menu."""
-    about_text = ABOUT_TEXT
+    about_text = (
+        f"<blockquote>‣ ᴍʏ ɴᴀᴍᴇ : <a href='https://t.me/TGxSeriesBot'>Sᴇʀɪᴇs Bᴏᴛ</a>\n"
+        f"‣ ᴄʀᴇᴀᴛᴏʀ : <a href='tg://settings'>ᴛʜɪs ᴘᴇʀsᴏɴ</a>\n"
+        f"‣ ᴅᴇᴠᴇʟᴏᴘᴇʀ : <a href='https://t.me/CyberTGx'>ᴄʏʙᴇʀ ᠰ ᴛɢ</a>\n"
+        f"‣ ʟɪʙʀᴀʀʏ : <a href='https://docs.pyrogram.org/'>ᴘʏʀᴏɢʀᴀᴍ</a>\n"
+        f"‣ ʟᴀɴɢᴜᴀɢᴇ : <a href='https://www.python.org/download/releases/3.0/'>ᴘʏᴛʜᴏɴ 3</a>\n"
+        f"‣ ᴘʀɪᴍᴀʀʏ ᴅʙ : <a href='https://www.mongodb.com/'>ᴍᴏɴɢᴏ ᴅʙ</a>\n"
+        f"‣ sᴇᴄᴏɴᴅᴀʀʏ ᴅʙ : <a href='https://www.freesqldatabase.com/'>sᴏ̨ʟ ᴅʙ</a>\n"
+        f"‣ ʙᴏᴛ sᴇʀᴠᴇʀ : <a href='https://t.me/quickfastt'>ǫᴜɪᴄᴋ ꜰᴀsᴛ</a></b></blockquote>"
+    )
     reply_markup = ABOUT_KEYBOARD
     try:
         await query.message.edit_caption(
