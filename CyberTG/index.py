@@ -99,8 +99,16 @@ async def safe_edit_message(msg_obj: Message, text: str, **kwargs):
 # Helper to persist and report status
 # -----------------
 
-async def update_status_message(msg_obj: Message, checked: int, saved: int):
-    text = f"Total messages checked: **{checked}**\nTotal files saved: **{saved}**"
+async def update_status_message(msg_obj: Message, checked: int, saved: int, skipped_duplicates: int = 0, skipped_movies: int = 0, total_series: int = 0):
+    text = (f"Total messages checked: **{checked}**
+"
+            f"Total series added: **{total_series}**
+"
+            f"Duplicate skipped: **{skipped_duplicates}**
+"
+            f"Movies skipped: **{skipped_movies}**
+"
+            f"Total files saved: **{saved}**")
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel Indexing", callback_data="cancel_index")]])
     return await safe_edit_message(msg_obj, text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
 
