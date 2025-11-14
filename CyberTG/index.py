@@ -420,3 +420,16 @@ def register_index_handlers(cyber: Client):
             "2. **Use the link command:** `/indexlink <link>` or `/indexlink <start_link> <end_link>`\n\n"
             "The bot must be an administrator in the channel. Use `/setskip` to skip old messages."
         )
+
+
+    return [
+        setskip_command,
+        media_handler,
+        index_files_forwarded,
+        manual_index,
+        start_index,
+        cancel_indexing,
+        cancel_index_confirmation,
+        index_comm,
+    ]
+
