@@ -22,30 +22,32 @@ LANGUAGE_CODES = {
 LANG_CODE_PATTERN = "|".join(LANGUAGE_CODES.keys())
 
 def extract_links(links):
-    """
-    Extracts chat_id, start_msg_id, and last_msg_id from one or two links.
-    """
-    if len(links) == 1:
-        match = re.match(link_pattern, links[0])
-        if not match:
-            raise ValueError("Invalid link format.")
-        channel_id, last_msg_id = match.groups()
-        chat_id = int(f"-100{channel_id}")
-        return chat_id, 2, int(last_msg_id)
+"""
+Extracts chat_id, start_msg_id, and last_msg_id from one or two links.
+"""
+if len(links) == 1:
+match = re.match(link_pattern, links[0])
+if not match:
+raise ValueError("Invalid link format.")
+channel_id, last_msg_id = match.groups()
+chat_id = int(f"-100{channel_id}")
+return chat_id, 2, int(last_msg_id)
 
-    elif len(links) == 2:
-        match1 = re.match(link_pattern, links[0])
-        match2 = re.match(link_pattern, links[1])
-        if not match1 or not match2:
-            raise ValueError("Invalid link format.")
-        channel_id1, start_msg_id = match1.groups()
-        channel_id2, last_msg_id = match2.groups()
-        if channel_id1 != channel_id2:
-            raise ValueError("Links belong to different channels.")
-        chat_id = int(f"-100{channel_id1}")
-        return chat_id, int(start_msg_id), int(last_msg_id)
 
-    raise ValueError("Invalid number of links provided.")
+elif len(links) == 2:
+match1 = re.match(link_pattern, links[0])
+match2 = re.match(link_pattern, links[1])
+if not match1 or not match2:
+raise ValueError("Invalid link format.")
+channel_id1, start_msg_id = match1.groups()
+channel_id2, last_msg_id = match2.groups()
+if channel_id1 != channel_id2:
+raise ValueError("Links belong to different channels.")
+chat_id = int(f"-100{channel_id1}")
+return chat_id, int(start_msg_id), int(last_msg_id)
+
+
+raise ValueError("Invalid number of links provided.")
 
 def clean_series_name(name: str) -> str:
     """Aggressively cleans the series name by removing common tags and metadata."""
