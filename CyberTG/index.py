@@ -1,12 +1,4 @@
-# index_fixed.py - Robust Indexing Logic and Handlers
-# Improvements included:
-# - Full FloodWait protection for all get/edit/send operations
-# - Reduced and configurable status update frequency
-# - Safe cancel handling restricted to ADMIN_USERS
-# - Task-done callback to log crashes
-# - Graceful handling of asyncio.CancelledError and ChannelPrivate
-# - Periodic checkpoints and small event-loop yields to avoid memory buildup
-# - Clear global status state management
+# index.py - Robust Indexing Logic and Handlers
 
 import asyncio
 import re
@@ -45,7 +37,6 @@ YIELD_EVERY = 500  # yield to event loop to reduce memory pressure
 # -----------------
 
 async def safe_sleep_for_floodwait(exc: FloodWait):
-    # exc.value is seconds to wait
     wait = int(getattr(exc, "value", 10))
     logger.warning("FloodWait detected - sleeping for %s seconds", wait)
     await asyncio.sleep(wait)
@@ -59,13 +50,11 @@ async def safe_get_messages(bot: Client, chat_id: int, message_ids: int):
         except FloodWait as e:
             await safe_sleep_for_floodwait(e)
         except ChannelPrivate:
-            # Re-raise for upstream handling
             raise
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.warning("safe_get_messages failed for %s:%s -> %s", chat_id, message_ids, e)
-            # Return None and let caller skip this ID
             return None
 
 
@@ -84,7 +73,6 @@ async def safe_send_message(bot: Client, chat_id: int, text: str, **kwargs):
 
 async def safe_edit_message(msg_obj: Message, text: str, **kwargs):
     """Robust edit that will retry on FloodWait and swallow non-fatal errors."""
-    # If msg_obj may be None, bail early
     if msg_obj is None:
         return None
     attempts = 0
@@ -98,7 +86,6 @@ async def safe_edit_message(msg_obj: Message, text: str, **kwargs):
         except Exception as e:
             attempts += 1
             logger.warning("safe_edit_message failed attempt %s: %s", attempts, e)
-            # If editing fails repeatedly, stop trying to block indexing
             if attempts >= 3:
                 logger.error("Giving up on editing message after 3 attempts: %s", e)
                 return None
@@ -125,12 +112,8 @@ Total files saved: **{saved}**
 # Core indexing background task
 # -----------------
 
-async def index_files_task(bot: Client, status_msg: Message, chat_id: int, start_msg_id: int, last_msg_id: int):
-    """Robust background indexing task that iterates sequentially and saves files.
-
-    This function is intended to run as a single background asyncio.Task.
-    It will save checkpoints periodically so it can resume after interruption.
-    """
+async def index_files_task(bot: Client, status_msg: Optional[Message], chat_id: int, start_msg_id: int, last_msg_id: int):
+    """Robust background indexing task that iterates sequentially and saves files."""
     global index_task
 
     chat_key = f"index_{chat_id}"
@@ -149,12 +132,11 @@ async def index_files_task(bot: Client, status_msg: Message, chat_id: int, start
 
     saved = 0
     checked = 0
-
     counter = 0
 
     try:
         # Inform admins if resumed
-        if current > int(start_msg_id):
+        if current > int(start_msg_id) and status_msg:
             await safe_edit_message(status_msg, f"Indexing resumed for `{chat_id}` from message ID **{current}**...", parse_mode=enums.ParseMode.MARKDOWN)
 
         while current <= total:
@@ -167,12 +149,13 @@ async def index_files_task(bot: Client, status_msg: Message, chat_id: int, start
                 message = await safe_get_messages(bot, chat_id, current)
             except ChannelPrivate as e:
                 logger.warning("Chat is private or bot not admin: %s : %s", chat_id, e)
-                await safe_edit_message(status_msg, f"Chat is private or bot not admin: {chat_id}\nError: {e}")
+                if status_msg:
+                    await safe_edit_message(status_msg, f"Chat is private or bot not admin: {chat_id}\nError: {e}")
                 return
             except asyncio.CancelledError:
                 logger.info("Indexing task was cancelled externally at %s", current)
-                await safe_edit_message(status_msg, f"Indexing process was cancelled at ID **{current}**.")
-                # Save current checkpoint
+                if status_msg:
+                    await safe_edit_message(status_msg, f"Indexing process was cancelled at ID **{current}**.")
                 await save_bot_state(chat_key, current)
                 return
             except Exception as e:
@@ -187,7 +170,6 @@ async def index_files_task(bot: Client, status_msg: Message, chat_id: int, start
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
-                    # On failure to save a particular message, log and continue
                     logger.exception("Error saving message %s from chat %s: %s", current, chat_id, e)
 
             current += 1
@@ -196,7 +178,6 @@ async def index_files_task(bot: Client, status_msg: Message, chat_id: int, start
 
             # Periodic checkpoint and status update
             if counter >= STATUS_UPDATE_EVERY:
-                # Save checkpoint
                 try:
                     await save_bot_state(chat_key, current)
                     await set_global_setting(INDEX_STATUS_KEY, f"RUNNING|{chat_id}|{current}|{last_msg_id}")
@@ -205,37 +186,35 @@ async def index_files_task(bot: Client, status_msg: Message, chat_id: int, start
 
                 # Update status message (robust)
                 try:
-                    await update_status_message(status_msg, current - 1, saved)
+                    if status_msg:
+                        await update_status_message(status_msg, current - 1, saved)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
                     logger.warning("Failed to update status message: %s", e)
 
                 logger.info("INDEX: messages checked=%s saved=%s (chat=%s)", current - 1, saved, chat_id)
-
                 counter = 0
 
         # Completed successfully
         await save_bot_state(chat_key, None)
         logger.info("Indexing complete for %s - total files saved: %s", chat_id, saved)
-        await safe_edit_message(status_msg, f"🥳 **Complete!** Total **{saved}** Files Saved To Database! Indexing state cleared.")
-
+        if status_msg:
+            await safe_edit_message(status_msg, f"🥳 **Complete!** Total **{saved}** Files Saved To Database! Indexing state cleared.")
     except asyncio.CancelledError:
-        # Save the last checkpoint when cancelled
         logger.info("Index task cancelled - saving checkpoint at %s", current)
         await save_bot_state(chat_key, current)
-        await safe_edit_message(status_msg, f"Indexing cancelled. Checkpoint saved at ID **{current}**.")
+        if status_msg:
+            await safe_edit_message(status_msg, f"Indexing cancelled. Checkpoint saved at ID **{current}**.")
         return
-
     except Exception as e:
-        # Save final checkpoint and notify
         logger.exception("Indexing failed with exception: %s", e)
         try:
             await save_bot_state(chat_key, current)
-            await safe_edit_message(status_msg, f"Error while indexing: {e}. Checkpoint saved at ID **{current}**.")
+            if status_msg:
+                await safe_edit_message(status_msg, f"Error while indexing: {e}. Checkpoint saved at ID **{current}**.")
         except Exception:
             logger.exception("Failed to save checkpoint or notify user after error")
-
     finally:
         await set_global_setting(INDEX_STATUS_KEY, "IDLE")
         index_task = None
@@ -250,7 +229,6 @@ def register_index_handlers(cyber: Client):
 
     @cyber.on_message((filters.document | filters.video | filters.audio) & filters.channel)
     async def media_handler(_, message: Message):
-        # RTI: index files in realtime when channel messages arrive
         try:
             if message.chat.id in INDEX_CHANNELS and message.media:
                 saved, count = await save_series_file_for_bulk_index(message)
@@ -404,7 +382,6 @@ def register_index_handlers(cyber: Client):
                 logger.exception("Index task crashed: %s", e)
 
         index_task.add_done_callback(_on_done)
-
         await query.answer("Indexing started in the background.")
 
     @cyber.on_callback_query(filters.regex(r"^cancel_index$"))
@@ -429,7 +406,6 @@ def register_index_handlers(cyber: Client):
 
     @cyber.on_callback_query(filters.regex(r"^can-index$"))
     async def cancel_index_confirmation(bot, query):
-        # Simple confirmation cancel - anyone can use this (it just removes the prompt)
         try:
             await query.message.delete()
         except Exception:
@@ -444,14 +420,3 @@ def register_index_handlers(cyber: Client):
             "2. **Use the link command:** `/indexlink <link>` or `/indexlink <start_link> <end_link>`\n\n"
             "The bot must be an administrator in the channel. Use `/setskip` to skip old messages."
         )
-
-    return [
-        setskip_command,
-        media_handler,
-        index_files_forwarded,
-        manual_index,
-        start_index,
-        cancel_indexing,
-        cancel_index_confirmation,
-        index_comm,
-    ]
