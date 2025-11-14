@@ -1,5 +1,3 @@
-# index.py - Robust Indexing Logic and Handlers
-
 import asyncio
 import re
 import gc
@@ -368,7 +366,9 @@ def register_index_handlers(cyber: Client):
 
         await query.message.edit_text("Starting index...")
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel Indexing", callback_data="cancel_index")]])
-        status_msg = await safe_send_message(user_id, f"Processing Index for `{chat_id}`...⏳\nStatus will be updated after every {STATUS_UPDATE_EVERY} messages checked. Current ID: **{start_msg_id}**", reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
+        
+        # FIX: Pass 'bot' as the first argument to safe_send_message
+        status_msg = await safe_send_message(bot, user_id, f"Processing Index for `{chat_id}`...⏳\nStatus will be updated after every {STATUS_UPDATE_EVERY} messages checked. Current ID: **{start_msg_id}**", reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
 
         # create the background task and attach a done-callback
         index_task = asyncio.create_task(index_files_task(bot, status_msg, chat_id, start_msg_id, last_msg_id))
@@ -432,4 +432,3 @@ def register_index_handlers(cyber: Client):
         cancel_index_confirmation,
         index_comm,
     ]
-
