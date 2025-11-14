@@ -2,7 +2,7 @@
 import asyncio
 import re
 import sqlite3
-from functools import lru_cache # <--- NEW IMPORT
+from functools import lru_cache
 
 # --- SQLITE CONFIG AND STATE ---
 # Note: logger and files_collection are passed from database.py context where needed
@@ -10,8 +10,6 @@ SQLITE_DB_PATH = "series_index.db"
 sql_db_lock = asyncio.Lock() # Defined here but imported/used in database.py for async wrappers
 
 # ---- Helpers to recompute normalized series names (Copied to avoid circular import)
-# ... (rest of the helper functions remain the same)
-
 _CLEAN_TAGS = [
     "4K","1080P","720P","HDRIP","WEB-DL","WEBRIP","BLURAY","HDTV",
     "AMZN","NETFLIX","HULU","DDP5.1","X265","X264","10BIT","HEVC",
@@ -83,7 +81,6 @@ def _extract_language_local(file_name: str) -> str:
 
 
 # --- SQLITE SCHEMA AND MIGRATION (SYNC) ---
-# ... (create_sql_schema, migrate_data_from_mongo_to_sql_sync, repair_normalized_names_in_sqlite_sync remain the same)
 
 def create_sql_schema(conn):
     """Creates the necessary table in the SQLite database, including 'language'."""
@@ -189,7 +186,7 @@ def repair_normalized_names_in_sqlite_sync(logger):
 
 # --- SEARCH AND RETRIEVAL FUNCTIONS (SYNC) ---
 
-@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
+@lru_cache(maxsize=1024) 
 def get_series_summary_sync(series_name: str):
     """Gets all unique languages, seasons, and qualities for a series, used for the initial summary."""
     conn = sqlite3.connect(SQLITE_DB_PATH)
@@ -219,53 +216,77 @@ def get_series_summary_sync(series_name: str):
         'qualities': sorted_qualities
     }
 
-@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
+@lru_cache(maxsize=1024)
 def search_series_sync(query: str):
     conn = sqlite3.connect(SQLITE_DB_PATH)
     cursor = conn.cursor()
 
     q = query.strip()
-    results = []
-
-    # --- Search Stage 1: Exact Match (Highest Priority) ---
+    unique_results = set()
+    
+    # 1) Exact match (Case-Insensitive)
     cursor.execute("""
         SELECT DISTINCT normalized_name FROM files 
         WHERE normalized_name = ? COLLATE NOCASE
     """, (q,))
-    rows = [r[0] for r in cursor.fetchall()]
-    if rows:
+    for r in cursor.fetchall():
+        unique_results.add(r[0])
+    if unique_results: 
         conn.close()
-        return tuple(rows) # Return immediately on exact match
+        return tuple(unique_results)
 
-    # --- Search Stage 2: Whole Word Match (High Priority) ---
-    # Matches "query" as a whole word in the series name (e.g., "The" in "The Office")
-    pattern = f"% {q} %"
+
+    # 2) Full-Phrase match (Partial, using all words in order) - e.g. "Game of" in "Game of Thrones"
+    search_words = q.split()
+    # Create a pattern where all words must appear somewhere in the name (order is loose)
+    full_phrase_pattern = "%" + "%".join(search_words) + "%"
+
     cursor.execute("""
         SELECT DISTINCT normalized_name FROM files 
-        WHERE ' ' || normalized_name || ' ' LIKE ? COLLATE NOCASE
-    """, (pattern,))
-    results.extend([r[0] for r in cursor.fetchall()])
+        WHERE normalized_name LIKE ? COLLATE NOCASE
+    """, (full_phrase_pattern,))
+    for r in cursor.fetchall():
+        unique_results.add(r[0])
+        
+    # 3) Fuzzy / Misspelling match (Word-by-word containment)
+    # This handles cases like "throne" -> "Thrones" or partial words
+    for word in search_words:
+        if len(word) >= 3: # Only fuzzy search for longer words
+            cursor.execute("""
+                SELECT DISTINCT normalized_name FROM files 
+                WHERE normalized_name LIKE ? COLLATE NOCASE
+            """, (f"%{word}%",))
+            for r in cursor.fetchall():
+                unique_results.add(r[0])
+
+
+    # Combine and sort results
+    final_results = list(unique_results)
     
-    # --- Search Stage 3: Partial/Fuzzy Match (Fallback) ---
-    # Matches 'query' anywhere in the string (e.g., "fice" in "The Office")
-    if q not in [name.lower() for name in results]: # Avoid re-running for an exact match
-        partial_pattern = f"%{q}%"
-        cursor.execute("""
-            SELECT DISTINCT normalized_name FROM files 
-            WHERE normalized_name LIKE ? COLLATE NOCASE
-        """, (partial_pattern,))
-        # Add new results, filtering out any duplicates from Stage 2
-        for row in cursor.fetchall():
-            if row[0] not in results:
-                results.append(row[0])
+    # Prioritize results that start with the query words for better suggestions
+    def sort_key(name):
+        name_lower = name.lower()
+        query_lower = q.lower()
+        
+        # Scoring: 1. Exact starting match (highest)
+        starts_with_exact = 1 if name_lower.startswith(query_lower) else 0
+        
+        # Scoring: 2. Whole word boundary match (medium)
+        contains_whole_word = 1 if re.search(r'\b' + re.escape(query_lower) + r'\b', name_lower) else 0
+
+        # Scoring: 3. Length difference (shorter names are generally better suggestions)
+        length_diff = abs(len(name_lower) - len(query_lower))
+        
+        # Return tuple for multi-level sorting (lower is better):
+        # Starts with exact match (True/False), Contains whole word (True/False), Length difference
+        return (not starts_with_exact, not contains_whole_word, length_diff, len(name_lower))
+
+    final_results.sort(key=sort_key)
 
     conn.close()
-    
-    # Sort results to give priority to Stage 2 matches over Stage 3
-    # The first result (results[0]) is the best candidate.
-    return tuple(results) # Must return immutable type for caching
+    return tuple(final_results) # Must return immutable type for caching
 
-@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
+@lru_cache(maxsize=1024) 
 def get_unique_languages_by_name_sync(series_name: str):
     """Gets unique language strings for a given series from SQLITE."""
     conn = sqlite3.connect(SQLITE_DB_PATH)
@@ -275,7 +296,7 @@ def get_unique_languages_by_name_sync(series_name: str):
     conn.close()
     return languages
 
-@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
+@lru_cache(maxsize=1024) 
 def get_unique_seasons_by_name_sync(series_name: str, language: str):
     """Gets unique season numbers for a given series and language from SQLITE."""
     conn = sqlite3.connect(SQLITE_DB_PATH)
@@ -289,7 +310,7 @@ def get_unique_seasons_by_name_sync(series_name: str, language: str):
     conn.close()
     return seasons
 
-@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
+@lru_cache(maxsize=1024) 
 def get_unique_qualities_by_season_sync(series_name: str, language: str, season: int):
     """Gets unique quality strings for a given series, language, and season from SQLITE."""
     conn = sqlite3.connect(SQLITE_DB_PATH)
@@ -305,8 +326,6 @@ def get_unique_qualities_by_season_sync(series_name: str, language: str, season:
     ))
     return sorted_qualities
 
-# NOTE: get_all_files_by_season_and_quality_sync is not cached because its return type (list of dicts) is mutable and the call frequency may be low/unique.
-
 def get_all_files_by_season_and_quality_sync(series_name: str, season: int, quality: str, language: str):
     """Gets file details filtered by series, season, quality, AND language from SQLITE."""
     conn = sqlite3.connect(SQLITE_DB_PATH)
@@ -321,7 +340,7 @@ def get_all_files_by_season_and_quality_sync(series_name: str, season: int, qual
     conn.close()
     return files
 
-@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
+@lru_cache(maxsize=1024) 
 def get_unique_languages_by_season_sync(series_name: str, season: int):
     """Gets unique language strings for a given series and season from SQLITE."""
     conn = sqlite3.connect(SQLITE_DB_PATH)
@@ -335,7 +354,7 @@ def get_unique_languages_by_season_sync(series_name: str, season: int):
     conn.close()
     return languages
 
-@lru_cache(maxsize=1024) # <--- APPLIED LRU CACHE
+@lru_cache(maxsize=1024) 
 def get_unique_qualities_by_lang_season_sync(series_name: str, language: str, season: int):
     """Gets unique quality strings for a given series, language, and season from SQLITE."""
     conn = sqlite3.connect(SQLITE_DB_PATH)
@@ -354,8 +373,6 @@ def get_unique_qualities_by_lang_season_sync(series_name: str, language: str, se
         key=lambda x: sort_order.index(x)
     ))
     return sorted_qualities
-
-# NOTE: get_file_by_message_id_and_channel_id_sync and save_file_to_sql_sync are not cached as they perform write/unique read operations.
 
 def get_file_by_message_id_and_channel_id_sync(channel_id: int, message_id: int):
     """Synchronously retrieves a single file document based on its message and channel IDs."""
@@ -388,7 +405,7 @@ def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
         conn.commit()
         conn.close()
         # Invalidate cache for relevant functions after a write operation
-        clear_all_caches() # <--- NEW: Clear all caches on a write/save operation
+        clear_all_caches() 
         return True
     except Exception as e:
         logger.error(f"Failed to insert/update file doc in SQLite: {e}")
@@ -406,10 +423,8 @@ def clear_all_caches():
     get_unique_qualities_by_season_sync.cache_clear()
     get_unique_languages_by_season_sync.cache_clear()
     get_unique_qualities_by_lang_season_sync.cache_clear()
-    # print("DEBUG: All SQLite caches cleared.") # Uncomment for debugging
 
 # --- DELETE AND COUNT FUNCTIONS (SYNC) ---
-# ... (rest of the delete and count functions remain the same)
 
 def delete_all_files_sync():
     """Synchronously deletes all files from sqlite"""
@@ -418,7 +433,7 @@ def delete_all_files_sync():
     cursor.execute("DELETE FROM files")
     conn.commit()
     conn.close()
-    clear_all_caches() # <--- NEW: Clear all caches on delete
+    clear_all_caches() 
 
 def delete_one_file_sync(channel_id: int, msg_id: int):
     """Synchronously deletes single file from sqlite"""
@@ -427,7 +442,7 @@ def delete_one_file_sync(channel_id: int, msg_id: int):
     cursor.execute("DELETE FROM files WHERE channel_id = ? AND message_id = ?", (channel_id, msg_id))
     conn.commit()
     conn.close()
-    clear_all_caches() # <--- NEW: Clear all caches on delete
+    clear_all_caches() 
 
 def get_total_files_sync():
     """Synchronously returns file count from sqlite"""
