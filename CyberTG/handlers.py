@@ -231,7 +231,7 @@ def register_conversation_handlers(cyber: Client):
             f"**○ Language:** {languages_list or 'N/A'}\n"
             f"**○ Season Available:** {seasons_count}\n"
             f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
-            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
+            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲d 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
         )
 
         keyboard = []
@@ -283,8 +283,7 @@ def register_conversation_handlers(cyber: Client):
                     await send_files_to_user(cyber, user_id, series_name, season, quality, language)
                     return
         
-        # If not a file request, call the main menu logic (cyber_menu_handler logic repurposed for /start)
-        # To avoid circular dependency, we replicate the cyber_menu_handler logic here or call a simple welcome.
+        # Default /start logic (reusing some elements from cyber_menu_handler for a welcome message)
         user = message.from_user
         bot = await cyber.get_me()
         user_mention = user.mention
@@ -517,8 +516,6 @@ def register_conversation_handlers(cyber: Client):
         except Exception as e:
             logger.error(f"Failed to copy file {message_id} from {channel_id}: {e}")
             await query.answer("❌ Failed to send file.\nMake sure bot is admin.", show_alert=True)
-    
-    # --- Menu Proxies (Existing Handlers) ---
     
     @cyber.on_callback_query(filters.regex(r"^help\|"))
     async def help_menu_proxy(cyber, query: CallbackQuery):
