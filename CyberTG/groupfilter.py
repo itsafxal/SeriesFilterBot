@@ -1,398 +1,308 @@
 # groupfilter.py
+"""
+Group search / selection handlers.
+
+Flow:
+ - In a group message (a search result message posted by the bot), users tap a Season button (callback: gss|<series>|<season>)
+ - Bot shows language menu in-place (callbacks starting with gls|)
+ - Bot shows quality menu in-place (callbacks starting with gqs|)
+ - When user taps a quality in the group, the bot:
+     1) checks force-subscribe (using utils.check_force_subscribe)
+     2) if not subscribed -> sends an in-group alert with a Join Channel button (invite link)
+     3) if subscribed -> sends an initial DM to the user "Starting transfer..." and begins sending files to the user's private chat
+"""
+
 import asyncio
-import re
-import shelve
-from pyrogram import Client, filters, enums
+import logging
+from pyrogram import filters
 from pyrogram.types import (
-    Message,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    InputMediaPhoto,
     CallbackQuery,
 )
 from pyrogram.errors import MessageNotModified
+
+# Import project helpers (same names used across your handlers/menus/database)
 from DB.database import (
-    search_series,
-    get_series_summary,
-    get_global_setting,
     get_unique_languages_by_season,
     get_unique_qualities_by_lang_season,
+    get_all_files_by_season_and_quality,
+    get_series_summary,
 )
+from utils import check_force_subscribe, clean_series_name, delete_message_later
 from config import (
-    logger,
-    DEFAULT_POSTER,
-    OMDB_CACHE_DB,
     MAX_CALLBACK_LENGTH,
-    GROUP_FILTER_ENABLED_CHATS, # Assuming you will add this to config.py for authorized group IDs
+    CUSTOM_CAPTION_TEXT,
+    OMDB_CACHE_DB,
+    DEFAULT_POSTER,
+    logger,
 )
-from utils import (
-    clean_series_name,
-    delete_message_later,
-)
-from .poster import get_series_poster_async # Assuming poster.py is in the same directory
-
-# --- Group Search Handlers ---
-
-def register_group_handlers(cyber: Client):
-
-    # A simple checker to ensure the chat is authorized for group filtering
-    async def is_authorized_group(_, __, message: Message):
-        """Checks if the message is from an authorized group chat ID."""
-        # Use message.chat.id, not message.from_user.id
-        # NOTE: GROUP_FILTER_ENABLED_CHATS must be defined in config.py as a list/tuple of chat IDs
-        if GROUP_FILTER_ENABLED_CHATS and message.chat.id not in GROUP_FILTER_ENABLED_CHATS:
-            return False
-        return message.chat.type in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP)
+from .poster import get_series_poster_async
 
 
-    @cyber.on_message(filters.text & filters.group & ~filters.command(["start", "index"]) & filters.create(is_authorized_group))
-    async def group_search_handler(cyber, message: Message):
-        """Handles text messages in a group for series search."""
-        query = message.text.strip()
-        # Ignore replies, very short queries, or queries likely meant for the bot command indexer
-        if message.reply_to_message or len(query.split()) < 2:
-            return
+def register_group_handlers(cyber):
+    """
+    Register callback handlers for group-based in-message filtering.
+    This mirrors the private-chat flow but sends the final files in a private chat
+    after a user chooses Quality from the group message UI.
+    """
 
-        # Perform the search
-        try:
-            all_found_names = await search_series(query)
-        except Exception as e:
-            logger.warning(f"[GROUP SEARCH ERROR] search_series failed for query `{query}`: {e}")
-            return # Fail silently in groups
-
-        unique_names = list(dict.fromkeys([clean_series_name(name) for name in all_found_names]))
-
-        if not unique_names:
-            # Fallback/final check: try cleaning the query
-            clean_query = re.sub(
-                r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil|file|that|find|und(o)*|kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*|aya(k)*(um(o)*)?|full\smovie|any(one)|with\ssubtitle(s)?)",
-                "", message.text, flags=re.IGNORECASE).strip()
-
-            if clean_query:
-                try:
-                    unique_names = list(dict.fromkeys([clean_series_name(name) for name in await search_series(clean_query)]))
-                except Exception:
-                    pass
-
-            if not unique_names:
-                # No results, silently ignore
-                return
-
-        # --- Display Suggestions or Single Result ---
-        
-        if len(unique_names) > 1:
-            # Display suggestions
-            movielist = unique_names[:5] # Show top 5 suggestions
-            
-            btn = [[
-                InlineKeyboardButton(
-                    text=movie,
-                    # Using 'g_sugg_select' handler for all suggestions
-                    # Callback: g_sugg_select|chat_id|message_id|series_name
-                    callback_data=f"g_sugg_select|{message.chat.id}|{message.id}|{movie}", 
-                )
-            ] for movie in movielist]
-            
-            btn.append([InlineKeyboardButton(text="Close", callback_data=f'close_group|{message.chat.id}|{message.id}')])
-            
-            sent_message = await message.reply_text(
-                f"I found {len(unique_names)} results for `<code>{query}</code>`.\nDid you mean any one of these?",
-                reply_markup=InlineKeyboardMarkup(btn),
-                parse_mode=enums.ParseMode.HTML
-            )
-            
-        else:
-            # Display single result
-            series_to_display = unique_names[0]
-            sent_message = await _display_series_summary(cyber, message, series_to_display)
-        
-        # Add auto-delete logic if applicable (assuming you have a timer setting)
-        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
-        if auto_delete_timer and int(auto_delete_timer) > 0 and sent_message:
-            asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
-
-        await message.delete() # Delete the user's search query for cleanup
-
-
-    async def _display_series_summary(cyber, message: Message, series_name: str, edit_message: bool = False):
-        """Fetches and displays the series summary/season menu in the group chat."""
-        
-        poster_url = DEFAULT_POSTER
-        imdb_enabled = True
-        try:
-            imdb_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
-        except Exception:
-            pass
-
-        # Poster logic (check cache, then fetch)
-        try:
-            cache_file = OMDB_CACHE_DB or "/tmp/omdb_cache.db"
-            with shelve.open(cache_file) as db_cache:
-                key = f"poster::{series_name.strip().lower()}"
-                if key in db_cache:
-                    poster_url = db_cache[key]
-        except Exception:
-            pass
-
-        if (not poster_url or poster_url == DEFAULT_POSTER) and imdb_enabled:
-            try:
-                poster_tmp = await get_series_poster_async(series_name)
-                poster_url = poster_tmp or DEFAULT_POSTER
-            except Exception as e:
-                logger.warning(f"[OMDB FETCH FAIL - group_search] {series_name} -> {e}")
-                poster_url = DEFAULT_POSTER
-
-        summary = await get_series_summary(series_name)
-        languages_list = ", ".join(summary.get("languages", []))
-        seasons_count = len(summary.get("seasons", []))
-        qualities_list = ", ".join(summary.get("qualities", []))
-
-        response = (
-            f"**○ Title:** {series_name}\n"
-            f"**○ Language:** {languages_list or 'N/A'}\n"
-            f"**○ Season Available:** {seasons_count}\n"
-            f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
-            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
-        )
-
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for season in summary.get("seasons", []):
-            # Group Callback: g_ss|series_name_short|season
-            callback_data = f"g_ss|{series_name_short}|{season}"
-            keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        if edit_message and isinstance(message, CallbackQuery):
-            try:
-                # Use message.message for the original message object from a callback query
-                await message.message.edit_media(
-                    media=InputMediaPhoto(media=poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
-                    reply_markup=reply_markup,
-                )
-                return message.message
-            except MessageNotModified:
-                return message.message
-            except Exception as e:
-                logger.error(f"Failed to edit media for group search result: {e}. Falling back to edit_text.")
-                try:
-                    await message.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-                    return message.message
-                except Exception:
-                    pass
-        elif not edit_message:
-            try:
-                sent_message = await message.reply_photo(
-                    photo=poster_url,
-                    caption=response,
-                    reply_markup=reply_markup,
-                    parse_mode=enums.ParseMode.MARKDOWN,
-                )
-                return sent_message
-            except Exception as e:
-                logger.error(f"Failed to reply with photo for group search result: {e}. Falling back to reply_text.")
-                sent_message = await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-                return sent_message
-        return None
-
-
-    # --- Group Suggestion Callbacks ---
-
-    @cyber.on_callback_query(filters.regex(r"^g_sugg_select\|"))
-    async def group_sugg_select_handler(cyber, query: CallbackQuery):
-        """Handles selection from search suggestions in a group."""
-        data = query.data.split("|", 3)
-        if len(data) < 4:
-            await query.answer("❌ Error: Invalid suggestion data.", show_alert=True)
-            return
-
-        # data[1] is chat_id, data[2] is message_id (of the original search query - NOT USED)
-        series_name = data[3]
-        await query.answer(f"Selected: {series_name}...", cache_time=0)
-
-        await _display_series_summary(cyber, query, series_name, edit_message=True)
-        # Note: Auto-delete of the new message is handled by the initial search_handler cleanup.
-
-
-    @cyber.on_callback_query(filters.regex(r"^close_group\|"))
-    async def close_group_suggestion_handler(cyber, query: CallbackQuery):
-        """Handles closing the suggestion message in a group."""
-        try:
-            # Delete the suggestion message itself
-            await cyber.delete_messages(query.message.chat.id, query.message.id)
-        except Exception as e:
-            logger.warning(f"Failed to delete group suggestion message: {e}")
-            await query.answer("❌ Failed to close message.", show_alert=True)
-            return
-        await query.answer("Closed.", show_alert=False)
-
-
-    # --- Group Selection Callbacks ---
-
-    @cyber.on_callback_query(filters.regex(r"^g_ss\|"))
-    async def group_season_select_handler(cyber, query: CallbackQuery):
-        """Handles season selection in a group and shows the language menu."""
-        data = query.data.split("|")
+    @cyber.on_callback_query(filters.regex(r"^gss\|"))
+    async def group_season_select(cyber_client, query: CallbackQuery):
+        """
+        group Season button clicked -> show languages for that season (in-group).
+        Callback format: gss|<series_name_short>|<season>
+        """
+        data = query.data.split("|", 2)
         if len(data) < 3:
-            await query.answer("❌ Error: Invalid season selection data.", show_alert=True)
+            await query.answer("Invalid selection.", show_alert=True)
             return
 
         series_name = data[1]
         try:
             season = int(data[2])
         except ValueError:
-            await query.answer("❌ Error: Invalid season number format.", show_alert=True)
-            return
-        
-        # Group Language Menu
-        await query.answer("Fetching languages...", cache_time=0)
-        languages = await get_unique_languages_by_season(series_name, season)
-        if not languages:
-            await query.answer(f"❌ No languages found for {series_name} S{season}.", show_alert=True)
+            await query.answer("Invalid season number.", show_alert=True)
             return
 
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for lang in languages:
-            # Callback: g_ls|series_name_short|season|lang
-            callback_data = f"g_ls|{series_name_short}|{season}|{lang}"
-            display_text = f"🔸 {lang} 🔸"
-            keyboard.append([InlineKeyboardButton(display_text, callback_data=callback_data)])
-
-        # Back to Search Summary: g_back_to_search|series_name_short
-        keyboard.append([InlineKeyboardButton("↺ Bᴀᴄᴋ Tᴏ Sᴇᴀʀᴄʜ ↺", callback_data=f"g_back_to_search|{series_name_short}")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        caption = (
-            f"📺 Title **{series_name}** — Season **{season}**\n\n"
-            f"🌐 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗔𝘂𝗱𝗶𝗼 𝗟𝗮𝗻𝗴𝘂𝗮𝗴𝗲 👇:"
-        )
-
+        # Fetch languages for series/season
         try:
-            await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            languages = await get_unique_languages_by_season(series_name, season)
+        except Exception as e:
+            logger.error(f"[group_season_select] DB error for {series_name} S{season}: {e}")
+            languages = []
+
+        if not languages:
+            await query.answer(f"No languages found for {series_name} S{season}.", show_alert=True)
+            return
+
+        kb = []
+        series_short = series_name[:MAX_CALLBACK_LENGTH]
+        for lang in languages:
+            kb.append([InlineKeyboardButton(f"🔸 {lang} 🔸", callback_data=f"gls|{series_short}|{season}|{lang}")])
+
+        kb.append([InlineKeyboardButton("↺ Back to Search", callback_data=f"gback|{series_short}")])
+        reply_markup = InlineKeyboardMarkup(kb)
+
+        caption = f"Select language for *{series_name}* — Season {season}"
+        try:
+            await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode="markdown")
         except MessageNotModified:
             pass
         except Exception as e:
-            logger.error(f"Error editing message caption in group_season_select_handler: {e}")
+            logger.exception(f"[group_season_select] edit_caption failed: {e}")
             try:
-                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            except MessageNotModified:
-                pass
+                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode="markdown")
             except Exception:
                 pass
-        
+
         await query.answer()
 
-
-    @cyber.on_callback_query(filters.regex(r"^g_ls\|"))
-    async def group_language_select_handler(cyber, query: CallbackQuery):
-        """Handles language selection in a group and shows the quality menu."""
+    @cyber.on_callback_query(filters.regex(r"^gls\|"))
+    async def group_language_select(cyber_client, query: CallbackQuery):
+        """
+        group Language clicked -> show qualities for that season+language (in-group).
+        Callback: gls|<series>|<season>|<lang>
+        """
         data = query.data.split("|")
         if len(data) < 4:
-            await query.answer("❌ Error: Invalid language selection data.", show_alert=True)
+            await query.answer("Invalid selection.", show_alert=True)
             return
 
         series_name = data[1]
         try:
             season = int(data[2])
         except ValueError:
-            await query.answer("❌ Error: Invalid season number.", show_alert=True)
+            await query.answer("Invalid season.", show_alert=True)
             return
         language = data[3]
 
-        # Group Quality Menu
-        await query.answer("Fetching qualities...", cache_time=0)
-        qualities = await get_unique_qualities_by_lang_season(series_name, language, season)
+        try:
+            qualities = await get_unique_qualities_by_lang_season(series_name, season, language)
+        except Exception as e:
+            logger.error(f"[group_language_select] DB error for {series_name} S{season} {language}: {e}")
+            qualities = []
+
         if not qualities:
-            await query.answer(f"❌ No quality files found for S{season} ({language}).", show_alert=True)
+            await query.answer(f"No qualities available for {language} in S{season}.", show_alert=True)
             return
 
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for quality in qualities:
-            # THIS BUTTON REDIRECTS TO PM: switch_inline_query_current_chat
-            # The inline query will be used by the PM search handler logic for direct file sending.
-            # We construct a unique query to be handled by the bot's PM search.
-            # Query format for PM search to trigger file send: /getfile|<series>|<season>|<lang>|<quality>
-            pm_query = f"/getfile|{series_name_short}|{season}|{language}|{quality}"
-            
-            keyboard.append([InlineKeyboardButton(f"📥 {quality} - Get Season Pack 📥", switch_inline_query=pm_query)])
+        kb = []
+        series_short = series_name[:MAX_CALLBACK_LENGTH]
+        for q in qualities:
+            # When clicked, this will trigger a private transfer for the user who clicked
+            kb.append([InlineKeyboardButton(f"🔹 {q} 🔹", callback_data=f"gqs|{series_short}|{season}|{language}|{q}")])
 
-        # Back to Language: g_bl|series_name_short|season
-        keyboard.append([InlineKeyboardButton("↺ Bᴀᴄᴋ Tᴏ Lᴀɴɢᴜɢᴇs ↺", callback_data=f"g_bl|{series_name_short}|{season}")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        kb.append([InlineKeyboardButton("↺ Back to Seasons", callback_data=f"gback|{series_short}")])
+        reply_markup = InlineKeyboardMarkup(kb)
 
-        caption = (
-            f"🎬 **{series_name}** – Season **{season}** ({language})\n\n"
-            f"📌 **Quality Selector**\n\n"
-            f"Tap the **Get Season Pack** button below.\n"
-            f"You will be redirected to the bot's PM to download all episodes instantly!"
-        )
-
+        caption = f"Select quality for *{series_name}* — Season {season} ({language})"
         try:
-            await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode="markdown")
         except MessageNotModified:
             pass
         except Exception as e:
-            logger.error(f"Error editing message caption in group_language_select_handler: {e}")
+            logger.exception(f"[group_language_select] edit_caption failed: {e}")
             try:
-                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            except MessageNotModified:
-                pass
+                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode="markdown")
             except Exception:
                 pass
-        
+
         await query.answer()
 
-
-    # --- Group Back Handlers ---
-
-    @cyber.on_callback_query(filters.regex(r"^g_bl\|"))
-    async def group_back_to_language_handler(cyber, query: CallbackQuery):
-        """Handles going back to the language selection menu in a group."""
+    @cyber.on_callback_query(filters.regex(r"^gqs\|"))
+    async def group_quality_select(cyber_client, query: CallbackQuery):
+        """
+        Quality clicked in group -> begin private transfer to the clicking user.
+        Callback: gqs|<series>|<season>|<language>|<quality>
+        """
         data = query.data.split("|")
-        if len(data) < 3:
-            await query.answer("❌ Error: Invalid back data.", show_alert=True)
+        if len(data) < 5:
+            await query.answer("Invalid selection.", show_alert=True)
             return
 
         series_name = data[1]
         try:
             season = int(data[2])
         except ValueError:
-            await query.answer("❌ Error: Invalid season number format.", show_alert=True)
+            await query.answer("Invalid season.", show_alert=True)
+            return
+        language = data[3]
+        quality = data[4]
+
+        user = query.from_user
+        user_id = user.id
+
+        # Check force-subscribe
+        try:
+            is_member, invite_link = await check_force_subscribe(cyber_client, user_id)
+        except Exception as e:
+            logger.error(f"[group_quality_select] check_force_subscribe error: {e}")
+            is_member, invite_link = False, None
+
+        if not is_member:
+            # In-group alert with Join button (invite_link may be None — fallback to generic text)
+            kb = []
+            if invite_link:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("📣 Join Channel", url=invite_link)]])
+                await query.answer("You must join the channel before files can be sent.", show_alert=True)
+                try:
+                    await query.message.reply_text(
+                        "🛑 You must join the required channel to receive files. Click below to join and try again.",
+                        reply_markup=kb
+                    )
+                except Exception:
+                    pass
+            else:
+                await query.answer("Please join the required channel to receive files.", show_alert=True)
             return
 
-        # Re-use the language menu logic from group_season_select_handler
-        await group_season_select_handler(cyber, query)
-        await query.answer()
+        # If subscribed, initiate private transfer:
+        await query.answer("Preparing your files — check your private messages.", cache_time=0)
 
-    @cyber.on_callback_query(filters.regex(r"^g_back_to_search\|"))
-    async def group_back_to_search_handler(cyber, query: CallbackQuery):
-        """Handles going back to the main series summary/season selection menu in a group."""
-        data = query.data.split("|")
+        # Send an initial DM so the user's PM with the bot is created (if they haven't pressed /start)
+        try:
+            await cyber_client.send_message(
+                chat_id=user_id,
+                text=f"Starting transfer for *{series_name}* — Season {season} ({language} / {quality})\nI'll send all available episodes now.",
+                parse_mode="markdown"
+            )
+        except Exception as e:
+            # If bot cannot message user (likely because user hasn't started bot), instruct them to start
+            logger.warning(f"[group_quality_select] cannot DM user {user_id}: {e}")
+            try:
+                start_btn = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("Start Bot", url=f"https://t.me/{(await cyber_client.get_me()).username}?start=1")]]
+                )
+            except Exception:
+                start_btn = None
+
+            try:
+                await query.message.reply_text(
+                    "I could not message you privately. Please open the bot in private and press *Start* to allow deliveries.",
+                    reply_markup=start_btn,
+                    parse_mode="markdown"
+                )
+            except Exception:
+                pass
+            return
+
+        # Fetch files and send them in private
+        try:
+            files = await get_all_files_by_season_and_quality(series_name, season, quality, language)
+        except Exception as e:
+            logger.error(f"[group_quality_select] DB error fetching files: {e}")
+            files = []
+
+        if not files:
+            try:
+                await cyber_client.send_message(user_id, f"❌ No files found for *{series_name}* S{season} ({language}/{quality}).", parse_mode="markdown")
+            except Exception:
+                pass
+            return
+
+        bot_username = (await cyber_client.get_me()).username
+        sent_count = 0
+
+        for file_entry in files:
+            channel_id = file_entry.get("channel_id")
+            message_id = file_entry.get("message_id")
+            file_id = file_entry.get("file_id")
+            file_name = file_entry.get("file_name", f"S{file_entry.get('season', 0)}E{file_entry.get('episode', 99)}")
+            caption = CUSTOM_CAPTION_TEXT.format(file_name=file_name, bot_username=bot_username)
+
+            try:
+                if file_id:
+                    await cyber_client.send_document(chat_id=user_id, document=file_id, caption=caption, parse_mode="markdown")
+                else:
+                    # fallback to copy_message if no file_id
+                    await cyber_client.copy_message(chat_id=user_id, from_chat_id=channel_id, message_id=message_id)
+                sent_count += 1
+            except Exception as e:
+                logger.error(f"[group_quality_select] send/copy failed for {message_id}@{channel_id}: {e}")
+                continue
+
+            # throttle
+            if sent_count < len(files):
+                await asyncio.sleep(1.2)
+
+        # Optionally notify in group that user's transfer is complete (non-intrusive)
+        try:
+            await query.message.reply_text(f"✅ Transfer started for {user.mention}. Files are being delivered in private.")
+        except Exception:
+            pass
+
+    # Optional: back button handler in-group
+    @cyber.on_callback_query(filters.regex(r"^gback\|"))
+    async def group_back_handler(cyber_client, query: CallbackQuery):
+        data = query.data.split("|", 1)
         if len(data) < 2:
-            await query.answer("❌ Error: Invalid back data.", show_alert=True)
+            await query.answer()
+            return
+        series_name = data[1]
+        # Use the same summary UI as private; show seasons
+        try:
+            summary = await get_series_summary(series_name)
+        except Exception as e:
+            logger.error(f"[group_back_handler] get_series_summary failed: {e}")
+            await query.answer("Cannot fetch series information.", show_alert=True)
             return
 
-        series_name = data[1]
-        
-        # Re-display the main summary
-        await _display_series_summary(cyber, query, series_name, edit_message=True)
+        keyboard = []
+        series_short = series_name[:MAX_CALLBACK_LENGTH]
+        for season in summary.get("seasons", []):
+            keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=f"gss|{series_short}|{season}")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        caption = f"Select Season for *{series_name}*"
+        try:
+            await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode="markdown")
+        except MessageNotModified:
+            pass
+        except Exception:
+            try:
+                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode="markdown")
+            except Exception:
+                pass
+
         await query.answer()
-
-
-    return [
-        group_search_handler, group_sugg_select_handler, close_group_suggestion_handler,
-        group_season_select_handler, group_language_select_handler,
-        group_back_to_language_handler, group_back_to_search_handler,
-    ]
-
-# --- Note on integrating with PM handlers ---
-# To complete the functionality, you need to modify your PM search handler (in handlers.py) 
-# to detect the special inline query format: "/getfile|<series>|<season>|<lang>|<quality>".
-
-# In your existing handlers.py:
-# 1. Update the 'search_handler' to check for a message.text starting with '/getfile|'
-# 2. If it is a /getfile message, parse the data and directly call the quality_select_handler's core logic
-#    (or better, refactor quality_select_handler to accept the data directly and call its core file-sending logic).
