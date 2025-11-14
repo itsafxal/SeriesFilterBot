@@ -13,7 +13,7 @@ from DB.database import (
     get_global_setting,
     set_global_setting,
 )
-from utils import save_series_file_for_bulk_index
+from utils import save_series_file_for_bulk_index, extract_links
 
 # --- CONFIGURABLE GLOBALS ---
 lock = asyncio.Lock()
