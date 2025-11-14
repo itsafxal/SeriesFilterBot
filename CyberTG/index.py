@@ -1,3 +1,13 @@
+# index_fixed.py - Robust Indexing Logic and Handlers
+# Improvements included:
+# - Full FloodWait protection for all get/edit/send operations
+# - Reduced and configurable status update frequency
+# - Safe cancel handling restricted to ADMIN_USERS
+# - Task-done callback to log crashes
+# - Graceful handling of asyncio.CancelledError and ChannelPrivate
+# - Periodic checkpoints and small event-loop yields to avoid memory buildup
+# - Clear global status state management
+
 import asyncio
 import re
 import gc
@@ -100,15 +110,13 @@ async def safe_edit_message(msg_obj: Message, text: str, **kwargs):
 # -----------------
 
 async def update_status_message(msg_obj: Message, checked: int, saved: int, skipped_duplicates: int = 0, skipped_movies: int = 0, total_series: int = 0):
-    text = (f"Total messages checked: **{checked}**
-"
-            f"Total series added: **{total_series}**
-"
-            f"Duplicate skipped: **{skipped_duplicates}**
-"
-            f"Movies skipped: **{skipped_movies}**
-"
-            f"Total files saved: **{saved}**")
+    text = f"""
+Total messages checked: **{checked}**
+Total series added: **{total_series}**
+Duplicate skipped: **{skipped_duplicates}**
+Movies skipped: **{skipped_movies}**
+Total files saved: **{saved}**
+"""
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel Indexing", callback_data="cancel_index")]])
     return await safe_edit_message(msg_obj, text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
 
