@@ -194,9 +194,10 @@ def register_group_handlers(cyber: Client):
             )]
         ])
         
+        # ADDED EMPHASIS on starting the bot first
         redirect_caption = (
             f"✅ **Redirecting to PM for Files**\n\n"
-            f"**🚨 IMPORTANT:** If I don't send files, please go to my chat and click **'Start'** first!\n\n"
+            f"**🚨 IMPORTANT:** If I don't send files immediately, please go to my chat and click **'Start'** first!\n\n"
             f"Please click the button below to receive all episodes for:\n"
             f"**{series_name}** - Season **{season}**\n"
             f"Quality: **{quality}** | Language: **{language}**\n\n"
