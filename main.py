@@ -69,45 +69,45 @@ async def check_and_resume_index(cyber: Client):
 
 
 # --- Main Asynchronous Bot Runner ---
-async def run_bot_async(cyber: Client):
-    """Starts the client and keeps the client alive."""
-    logger.info("Starting bot client connection...")
-    await cyber.start()
-    logger.info("Bot is running. Waiting for updates...")
+#async def run_bot_async(cyber: Client):
+ #   """Starts the client and keeps the client alive."""
+ #   logger.info("Starting bot client connection...")
+ #   await cyber.start()
+ #   logger.info("Bot is running. Waiting for updates...")
 
     # Register index handlers (so callback_query handlers like cancel work)
-    try:
-        register_index_handlers(cyber)
-    except Exception as e:
-        logger.exception("Failed to register index handlers: %s", e)
+#    try:
+#        register_index_handlers(cyber)
+ #   except Exception as e:
+#        logger.exception("Failed to register index handlers: %s", e)
 
     # ENABLE INDEX RESUME ON STARTUP
-    try:
-        asyncio.create_task(check_and_resume_index(cyber))
-    except Exception as e:
-        logger.exception("Failed to schedule check_and_resume_index: %s", e)
+    #try:
+    #    asyncio.create_task(check_and_resume_index(cyber))
+   # except Exception as e:
+    #    logger.exception("Failed to schedule check_and_resume_index: %s", e)
         
     # --- ADDED: Send Restart Message to Admin ---
-    admin_id = ADMIN_USERS[0] if ADMIN_USERS else None
-    if admin_id:
-        try:
-            await cyber.send_message(
-                admin_id,
-                "**🚀 Bot Restarted Successfully!**",
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
-            logger.info(f"Sent restart notification to admin {admin_id}.")
-        except Exception as e:
-            logger.error(f"Failed to send restart notification to admin: {e}")
+    #admin_id = ADMIN_USERS[0] if ADMIN_USERS else None
+    #if admin_id:
+    #    try:
+    #        await cyber.send_message(
+    #            admin_id,
+    #            "**🚀 Bot Restarted Successfully!**",
+    #            parse_mode=enums.ParseMode.MARKDOWN
+    #        )
+    #        logger.info(f"Sent restart notification to admin {admin_id}.")
+    #    except Exception as e:
+    #        logger.error(f"Failed to send restart notification to admin: {e}")
     # ---------------------------------------------
 
     # Keep running
-    try:
-        await asyncio.Future()
-    except KeyboardInterrupt:
-        pass
+    #try:
+    #    await asyncio.Future()
+    #except KeyboardInterrupt:
+    #    pass
 
-    await cyber.stop()
+    #await cyber.stop()
 
 
 def main():
