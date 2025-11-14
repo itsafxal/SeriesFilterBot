@@ -21,33 +21,79 @@ LANGUAGE_CODES = {
 # Create a pattern string for the regex to match any of the known codes
 LANG_CODE_PATTERN = "|".join(LANGUAGE_CODES.keys())
 
-def extract_links(links):
-"""
-Extracts chat_id, start_msg_id, and last_msg_id from one or two links.
-"""
-if len(links) == 1:
-match = re.match(link_pattern, links[0])
-if not match:
-raise ValueError("Invalid link format.")
-channel_id, last_msg_id = match.groups()
-chat_id = int(f"-100{channel_id}")
-return chat_id, 2, int(last_msg_id)
+# Regex patterns for detecting various Telegram link types
+PRIVATE_LINK_PATTERN = r"https://t\.me/c/(\d+)/(\d+)"
+PUBLIC_LINK_PATTERN = r"https://t\.me/([A-Za-z0-9_]+)/(\d+)"
+JOINCHAT_PATTERN = r"https://t\.me/\+([A-Za-z0-9_-]+)"
 
 
-elif len(links) == 2:
-match1 = re.match(link_pattern, links[0])
-match2 = re.match(link_pattern, links[1])
-if not match1 or not match2:
-raise ValueError("Invalid link format.")
-channel_id1, start_msg_id = match1.groups()
-channel_id2, last_msg_id = match2.groups()
-if channel_id1 != channel_id2:
-raise ValueError("Links belong to different channels.")
-chat_id = int(f"-100{channel_id1}")
-return chat_id, int(start_msg_id), int(last_msg_id)
+def _resolve_public_channel_id(client, username: str):
+    """Helper to resolve public channel username → chat_id."""
+    try:
+        chat = client.get_chat(username)
+        return chat.id
+    except Exception:
+        return None
 
 
-raise ValueError("Invalid number of links provided.")
+def extract_links(links, client=None):
+    """
+    Extracts chat_id, start_msg_id, and last_msg_id from:
+    - Private links:  https://t.me/c/<channel_id>/<msg_id>
+    - Public links:   https://t.me/<username>/<msg_id>
+    - Joinchat links: https://t.me/+xxxxxx
+    """
+
+    def parse_link(link: str):
+        """Parses a single link and returns (chat_id, msg_id)."""
+
+        # ----- PRIVATE CHANNEL LINK -----
+        match = re.match(PRIVATE_LINK_PATTERN, link)
+        if match:
+            channel_id, msg_id = match.groups()
+            return int(f"-100{channel_id}"), int(msg_id)
+
+        # ----- PUBLIC CHANNEL LINK -----
+        match = re.match(PUBLIC_LINK_PATTERN, link)
+        if match:
+            username, msg_id = match.groups()
+            if client is None:
+                raise ValueError("Client instance required to resolve username links.")
+
+            chat_id = _resolve_public_channel_id(client, username)
+            if chat_id is None:
+                raise ValueError(f"Cannot resolve public channel username: {username}")
+
+            return chat_id, int(msg_id)
+
+        # ----- JOINCHAT LINK NOT SUPPORTED -----
+        if re.match(JOINCHAT_PATTERN, link):
+            raise ValueError(
+                "Joinchat invite links do not contain message IDs. "
+                "Use a normal post link instead."
+            )
+
+        # ----- INVALID LINK -----
+        raise ValueError(f"Invalid Telegram link format: {link}")
+
+    # -----------------------------------------------------------
+    # Process 1 or 2 links
+    # -----------------------------------------------------------
+    if len(links) == 1:
+        chat_id, last_msg_id = parse_link(links[0])
+        return chat_id, 2, last_msg_id
+
+    elif len(links) == 2:
+        chat1, start_msg = parse_link(links[0])
+        chat2, last_msg = parse_link(links[1])
+
+        if chat1 != chat2:
+            raise ValueError("Both links must belong to the same channel.")
+
+        return chat1, start_msg, last_msg
+
+    else:
+        raise ValueError("Provide 1 or 2 Telegram links only.")
 
 def clean_series_name(name: str) -> str:
     """Aggressively cleans the series name by removing common tags and metadata."""
