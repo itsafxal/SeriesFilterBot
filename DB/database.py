@@ -113,6 +113,18 @@ async def get_global_setting(key: str, default_value=None):
         return doc.get(key, default_value) if doc else default_value
     return await asyncio.to_thread(sync_get)
 
+async def delete_all_index_states():
+    """Delete all index_<chat_id> states so only latest index is active."""
+    keys = await get_all_bot_state_keys()
+    for k in keys:
+        if k.startswith("index_"):
+            await save_bot_state(k, None)
+
+
+async def get_all_bot_state_keys():
+    """Return list of all state keys stored."""
+    return bot_state_collection.distinct("_id")  # Mongo version
+
 
 # --- NEW FUNCTION: Get Series Summary (SQLite Async Wrapper) ---
 
