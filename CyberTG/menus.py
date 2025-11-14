@@ -22,12 +22,7 @@ from DB.database import (
     get_unique_qualities_by_lang_season,
     get_series_summary
 )
-from utils import (
-    delete_message_later, 
-    ABOUT_KEYBOARD, 
-    ADMIN_TEXT, 
-    ABOUT_TEXT
-)
+from utils import delete_message_later
 from .poster import get_series_poster_async
 
 async def show_language_menu(cyber: Client, query: CallbackQuery, series_name: str, season: int):
