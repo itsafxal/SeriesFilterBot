@@ -18,7 +18,7 @@ FORCE_SUB_CHANNEL = None
 START_IMG = "https://sanishtech.com/i/690cfef2312bd-1762459378.jpg"
 
 #Omdb poster config
-OMDB_API_KEY = "f93ab313"
+OMDB_API_KEY = "969cbb6f"
 OMDB_CACHE_DB = "/tmp/omdb_cache.db"
 DEFAULT_POSTER = "https://sanishtech.com/i/690ceab460363-1762454196.jpg"
 
