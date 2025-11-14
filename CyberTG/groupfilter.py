@@ -7,6 +7,7 @@ from pyrogram.types import (
     Message,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    InputMediaPhoto,
     CallbackQuery,
 )
 from pyrogram.errors import MessageNotModified
@@ -28,7 +29,6 @@ from config import (
 from utils import (
     clean_series_name,
     delete_message_later,
-    # check_force_subscribe is usually not enforced for group searches
 )
 from .poster import get_series_poster_async
 
@@ -84,7 +84,8 @@ def register_group_handlers(cyber: Client):
                 )
             ] for movie in movielist]
             
-            btn.append([InlineKeyboardButton(text="Close", callback_data=f'close_suggestion|{user_id}')])
+            # Use 'close_suggestion' which is handled in handlers.py
+            btn.append([InlineKeyboardButton(text="Close", callback_data=f'close_suggestion|{user_id}')]) 
             
             sent_message = await message.reply(
                 f"🎬 Found {len(unique_names)} results for **{query}**.\nSelect the correct series below:",
@@ -92,10 +93,8 @@ def register_group_handlers(cyber: Client):
                 parse_mode=enums.ParseMode.MARKDOWN
             )
             
-            auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
-            if auto_delete_timer and int(auto_delete_timer) > 0:
-                # Use a shorter auto-delete for groups to reduce spam
-                asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, 60))
+            # Use a shorter auto-delete for groups to reduce spam (60 seconds)
+            asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, 60))
             
             return
         
@@ -117,7 +116,6 @@ def register_group_handlers(cyber: Client):
         series_name = data[2]
         await query.answer(f"Selected: {series_name}...", cache_time=0)
         
-        # The suggestion message is in a group chat, so we use display_series_menu
         await display_series_menu(cyber, query.message, series_name, is_callback=True, callback_query=query)
 
 
@@ -166,7 +164,7 @@ def register_group_handlers(cyber: Client):
     async def group_quality_select_handler(cyber, query: CallbackQuery):
         """
         Handles quality selection in group.
-        Redirects the user to the bot's PM for file delivery.
+        Redirects the user to the bot's PM for file delivery using a deep link.
         """
         data = query.data.split("|")
         if len(data) < 5:
@@ -183,7 +181,7 @@ def register_group_handlers(cyber: Client):
         bot_username = bot_info.username
 
         # Construct the deep link to start the bot with the file request
-        # The payload format: 'file_request|series|season|lang|quality'
+        # Payload format: 'file_request|series|season|lang|quality'
         start_payload = f"file_request|{series_name}|{season}|{language}|{quality}"
         
         deeplink = f"https://t.me/{bot_username}?start={start_payload}"
@@ -198,6 +196,7 @@ def register_group_handlers(cyber: Client):
         
         redirect_caption = (
             f"✅ **Redirecting to PM for Files**\n\n"
+            f"**🚨 IMPORTANT:** If I don't send files, please go to my chat and click **'Start'** first!\n\n"
             f"Please click the button below to receive all episodes for:\n"
             f"**{series_name}** - Season **{season}**\n"
             f"Quality: **{quality}** | Language: **{language}**\n\n"
@@ -267,7 +266,7 @@ def register_group_handlers(cyber: Client):
             f"**○ Language:** {languages_list or 'N/A'}\n"
             f"**○ Season Available:** {seasons_count}\n"
             f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
-            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
+            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲d 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
         )
 
         keyboard = []
@@ -310,10 +309,8 @@ def register_group_handlers(cyber: Client):
                 logger.error(f"Failed to reply with photo for group search: {e}. Falling back to reply_text.")
                 sent_message = await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
-        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
-        if auto_delete_timer and int(auto_delete_timer) > 0:
-            # Use a shorter auto-delete for groups to reduce spam
-            asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, 60))
+        # Use a shorter auto-delete for groups to reduce spam (60 seconds)
+        asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, 60))
 
 
     async def show_group_language_menu(cyber: Client, query: CallbackQuery, series_name: str, season: int):
@@ -339,7 +336,7 @@ def register_group_handlers(cyber: Client):
 
         caption = (
             f"📺 Title **{series_name}** — Season **{season}**\n\n"
-            f"🌐 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗔𝘂𝗱𝗶𝗼 𝗟𝗮𝗻𝗴𝘂𝗮𝗴𝗲 👇:"
+            f"🌐 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲d 𝗔𝘂𝗱𝗶𝗼 𝗟𝗮𝗻𝗴𝘂𝗮𝗴𝗲 👇:"
         )
 
         try:
