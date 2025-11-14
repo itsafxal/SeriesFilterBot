@@ -277,6 +277,13 @@ async def about_menu_handler(cyber: Client, query: CallbackQuery):
         f"‣ sᴇᴄᴏɴᴅᴀʀʏ ᴅʙ : <a href='https://www.freesqldatabase.com/'>sᴏ̨ʟ ᴅʙ</a>\n"
         f"‣ ʙᴏᴛ sᴇʀᴠᴇʀ : <a href='https://t.me/quickfastt'>ǫᴜɪᴄᴋ ꜰᴀsᴛ</a></b></blockquote>"
     )
+    ABOUT_KEYBOARD = InlineKeyboardMarkup(
+    [[
+        InlineKeyboardButton("💻 Source Code", url="https://github.com/CyberTG/SeriesFilterBot")
+    ],[
+        InlineKeyboardButton("🏡 ʜᴏᴍᴇ", callback_data="cyber|home"),
+        InlineKeyboardButton("🕵‍♂ ʜᴇʟᴘ", callback_data="help|menu")
+    ]])
     reply_markup = ABOUT_KEYBOARD
     try:
         await query.message.edit_caption(
