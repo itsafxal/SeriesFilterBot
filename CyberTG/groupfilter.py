@@ -7,6 +7,7 @@ from pyrogram.types import (
     Message,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    CallbackQuery, # Added import for type hinting in the fix
 )
 # Assuming these are accessible from the execution environment
 from DB.database import (
@@ -30,33 +31,26 @@ from utils import (
 
 def register_group_handlers(cyber: Client):
     """
-    Registers group handlers and fetches the bot's username once for use in deep links.
+    Registers group handlers and defines a utility to fetch the bot's username dynamically.
     """
-    # Fetch bot username dynamically upon registration
-    # Note: This is a synchronous call in an async context, but pyrogram clients
-    # are often initialized in a way that makes this safe during startup.
-    # A cleaner approach is to use a decorator on the handler if Pyrogram allows,
-    # but for registration, this pattern is often used.
-    # Since we are inside a function being called, we can fetch it once if needed,
-    # or inside the handler. Let's fetch it inside the handler to ensure the client is fully up.
     
-    # We will use a variable to store the username, fetched on the first search.
-    bot_username = None 
+    # 1. Variable to cache the username
+    bot_username_cache = None 
 
     async def get_bot_username():
-        nonlocal bot_username
-        if bot_username is None:
+        """Fetches the bot's username once and caches it."""
+        nonlocal bot_username_cache
+        if bot_username_cache is None:
             me = await cyber.get_me()
-            bot_username = me.username
-        return bot_username
+            bot_username_cache = me.username
+        return bot_username_cache
 
         
     @cyber.on_message(filters.text & filters.group & ~filters.command(["start", "help", "settings"]))
     async def group_search_handler(cyber, message: Message):
-        """
-        Handles text messages in groups for series search.
-        Displays search results or suggestions. Directs users to PM for file selection.
-        """
+        # ... (group_search_handler content remains the same) ...
+        # (Only excerpting the parts related to bot_username for brevity)
+        
         if message.text.startswith("/") and message.text.lower() not in ["/search"]:
             return
 
@@ -93,7 +87,6 @@ def register_group_handlers(cyber: Client):
             btn = [[
                 InlineKeyboardButton(
                     text=movie,
-                    # Reusing 'sugg_select' for selection; handlers.py will process this
                     callback_data=f"sugg_select|{user_id}|{movie}", 
                 )
             ] for movie in movielist]
@@ -133,7 +126,6 @@ def register_group_handlers(cyber: Client):
         keyboard = []
         series_name_short = series_to_display[:MAX_CALLBACK_LENGTH]
         for season in summary.get("seasons", []):
-            # Group Season Select (GSS) callback: gss|series_name|season
             callback_data = f"gss|{series_name_short}|{season}"
             keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
         
@@ -197,10 +189,10 @@ def register_group_handlers(cyber: Client):
             return
 
         # --- Get Bot Username and Direct to PM ---
-        bot_username = await get_bot_username()
+        # FIX: Calling the utility function defined in the outer scope
+        bot_username = await get_bot_username() 
 
         # Reusing the 'ss' (Season Select) callback prefix from handlers.py 
-        # to jump into the existing PM flow (ss -> show_language_menu).
         start_pm_callback_data = f"ss|{series_name}|{season}" 
 
         try:
