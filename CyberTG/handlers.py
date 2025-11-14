@@ -24,7 +24,7 @@ from config import (
     DEFAULT_POSTER,
     ADMIN_USERS,
     OMDB_CACHE_DB,
-    MAX_CALLBACK_LENGTH, # Keep MAX_CALLBACK_LENGTH in config/imported
+    MAX_CALLBACK_LENGTH, 
 )
 from utils import (
     clean_series_name,
@@ -41,7 +41,7 @@ def register_conversation_handlers(cyber: Client):
         
     @cyber.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"]))
     async def search_handler(cyber, message: Message):
-        """Handles text messages for series search."""
+        """Handles text messages for series search with fuzzy/partial matching."""
         query = message.text.strip()
         if query.startswith("/") and query.lower() not in ["/index"]:
             return
@@ -57,62 +57,62 @@ def register_conversation_handlers(cyber: Client):
             return
 
         try:
-            # This search is now enhanced with whole-word and partial matching from sqlite_db.py
-            unique_names = await search_series(query)
+            # Use the enhanced search function which returns matches sorted by relevance
+            all_found_names = await search_series(query) 
         except Exception as e:
             logger.warning(f"[SEARCH ERROR] search_series failed for ORIGINAL query `{query}`: {e}")
-            unique_names = []
+            all_found_names = []
+            
+        # The search_series function returns all relevant names, with the most likely one first.
+        unique_names = list(dict.fromkeys([clean_series_name(name) for name in all_found_names]))
 
         if not unique_names:
-            # Fallback/Suggestion/Misspelling Correction logic starts here
+            # Fallback/final check: try cleaning the query if the enhanced search found nothing
             clean_query = re.sub(
                 r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil|file|that|find|und(o)*|kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*|aya(k)*(um(o)*)?|full\smovie|any(one)|with\ssubtitle(s)?)",
                 "", message.text, flags=re.IGNORECASE).strip()
             
-            suggestion_list = []
-            
             if clean_query:
                 try:
-                    # Re-run search on the cleaned query
-                    suggestion_list = await search_series(clean_query)
+                    unique_names = list(dict.fromkeys([clean_series_name(name) for name in await search_series(clean_query)]))
                 except Exception as e:
                     logger.warning(f"[SEARCH ERROR] search_series failed for CLEANED query `{clean_query}`: {e}")
 
-            if suggestion_list:
-                movielist = [clean_series_name(name) for name in suggestion_list]
-                movielist = list(dict.fromkeys(movielist))
-                
-                if len(movielist) > 3:
-                    movielist = movielist[:3]
-                user_id = message.from_user.id
-                
-                btn = [[
-                    InlineKeyboardButton(
-                        text=movie,
-                        callback_data=f"sugg_select|{user_id}|{movie}",
-                    )
-                ] for movie in movielist]
-                
-                btn.append([InlineKeyboardButton(text="Close", callback_data=f'close_suggestion|{user_id}')])
-                
-                sent_message = await message.reply(
-                    f"I couldn't find anything related to `<code>{query}</code>`.\nDid you mean any one of these?",
-                    reply_markup=InlineKeyboardMarkup(btn),
-                    parse_mode=enums.ParseMode.HTML
-                )
-                
-                auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
-                if auto_delete_timer and int(auto_delete_timer) > 0:
-                    asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
-                
-                return
-
-            else:
+            if not unique_names:
                 await message.reply_text(f"❌ No series found `<code>{query}</code>`", parse_mode=enums.ParseMode.HTML)
                 return
+
+        # --- Display Suggestions or Single Result ---
         
-        # --- Display Search Result ---
-        series_to_display = clean_series_name(unique_names[0])
+        if len(unique_names) > 1:
+            # If multiple results (suggestions) were found, display the top 5
+            movielist = unique_names[:5] # Show top 5 suggestions
+            user_id = message.from_user.id
+            
+            btn = [[
+                InlineKeyboardButton(
+                    text=movie,
+                    # Using 'sugg_select' handler for all suggestions
+                    callback_data=f"sugg_select|{user_id}|{movie}", 
+                )
+            ] for movie in movielist]
+            
+            btn.append([InlineKeyboardButton(text="Close", callback_data=f'close_suggestion|{user_id}')])
+            
+            sent_message = await message.reply(
+                f"I found {len(unique_names)} results for `<code>{query}</code>`.\nDid you mean any one of these?",
+                reply_markup=InlineKeyboardMarkup(btn),
+                parse_mode=enums.ParseMode.HTML
+            )
+            
+            auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+            if auto_delete_timer and int(auto_delete_timer) > 0:
+                asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
+            
+            return
+        
+        # --- Display Single Search Result (Most likely result is unique_names[0]) ---
+        series_to_display = unique_names[0]
 
         poster_url = DEFAULT_POSTER
         imdb_enabled = True
