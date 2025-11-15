@@ -2,9 +2,19 @@
 """
 Group-based search → Season → Language → Quality
 When user clicks Quality, bot gives a deep-link button to open DM and auto-start sending files.
-"""
 
+Deep-link format (Option B2 - Base64 of pipe-separated, percent-encoded tuple):
+    send_<BASE64_URLSAFE>
+
+Payload before encoding:
+    "{series_quoted}|{season}|{lang_quoted}|{quality_quoted}"
+
+Where values are percent-encoded using urllib.parse.quote to avoid delimiter collisions.
+"""
 import asyncio
+import base64
+import urllib.parse
+
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
     Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -18,6 +28,22 @@ from DB.database import (
 from utils import clean_series_name
 from config import DEFAULT_POSTER, MAX_CALLBACK_LENGTH
 from .poster import get_series_poster_async
+
+
+def _make_send_payload_b64(series: str, season: int, lang: str, quality: str) -> str:
+    """
+    Build the Base64 (urlsafe) payload for deep-link.
+    Uses percent-encoding for each field, joins with '|' and encodes.
+    """
+    # Percent-encode values to avoid '|' collisions
+    s_enc = urllib.parse.quote(series, safe="")
+    lang_enc = urllib.parse.quote(lang, safe="")
+    quality_enc = urllib.parse.quote(quality, safe="")
+
+    raw = f"{s_enc}|{season}|{lang_enc}|{quality_enc}"
+    b64 = base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
+    # Keep padding intact (Telegram supports '=' in URLs). If you prefer shorter links, you may strip '=' but then add padding back before decoding.
+    return b64
 
 
 def register_group_handlers(cyber: Client):
@@ -100,7 +126,7 @@ def register_group_handlers(cyber: Client):
         await query.answer()
 
     # ------------------------------
-    # QUALITY → DEEP LINK TO PM
+    # QUALITY → DEEP LINK TO PM (Base64 payload)
     # ------------------------------
     @cyber.on_callback_query(filters.regex(r"^gqs\|"))
     async def gqs_handler(cyber, query: CallbackQuery):
@@ -108,13 +134,14 @@ def register_group_handlers(cyber: Client):
         season = int(season)
 
         bot = await cyber.get_me()
-        deep_link = f"https://t.me/{bot.username}?start=send_{series}_{season}_{lang}_{quality}"
+        b64_payload = _make_send_payload_b64(series, season, lang, quality)
+        deep_link = f"https://t.me/{bot.username}?start=send_{b64_payload}"
 
         keyboard = InlineKeyboardMarkup(
             [[InlineKeyboardButton("📩 Open Bot & Start Download", url=deep_link)]]
         )
 
-        # Edit message to show DM button (not annoying)
+        # Edit message to show DM button
         await query.message.edit_caption(
             f"📥 Tap below to receive files in DM.\n\n"
             f"🎬 {series}\n"
