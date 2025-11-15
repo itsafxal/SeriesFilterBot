@@ -38,31 +38,6 @@ from .menus import (
 )
 from .groupfilter import safe_decode  
 
-@cyber.on_message(filters.command("start") & filters.private)
-async def deep_link_start_handler(cyber, message: Message):
-    if len(message.command) > 1:
-        payload = message.command[1]
-
-        if payload.startswith("file_request|"):
-            parts = payload.split("|")
-            if len(parts) == 5:
-                # parts: [0:'file_request', 1:series, 2:season, 3:lang, 4:quality]
-
-                # -------- FIXED DECODING --------
-                series_name = safe_decode(parts[1])
-                try:
-                    season = int(parts[2])
-                except ValueError:
-                    return await message.reply_text("❌ Invalid season number.")
-
-                language = safe_decode(parts[3])
-                quality = safe_decode(parts[4])
-                # -------- END FIX --------
-
-                user_id = message.from_user.id
-                await send_files_to_user(cyber, user_id, series_name, season, quality, language)
-                return
-
 # --- NEW SHARED FUNCTION FOR FILE DELIVERY ---
 
 async def send_files_to_user(cyber: Client, user_id: int, series_name: str, season: int, quality: str, language: str):
@@ -144,7 +119,24 @@ async def send_files_to_user(cyber: Client, user_id: int, series_name: str, seas
 # --- HANDLER REGISTRATION ---
 
 def register_conversation_handlers(cyber: Client):
-        
+    @cyber.on_message(filters.command("start") & filters.private)
+    async def deep_link_start_handler(cyber, message: Message):
+        if len(message.command) > 1:
+            payload = message.command[1]
+        if payload.startswith("file_request|"):
+            parts = payload.split("|")
+            if len(parts) == 5:
+            series_name = safe_decode(parts[1])
+            try:
+                season = int(parts[2])
+            except ValueError:
+                return await message.reply_text("❌ Invalid season number.")
+            language = safe_decode(parts[3])
+            quality = safe_decode(parts[4])
+            user_id = message.from_user.id
+            await send_files_to_user(cyber, user_id, series_name, season, quality, language)
+            return
+            
     @cyber.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"]))
     async def search_handler(cyber, message: Message):
         """Handles text messages for series search with fuzzy/partial matching."""
