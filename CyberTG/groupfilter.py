@@ -1,35 +1,12 @@
 # groupfilter.py
-"""
-Group search + fuzzy suggestions + group -> PM deep-link flow.
-
-Behavior:
- - OPTION A (auto-detect): any plain text in groups (not commands/links) triggers search.
- - If exact matches found -> show poster + Season buttons (gss|...)
- - If no exact matches -> clean the query, run fuzzy suggestion (rapidfuzz preferred)
-   and show up to 3 suggestion buttons (sugg_select|<user_id>|<title>)
- - When a suggestion is chosen, the message is edited to the series summary and Season
-   buttons are shown (gss|...). All subsequent callbacks use gss| -> gls| -> gqs|.
- - On quality selection (gqs|) the bot shows a single "Open Bot (PM)" deep link:
-   https://t.me/<bot_username>?start=send_<base64(series|season|lang|quality)>
- - This file expects your project to expose the async DB functions and utilities:
-   search_series, get_series_summary, get_unique_languages_by_season,
-   get_unique_qualities_by_lang_season, get_all_files_by_season_and_quality (used in /start).
-   And utilities: clean_series_name, delete_message_later, check_force_subscribe.
-"""
+# FINAL VERSION WITH STRICT MATCH + FUZZY SUGGESTIONS + NO FALSE AUTO-SELECT
+# WEDNESDA -> SUGGESTIONS (NOT AUTO Wednesday)
 
 import asyncio
 import base64
 import re
-from urllib.parse import quote, unquote
 import shelve
-from typing import List, Tuple
-
-# attempt to import rapidfuzz, fall back if not available (but user requested rapidfuzz)
-try:
-    from rapidfuzz import process as rf_process, fuzz as rf_fuzz  # type: ignore
-    _HAVE_RAPIDFUZZ = True
-except Exception:
-    _HAVE_RAPIDFUZZ = False
+from urllib.parse import quote
 
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
@@ -38,7 +15,6 @@ from pyrogram.types import (
     InlineKeyboardButton,
     CallbackQuery,
 )
-from pyrogram.errors import MessageNotModified
 
 from config import (
     logger,
@@ -47,574 +23,374 @@ from config import (
     OMDB_CACHE_DB,
 )
 
-from utils import clean_series_name, delete_message_later, check_force_subscribe
+from utils import clean_series_name, delete_message_later
 from DB.database import (
     search_series,
     get_series_summary,
     get_unique_languages_by_season,
     get_unique_qualities_by_lang_season,
 )
-
 from .poster import get_series_poster_async
 
+# ----------------------------
+# Try RapidFuzz
+# ----------------------------
+try:
+    from rapidfuzz import process as rf_process, fuzz as rf_fuzz
+    HAVE_RAPIDFUZZ = True
+except:
+    HAVE_RAPIDFUZZ = False
 
-# -------------------------
-# Helpers
-# -------------------------
-async def _build_poster_for_series(series_name: str) -> str:
-    """Return cached poster or fetch; fallback to DEFAULT_POSTER."""
-    poster_url = DEFAULT_POSTER
+
+# ---------------------------------------------------------
+# BUILD POSTER
+# ---------------------------------------------------------
+async def _build_poster_for_series(series_name: str):
+    poster = DEFAULT_POSTER
     try:
         cache_file = OMDB_CACHE_DB or "/tmp/omdb_cache.db"
         with shelve.open(cache_file) as cache:
-            key = f"poster::{series_name.strip().lower()}"
+            key = f"poster::{series_name.lower()}"
             if key in cache:
-                poster_url = cache[key]
-    except Exception:
+                poster = cache[key]
+    except:
         pass
 
     try:
-        poster_tmp = await get_series_poster_async(series_name)
-        poster_url = poster_tmp or DEFAULT_POSTER
-    except Exception as e:
-        logger.warning(f"[POSTER FETCH FAIL] {series_name} -> {e}")
-        poster_url = DEFAULT_POSTER
+        new = await get_series_poster_async(series_name)
+        if new:
+            poster = new
+    except:
+        pass
 
-    return poster_url
+    return poster
 
 
-def _encode_start_payload(series: str, season: int, language: str, quality: str) -> str:
-    """Encode payload for deep-link: send_<base64url>"""
-    raw = f"{series}|{season}|{language}|{quality}"
-    b64 = base64.urlsafe_b64encode(raw.encode("utf-8")).decode("utf-8")
+# ---------------------------------------------------------
+# DEEP LINK
+# ---------------------------------------------------------
+def _encode_payload(series, season, lang, quality):
+    raw = f"{series}|{season}|{lang}|{quality}"
+    b64 = base64.urlsafe_b64encode(raw.encode()).decode()
     return f"send_{quote(b64)}"
 
 
-def _clean_user_query(q: str) -> str:
-    """Apply same cleaning regex you use in PM to strip filler words before fuzzy search."""
-    if not q:
-        return ""
-    cleaned = re.sub(
-        r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil|file|that|find|und(o)*|kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*|aya(k)*(um(o)*)?|full\smovie|any(one)|with\ssubtitle(s)?)",
+# ---------------------------------------------------------
+# CLEAN QUERY
+# ---------------------------------------------------------
+def _clean_query(q: str):
+    return re.sub(
+        r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|"
+        r"latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil|file|that|find|und(o)*|"
+        r"kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*|aya(k)*(um(o)*)?|full\smovie|any(one)|"
+        r"with\ssubtitle(s)?)",
         "",
         q,
         flags=re.IGNORECASE,
     ).strip()
-    return cleaned
 
 
-def _fuzzy_suggestions(query: str, candidates: List[str], limit: int = 5) -> List[Tuple[str, float]]:
-    """
-    Return a sorted list of (candidate, score) best matches to query.
-    Uses rapidfuzz if available; otherwise a simple ratio scorer.
-    """
+# ---------------------------------------------------------
+# FUZZY MATCHING
+# ---------------------------------------------------------
+def _fuzzy_match(query: str, candidates: list, limit=5):
     if not candidates:
         return []
 
-    if _HAVE_RAPIDFUZZ:
-        # Use rapidfuzz.process.extract with scorer ratio
-        extracted = rf_process.extract(query, candidates, scorer=rf_fuzz.ratio, limit=limit)
-        # rapidfuzz returns tuples: (choice, score, idx)
-        # Convert to (choice, score)
-        return [(item[0], float(item[1])) for item in extracted if item[1] > 30.0]
+    if HAVE_RAPIDFUZZ:
+        res = rf_process.extract(
+            query,
+            candidates,
+            scorer=rf_fuzz.ratio,
+            limit=limit
+        )
+        return [(x[0], x[1]) for x in res if x[1] >= 30]
     else:
-        # fallback simple score: normalized common subsequence length ratio
-        def simple_score(a: str, b: str) -> float:
-            a_l = a.lower()
-            b_l = b.lower()
-            # count longest common substring length / avg length
-            # simple heuristic: number of equal characters in order
-            i = j = 0
-            matches = 0
-            for ch in a_l:
-                pos = b_l.find(ch, j)
-                if pos != -1:
-                    matches += 1
-                    j = pos + 1
-            denom = (len(a_l) + len(b_l)) / 2 or 1
-            return (matches / denom) * 100.0
-
-        scored = [(cand, simple_score(query, cand)) for cand in candidates]
-        scored = [x for x in scored if x[1] > 25.0]
+        # simple fallback
+        scored = []
+        ql = query.lower()
+        for c in candidates:
+            cl = c.lower()
+            m = sum(ch in cl for ch in ql)
+            score = (m / (len(ql) + len(cl))) * 200
+            if score >= 30:
+                scored.append((c, score))
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:limit]
 
 
-# -------------------------
-# Main registration function
-# -------------------------
-def register_groupfilter_handlers(cyber: Client):
+# ---------------------------------------------------------
+# STRICT MATCH CHECK
+# ---------------------------------------------------------
+def _strict_match_only(query: str, names: list):
     """
-    Call this during startup: register_groupfilter_handlers(cyber)
-    Handlers are defined using decorators that reference the 'cyber' client parameter.
+    Return only exact or strict-prefix matches.
+    Wednesday.startswith("wednesda") == False → NOT strict
+    Wednesday.startswith("wednes") == True → strict
     """
+    q = query.lower().strip()
+    matches = []
+    for n in names:
+        nl = n.lower().strip()
+        if nl == q or nl.startswith(q):
+            matches.append(n)
+    return matches
 
-    # -------------------------
-    # Group text search handler
-    # -------------------------
+
+# ---------------------------------------------------------
+# MAIN REGISTRATION
+# ---------------------------------------------------------
+def register_groupfilter_handlers(cyber: Client):
+
+    # -----------------------------------------------------
+    # GROUP TEXT SEARCH
+    # -----------------------------------------------------
     @cyber.on_message(filters.text & filters.group)
-    async def group_search_handler(_, message: Message):
-        text = (message.text or "").strip()
+    async def group_search(_, m: Message):
+
+        text = (m.text or "").strip()
         if not text or len(text) < 2:
             return
 
-        # ignore obvious non-search content
-        if text.startswith("/") or text.startswith(".") or "http://" in text or "https://" in text:
+        if text.startswith("/") or "http" in text:
             return
 
-        # 1) try direct search
+        # 1) Search exact/loose from DB
         try:
-            unique_names = await search_series(text)
-        except Exception as e:
-            logger.warning(f"[GROUP SEARCH ERROR] search_series failed for `{text}`: {e}")
-            unique_names = []
+            results = await search_series(text)
+        except:
+            results = []
 
-        if unique_names:
-            # show first match as usual
-            series_to_display = clean_series_name(unique_names[0])
-            poster_url = await _build_poster_for_series(series_to_display)
+        results = [clean_series_name(r) for r in results]
+
+        # 2) STRICT MATCH FILTER
+        strict = _strict_match_only(text, results)
+
+        if strict:
+            # We have a strict match → AUTO SELECT
+            series = strict[0]
+            return await _send_series_entry(cyber, m, series)
+
+        # No strict match → DO NOT AUTO SELECT
+        # Continue to suggestions.
+
+        # 3) CLEAN QUERY & SEARCH AGAIN
+        cleaned = _clean_query(text)
+        cleaned_results = []
+        if cleaned:
             try:
-                summary = await get_series_summary(series_to_display)
-            except Exception as e:
-                logger.warning(f"[GROUP SUMMARY ERROR] {series_to_display} -> {e}")
-                summary = {"languages": [], "seasons": [], "qualities": []}
+                cleaned_results = await search_series(cleaned)
+            except:
+                pass
 
-            seasons = summary.get("seasons", [])
-            if not seasons:
-                return
+        cleaned_results = [clean_series_name(r) for r in cleaned_results]
 
-            # build season buttons (gss|)
-            keyboard = []
-            series_short = series_to_display[:MAX_CALLBACK_LENGTH]
-            for season in seasons:
-                keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=f"gss|{series_short}|{season}")])
+        # if cleaned_results still has strict match
+        strict2 = _strict_match_only(cleaned, cleaned_results)
+        if strict2:
+            series = strict2[0]
+            return await _send_series_entry(cyber, m, series)
 
-            caption = (
-                f"**{series_to_display}**\n\n"
-                f"Available Seasons: {len(seasons)}\n\n"
-                f"Select a season to continue:"
+        # 4) Build fuzzy candidate pool
+        candidates = list({*results, *cleaned_results})
+        if not candidates:
+            return await m.reply_text(
+                f"❌ No series found `<code>{text}</code>`",
+                parse_mode=enums.ParseMode.HTML
             )
 
-            try:
-                await message.reply_photo(
-                    poster_url,
-                    caption,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=enums.ParseMode.MARKDOWN,
-                )
-            except Exception:
-                await message.reply_text(
-                    caption,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=enums.ParseMode.MARKDOWN,
-                )
-            return
-
-        # 2) no exact results -> attempt cleaned + fuzzy suggestion flow (like PM)
-        clean_query = _clean_user_query(text)
-        suggestion_list = []
-        if clean_query:
-            try:
-                suggestion_list = await search_series(clean_query)
-            except Exception as e:
-                logger.warning(f"[GROUP SEARCH ERROR] search_series failed for CLEANED query `{clean_query}`: {e}")
-                suggestion_list = []
-
-        # If cleaned direct results found, show them
-        if suggestion_list:
-            # behave like exact result
-            series_to_display = clean_series_name(suggestion_list[0])
-            poster_url = await _build_poster_for_series(series_to_display)
-            try:
-                summary = await get_series_summary(series_to_display)
-            except Exception:
-                summary = {"languages": [], "seasons": [], "qualities": []}
-
-            seasons = summary.get("seasons", [])
-            if not seasons:
-                return
-
-            keyboard = []
-            series_short = series_to_display[:MAX_CALLBACK_LENGTH]
-            for season in seasons:
-                keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=f"gss|{series_short}|{season}")])
-
-            caption = (
-                f"**{series_to_display}**\n\n"
-                f"Available Seasons: {len(seasons)}\n\n"
-                f"Select a season to continue:"
+        fuzzy = _fuzzy_match(text, candidates, limit=10)
+        if not fuzzy:
+            return await m.reply_text(
+                f"❌ No series found `<code>{text}</code>`",
+                parse_mode=enums.ParseMode.HTML
             )
 
-            try:
-                await message.reply_photo(
-                    poster_url,
-                    caption,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=enums.ParseMode.MARKDOWN,
-                )
-            except Exception:
-                await message.reply_text(
-                    caption,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=enums.ParseMode.MARKDOWN,
-                )
-            return
-
-        # 3) Build fuzzy suggestions from DB
-        # We need a candidate list. Use search_series with tokens or get all names:
-        # For efficiency, call search_series with the original text but fetch a larger set
-        # fallback: run search_series for the first word and expand
-        candidates = []
-        try:
-            # Try a simple broad approach: search by words in query to get candidate pool
-            parts = re.split(r"\s+", text)[:3]
-            seen = []
-            for p in parts:
-                try:
-                    rs = await search_series(p)
-                except Exception:
-                    rs = []
-                for r in rs:
-                    if r not in seen:
-                        seen.append(r)
-            candidates = seen
-        except Exception:
-            candidates = []
-
-        # If still empty, try a global search for likely results by scanning small queries
-        if not candidates:
-            try:
-                # attempt tiny substrings
-                substrings = [text[:i] for i in range(len(text), max(len(text) - 4, 0), -1)]
-                seen = []
-                for s in substrings:
-                    try:
-                        rs = await search_series(s)
-                    except Exception:
-                        rs = []
-                    for r in rs:
-                        if r not in seen:
-                            seen.append(r)
-                candidates = seen
-            except Exception:
-                candidates = []
-
-        # If we have no candidates from DB, bail out (don't spam group)
-        if not candidates:
-            # final fallback: tell user nothing found
-            await message.reply_text(f"❌ No series found `<code>{text}</code>`", parse_mode=enums.ParseMode.HTML)
-            return
-
-        # Prepare list of cleaned candidate strings for fuzzy scoring
-        cand_clean = [clean_series_name(c) for c in candidates]
-
-        # Score
-        scored = _fuzzy_suggestions(text, cand_clean, limit=10)
-        if not scored:
-            # nothing matched well enough
-            await message.reply_text(f"❌ No series found `<code>{text}</code>`", parse_mode=enums.ParseMode.HTML)
-            return
-
-        # Take top 3 unique cleaned names
+        # Take top 3 unique
         suggestions = []
-        for name, score in scored:
-            if name not in suggestions:
-                suggestions.append(name)
+        for n, score in fuzzy:
+            if n not in suggestions:
+                suggestions.append(n)
             if len(suggestions) >= 3:
                 break
 
-        if not suggestions:
-            await message.reply_text(f"❌ No series found `<code>{text}</code>`", parse_mode=enums.ParseMode.HTML)
-            return
+        # Show suggestions
+        uid = m.from_user.id if m.from_user else 0
+        kb = [[InlineKeyboardButton(s, callback_data=f"sugg_select|{uid}|{s}")]
+              for s in suggestions]
+        kb.append([InlineKeyboardButton("Close", callback_data=f"close_suggestion|{uid}")])
 
-        # Build suggestion buttons (sugg_select|<user_id>|<movie>)
-        user_id = message.from_user.id if message.from_user else 0
-        btn = [
-            [InlineKeyboardButton(text=s, callback_data=f"sugg_select|{user_id}|{s}")]
-            for s in suggestions
-        ]
-        btn.append([InlineKeyboardButton(text="Close", callback_data=f"close_suggestion|{user_id}")])
-
-        sent_message = await message.reply(
+        msg = await m.reply(
             f"I couldn't find anything related to `<code>{text}</code>`.\nDid you mean any of these?",
-            reply_markup=InlineKeyboardMarkup(btn),
-            parse_mode=enums.ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode=enums.ParseMode.HTML
         )
 
-        # auto delete if configured
-        try:
-            auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
-            if auto_delete_timer and int(auto_delete_timer) > 0:
-                asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
-        except Exception:
-            pass
+        return
 
     # -----------------------------------------------------
-    # Suggestion selection handler (user clicked a suggestion)
-    # We will edit that suggestion message to the series summary and Season buttons (gss|)
+    # SUGGESTION SELECTION
     # -----------------------------------------------------
-    @cyber.on_callback_query(filters.regex(r"^sugg_select\|"))
-    async def sugg_select_handler(cyber, query: CallbackQuery):
-        data = query.data.split("|", 2)
-        if len(data) < 3:
-            await query.answer("❌ Error: Invalid suggestion data.", show_alert=True)
-            return
+    @cyber.on_callback_query(filters.regex("^sugg_select\\|"))
+    async def suggestion_select(_, q: CallbackQuery):
+        _, uid, series = q.data.split("|", 2)
+        await q.answer(f"Selected: {series}")
+        return await _edit_to_series_entry(cyber, q, series)
 
-        series_name = data[2]
-        await query.answer(f"Selected: {series_name}...", cache_time=0)
-
-        poster_url = DEFAULT_POSTER
+    @cyber.on_callback_query(filters.regex("^close_suggestion\\|"))
+    async def suggestion_close(c, q: CallbackQuery):
         try:
-            cache_file = OMDB_CACHE_DB or "/tmp/omdb_cache.db"
-            with shelve.open(cache_file) as db:
-                key = f"poster::{series_name.strip().lower()}"
-                if key in db:
-                    poster_url = db[key]
-        except Exception:
+            await q.message.delete()
+        except:
             pass
+        await q.answer()
 
-        try:
-            poster_tmp = await get_series_poster_async(series_name)
-            poster_url = poster_tmp or poster_url
-        except Exception:
-            pass
+    # -----------------------------------------------------
+    # gss → gls → gqs handlers
+    # -----------------------------------------------------
+    @cyber.on_callback_query(filters.regex("^gss\\|"))
+    async def gss(_, q: CallbackQuery):
+        _, series, season = q.data.split("|")
+        season = int(season)
 
-        try:
-            summary = await get_series_summary(series_name)
-        except Exception as e:
-            logger.warning(f"[SUGG_SUMMARY_FAIL] {series_name} -> {e}")
-            summary = {"languages": [], "seasons": [], "qualities": []}
+        langs = await get_unique_languages_by_season(series, season)
+        if not langs:
+            return await q.answer("No languages found", show_alert=True)
 
-        seasons = summary.get("seasons", [])
-        languages_list = ", ".join(summary.get("languages", []))
-        qualities_list = ", ".join(summary.get("qualities", []))
-        seasons_count = len(seasons)
+        kb = [
+            [InlineKeyboardButton(l, callback_data=f"gls|{series}|{season}|{l}")]
+            for l in langs
+        ]
+        kb.append([InlineKeyboardButton("↺ Back", callback_data=f"gback|{series}")])
 
-        response = (
-            f"**○ Title:** {series_name}\n"
-            f"**○ Language:** {languages_list or 'N/A'}\n"
-            f"**○ Season Available:** {seasons_count}\n"
-            f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
-            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
+        await q.message.edit_text(
+            f"📺 **{series} — S{season}**\n\nSelect Language:",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode=enums.ParseMode.MARKDOWN
         )
+        await q.answer()
 
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for season in seasons:
-            callback_data = f"gss|{series_name_short}|{season}"
-            keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
+    @cyber.on_callback_query(filters.regex("^gls\\|"))
+    async def gls(_, q: CallbackQuery):
+        _, series, season, lang = q.data.split("|")
+        season = int(season)
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        try:
-            # Edit the suggestion message to poster+details (edit_media if it was a photo is more complex;
-            # we'll use edit_text to keep it simple and resilient)
-            await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.error(f"Failed to edit message for sugg_select: {e}")
-            try:
-                await query.message.edit_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            except Exception:
-                pass
-
-        # schedule auto delete if configured
-        try:
-            auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
-            if auto_delete_timer and int(auto_delete_timer) > 0:
-                asyncio.create_task(delete_message_later(cyber, query.message.chat.id, query.message.id, int(auto_delete_timer)))
-        except Exception:
-            pass
-
-    # -----------------------------------------------------
-    # Close suggestion handler
-    # -----------------------------------------------------
-    @cyber.on_callback_query(filters.regex(r"^close_suggestion\|"))
-    async def close_suggestion_handler(cyber, query: CallbackQuery):
-        try:
-            await cyber.delete_messages(query.message.chat.id, query.message.id)
-        except Exception as e:
-            logger.warning(f"Failed to delete suggestion message: {e}")
-            await query.answer("❌ Failed to close message.", show_alert=True)
-            return
-        await query.answer("Closed.", show_alert=False)
-
-    # -----------------------------------------------------
-    # The group selection callbacks: gss| -> gls| -> gqs| (same as earlier)
-    # -----------------------------------------------------
-    @cyber.on_callback_query(filters.regex(r"^gss\|"))
-    async def gss_handler(cyber, query: CallbackQuery):
-        data = query.data.split("|")
-        if len(data) < 3:
-            await query.answer("❌ Error: Invalid season selection data.", show_alert=True)
-            return
-
-        series_name = data[1]
-        try:
-            season = int(data[2])
-        except ValueError:
-            await query.answer("❌ Error: Invalid season number.", show_alert=True)
-            return
-
-        try:
-            languages = await get_unique_languages_by_season(series_name, season)
-        except Exception:
-            # fallback to series summary
-            try:
-                summary = await get_series_summary(series_name)
-                languages = summary.get("languages", [])
-            except Exception:
-                languages = []
-
-        if not languages:
-            await query.answer(f"❌ No languages found for {series_name} S{season}.", show_alert=True)
-            return
-
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for lang in languages:
-            callback_data = f"gls|{series_name_short}|{season}|{lang}"
-            keyboard.append([InlineKeyboardButton(f"🔸 {lang} 🔸", callback_data=callback_data)])
-
-        keyboard.append([InlineKeyboardButton("↺ Back to Search", callback_data=f"gback|{series_name_short}")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        caption = (
-            f"📺 Title **{series_name}** — Season **{season}**\n\n"
-            f"Please select your preferred audio language 👇"
-        )
-
-        try:
-            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.error(f"Error editing message in gss_handler: {e}")
-
-        await query.answer()
-
-    @cyber.on_callback_query(filters.regex(r"^gls\|"))
-    async def gls_handler(cyber, query: CallbackQuery):
-        data = query.data.split("|")
-        if len(data) < 4:
-            await query.answer("❌ Error: Invalid language selection data.", show_alert=True)
-            return
-
-        series_name = data[1]
-        try:
-            season = int(data[2])
-        except ValueError:
-            await query.answer("❌ Error: Invalid season number.", show_alert=True)
-            return
-        language = data[3]
-
-        try:
-            qualities = await get_unique_qualities_by_lang_season(series_name, language, season)
-        except Exception:
-            try:
-                summary = await get_series_summary(series_name)
-                qualities = summary.get("qualities", [])
-            except Exception:
-                qualities = []
-
+        qualities = await get_unique_qualities_by_lang_season(series, lang, season)
         if not qualities:
-            await query.answer(f"❌ No quality files found for S{season} ({language}).", show_alert=True)
-            return
+            return await q.answer("No qualities found", show_alert=True)
 
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for quality in qualities:
-            callback_data = f"gqs|{series_name_short}|{season}|{language}|{quality}"
-            keyboard.append([InlineKeyboardButton(f"🔹 {quality} 🔹", callback_data=callback_data)])
-
-        keyboard.append([InlineKeyboardButton("↺ Back to Languages", callback_data=f"gss|{series_name_short}|{season}")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        caption = (
-            f"🎬 {series_name} – Season {season} ({language})\n\n"
-            f"📌 Quality Selector\n\n"
-            f"Tap a quality below — Bot will provide a PM link to receive files."
-        )
-
-        try:
-            await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.error(f"Error editing message in gls_handler: {e}")
-
-        await query.answer()
-
-    @cyber.on_callback_query(filters.regex(r"^gqs\|"))
-    async def gqs_handler(cyber, query: CallbackQuery):
-        data = query.data.split("|")
-        if len(data) < 5:
-            await query.answer("❌ Error: Invalid quality selection data.", show_alert=True)
-            return
-
-        series_name = data[1]
-        try:
-            season = int(data[2])
-        except ValueError:
-            await query.answer("❌ Error: Invalid season number.", show_alert=True)
-            return
-
-        language = data[3]
-        quality = data[4]
-
-        # Create deep link
-        bot = await cyber.get_me()
-        start_param = _encode_start_payload(series_name, season, language, quality)
-        deep_link = f"https://t.me/{bot.username}?start={start_param}"
-
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔐 Open Bot (PM)", url=deep_link)]
+        kb = [
+            [InlineKeyboardButton(qy, callback_data=f"gqs|{series}|{season}|{lang}|{qy}")]
+            for qy in qualities
+        ]
+        kb.append([
+            InlineKeyboardButton("↺ Back", callback_data=f"gss|{series}|{season}")
         ])
 
-        caption = (
-            f"✅ Ready — {series_name} S{season} ({language}) [{quality}]\n\n"
-            f"Tap **Open Bot (PM)** to start receiving files."
+        await q.message.edit_text(
+            f"🎬 {series} — S{season} ({lang})\n\nSelect Quality:",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+        await q.answer()
+
+    @cyber.on_callback_query(filters.regex("^gqs\\|"))
+    async def gqs(_, q: CallbackQuery):
+        _, series, season, lang, quality = q.data.split("|")
+        season = int(season)
+
+        bot = await cyber.get_me()
+        param = _encode_payload(series, season, lang, quality)
+        link = f"https://t.me/{bot.username}?start={param}"
+
+        kb = [[InlineKeyboardButton("🔐 Open Bot (PM)", url=link)]]
+
+        await q.message.edit_text(
+            f"✔ **{series} — S{season} ({lang}) [{quality}]**\n\n"
+            f"Tap the button to receive files in private chat.",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+        await q.answer("Open bot in PM", show_alert=True)
+
+    @cyber.on_callback_query(filters.regex("^gback\\|"))
+    async def gback(_, q: CallbackQuery):
+        _, series = q.data.split("|")
+
+        summary = await get_series_summary(series)
+        seasons = summary.get("seasons", [])
+        kb = [
+            [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series}|{s}")]
+            for s in seasons
+        ]
+
+        await q.message.edit_text(
+            f"**{series}**\n\nSelect Season:",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+        await q.answer()
+
+
+# ---------------------------------------------------------
+# SEND SERIES RESULT TO GROUP (STRICT MATCH only)
+# ---------------------------------------------------------
+async def _send_series_entry(cyber, m: Message, series: str):
+    poster = await _build_poster_for_series(series)
+    summary = await get_series_summary(series)
+    seasons = summary.get("seasons", [])
+
+    kb = [
+        [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series}|{s}")]
+        for s in seasons
+    ]
+
+    caption = (
+        f"**{series}**\n\n"
+        f"Available Seasons: {len(seasons)}\n"
+        f"Select a season to continue:"
+    )
+
+    try:
+        return await m.reply_photo(
+            poster,
+            caption,
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+    except:
+        return await m.reply_text(
+            caption,
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode=enums.ParseMode.MARKDOWN
         )
 
-        try:
-            await query.message.edit_text(caption, reply_markup=keyboard, parse_mode=enums.ParseMode.MARKDOWN)
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.error(f"Failed to edit message for gqs: {e}")
 
-        await query.answer("Open the bot in private chat to receive files.", show_alert=True)
+# ---------------------------------------------------------
+# EDIT SUGGESTION → SEASON MENU
+# ---------------------------------------------------------
+async def _edit_to_series_entry(cyber, q: CallbackQuery, series: str):
+    summary = await get_series_summary(series)
+    seasons = summary.get("seasons", [])
 
-    @cyber.on_callback_query(filters.regex(r"^gback\|"))
-    async def gback_handler(_, query: CallbackQuery):
-        data = query.data.split("|")
-        if len(data) < 2:
-            await query.answer()
-            return
+    kb = [
+        [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series}|{s}")]
+        for s in seasons
+    ]
 
-        series_name = data[1]
-        try:
-            summary = await get_series_summary(series_name)
-            seasons = summary.get("seasons", [])
-        except Exception:
-            seasons = []
+    txt = (
+        f"**Title:** {series}\n"
+        f"**Seasons:** {len(seasons)}\n\n"
+        f"Select a season:"
+    )
 
-        if not seasons:
-            await query.answer("No seasons found", show_alert=True)
-            return
+    try:
+        await q.message.edit_text(
+            txt,
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+    except:
+        pass
 
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for season in seasons:
-            keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=f"gss|{series_name_short}|{season}")])
-
-        caption = f"**{series_name}**\n\nSelect Season:"
-        try:
-            await query.message.edit_text(caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=enums.ParseMode.MARKDOWN)
-        except Exception:
-            pass
-
-        await query.answer()
-
-    # end register_groupfilter_handlers
+    await q.answer()
