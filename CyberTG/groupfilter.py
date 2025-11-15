@@ -1,6 +1,7 @@
 # groupfilter.py
 """
-Group-based search + filter + auto-PM-send system
+Group-based search + season/language/quality selection
+Auto-PM sending with typing indicator (no group spam)
 """
 
 import asyncio
@@ -32,7 +33,6 @@ def register_group_handlers(cyber: Client):
         if query.startswith("/"):
             return
 
-        # search
         results = await search_series(query)
         if not results:
             return
@@ -41,11 +41,9 @@ def register_group_handlers(cyber: Client):
         summary = await get_series_summary(series)
 
         poster = await get_series_poster_async(series) or DEFAULT_POSTER
-
-        # Build season buttons
-        keyboard = []
         short = series[:MAX_CALLBACK_LENGTH]
 
+        keyboard = []
         for s in summary.get("seasons", []):
             keyboard.append([
                 InlineKeyboardButton(
@@ -56,8 +54,7 @@ def register_group_handlers(cyber: Client):
 
         await message.reply_photo(
             photo=poster,
-            caption=f"🎬 **{series}**\n"
-                    f"Select a season:",
+            caption=f"🎬 **{series}**\nSelect a season:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode=enums.ParseMode.MARKDOWN
         )
@@ -66,7 +63,7 @@ def register_group_handlers(cyber: Client):
     # 2. SEASON → LANGUAGE MENU
     # -------------------------------------------------------
     @cyber.on_callback_query(filters.regex(r"^gss\|"))
-    async def group_season_handler(cyber, query: CallbackQuery):
+    async def season_handler(cyber, query: CallbackQuery):
         _, series, season = query.data.split("|")
         season = int(season)
 
@@ -85,8 +82,7 @@ def register_group_handlers(cyber: Client):
             ])
 
         await query.message.edit_caption(
-            f"🎬 **{series}** — Season {season}\n"
-            f"Select Language:",
+            f"🎬 **{series}** — Season {season}\nSelect Language:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode=enums.ParseMode.MARKDOWN
         )
@@ -96,7 +92,7 @@ def register_group_handlers(cyber: Client):
     # 3. LANGUAGE → QUALITY MENU
     # -------------------------------------------------------
     @cyber.on_callback_query(filters.regex(r"^gls\|"))
-    async def group_language_handler(cyber, query: CallbackQuery):
+    async def language_handler(cyber, query: CallbackQuery):
         _, series, season, lang = query.data.split("|")
         season = int(season)
 
@@ -115,85 +111,69 @@ def register_group_handlers(cyber: Client):
             ])
 
         await query.message.edit_caption(
-            f"🎬 {series} – S{season} ({lang})\n"
-            f"Select Quality:",
+            f"🎬 {series} – S{season} ({lang})\nSelect Quality:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode=enums.ParseMode.MARKDOWN
         )
         await query.answer()
 
     # -------------------------------------------------------
-    # 4. QUALITY → AUTO-PM → FORCE-SUB → SEND FILES + NOTIFY
+    # 4. QUALITY → AUTO-PM SENDING (typing indicator only)
     # -------------------------------------------------------
     @cyber.on_callback_query(filters.regex(r"^gqs\|"))
-    async def group_quality_handler(cyber, query: CallbackQuery):
+    async def quality_handler(cyber, query: CallbackQuery):
         _, series, season, lang, quality = query.data.split("|")
         season = int(season)
-
         user_id = query.from_user.id
 
-        # *** GROUP NOTIFICATION ***
-        await query.message.reply_text(
-            f"📩 <b>{query.from_user.first_name}</b>, please check your DM.\n"
-            f"The bot is sending:\n"
-            f"🎬 <b>{series}</b>\n"
-            f"📀 Season <b>{season}</b> • {lang} • {quality}",
-            parse_mode=enums.ParseMode.HTML
-        )
+        # No group spam / No popup
+        await query.answer()
 
-        # *** SEND START MESSAGE TO USER PM ***
+        # --- Contact user in PM using typing action ---
         try:
+            # Typing indicator for natural feel
+            await cyber.send_chat_action(user_id, enums.ChatAction.TYPING)
+            await asyncio.sleep(1)
+
             await cyber.send_message(
                 user_id,
-                f"⏳ Preparing your files...\n\n"
-                f"🎬 <b>{series}</b>\n"
-                f"📀 Season <b>{season}</b>\n"
-                f"🌐 {lang} • {quality}",
-                parse_mode=enums.ParseMode.HTML
+                f"Preparing your files...\n"
+                f"{series} — S{season} • {lang} • {quality}"
             )
         except:
             await query.answer("Open bot PM and press START!", show_alert=True)
             return
 
-        await query.answer("Check your PM", cache_time=0)
-
-        # *** FORCE SUBSCRIBE CHECK ***
+        # --- Force Subscribe Check ---
         is_member, invite = await check_force_subscribe(cyber, user_id)
         if not is_member:
-            await cyber.send_message(
+            return await cyber.send_message(
                 user_id,
-                "⚠️ You must join our channel to receive the files.",
+                "Join the required channel to receive files.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("Join Channel", url=invite)]
                 ])
             )
-            return
 
-        # *** FETCH FILES ***
+        # --- Fetch all files ---
         files = await get_all_files_by_season_and_quality(series, season, quality, lang)
         if not files:
-            await cyber.send_message(user_id, "❌ No files found.")
-            return
+            return await cyber.send_message(user_id, "No files found.")
 
         bot_name = (await cyber.get_me()).username
 
-        # *** NOTIFY BEFORE SENDING ***
-        await cyber.send_message(
-            user_id,
-            f"📥 Sending all episodes now...\n"
-            f"🎬 <b>{series}</b> — Season {season}",
-            parse_mode=enums.ParseMode.HTML
-        )
-
-        # *** SEND FILES ***
+        # --- Send files (with typing indicator before each) ---
         for f in files:
-            file_id = f.get("file_id")
-            caption = CUSTOM_CAPTION_TEXT.format(
-                file_name=f.get("file_name"),
-                bot_username=bot_name
-            )
-
             try:
+                await cyber.send_chat_action(user_id, enums.ChatAction.TYPING)
+                await asyncio.sleep(0.8)
+
+                file_id = f.get("file_id")
+                caption = CUSTOM_CAPTION_TEXT.format(
+                    file_name=f.get("file_name"),
+                    bot_username=bot_name
+                )
+
                 if file_id:
                     await cyber.send_document(user_id, file_id, caption=caption)
                 else:
@@ -203,20 +183,24 @@ def register_group_handlers(cyber: Client):
                         f["message_id"],
                         caption=caption
                     )
+
                 await asyncio.sleep(1)
+
             except Exception:
                 continue
 
-        # *** FINAL MESSAGE ***
+        # --- Final message ---
+        await cyber.send_chat_action(user_id, enums.ChatAction.TYPING)
+        await asyncio.sleep(1)
+
         await cyber.send_message(
             user_id,
-            f"✅ Completed sending **{series} — S{season} ({quality})**",
-            parse_mode=enums.ParseMode.MARKDOWN
+            f"Done! All episodes of {series} S{season} ({quality}) have been sent."
         )
 
     return [
         group_search_handler,
-        group_season_handler,
-        group_language_handler,
-        group_quality_handler
+        season_handler,
+        language_handler,
+        quality_handler
     ]
