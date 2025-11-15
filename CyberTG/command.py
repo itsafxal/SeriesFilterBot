@@ -13,6 +13,7 @@ from DB.database import (
     delete_one_file,
     get_total_files,
     get_total_users,
+    get_all_files_by_season_and_quality,
 )
 from .index import register_index_handlers # NEW: Import index handlers
 
