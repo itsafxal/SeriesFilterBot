@@ -32,6 +32,7 @@ def register_group_handlers(cyber: Client):
         if query.startswith("/"):
             return
 
+        # search
         results = await search_series(query)
         if not results:
             return
@@ -84,7 +85,8 @@ def register_group_handlers(cyber: Client):
             ])
 
         await query.message.edit_caption(
-            f"🎬 **{series}** — Season {season}\nSelect Language:",
+            f"🎬 **{series}** — Season {season}\n"
+            f"Select Language:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode=enums.ParseMode.MARKDOWN
         )
@@ -113,14 +115,15 @@ def register_group_handlers(cyber: Client):
             ])
 
         await query.message.edit_caption(
-            f"🎬 {series} – S{season} ({lang})\nSelect Quality:",
+            f"🎬 {series} – S{season} ({lang})\n"
+            f"Select Quality:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode=enums.ParseMode.MARKDOWN
         )
         await query.answer()
 
     # -------------------------------------------------------
-    # 4. QUALITY → AUTO-OPEN PM → FORCE-SUB → SEND FILES
+    # 4. QUALITY → AUTO-PM → FORCE-SUB → SEND FILES + NOTIFY
     # -------------------------------------------------------
     @cyber.on_callback_query(filters.regex(r"^gqs\|"))
     async def group_quality_handler(cyber, query: CallbackQuery):
@@ -129,40 +132,60 @@ def register_group_handlers(cyber: Client):
 
         user_id = query.from_user.id
 
-        # 1) Send PM start message
+        # *** GROUP NOTIFICATION ***
+        await query.message.reply_text(
+            f"📩 <b>{query.from_user.first_name}</b>, please check your DM.\n"
+            f"The bot is sending:\n"
+            f"🎬 <b>{series}</b>\n"
+            f"📀 Season <b>{season}</b> • {lang} • {quality}",
+            parse_mode=enums.ParseMode.HTML
+        )
+
+        # *** SEND START MESSAGE TO USER PM ***
         try:
             await cyber.send_message(
                 user_id,
-                "Starting download... Preparing your files..."
+                f"⏳ Preparing your files...\n\n"
+                f"🎬 <b>{series}</b>\n"
+                f"📀 Season <b>{season}</b>\n"
+                f"🌐 {lang} • {quality}",
+                parse_mode=enums.ParseMode.HTML
             )
         except:
-            await query.answer("Open PM and click Start!", show_alert=True)
+            await query.answer("Open bot PM and press START!", show_alert=True)
             return
 
-        await query.answer("Check your PM… Sending files now.", cache_time=0)
+        await query.answer("Check your PM", cache_time=0)
 
-        # 2) Force Subscribe Check
+        # *** FORCE SUBSCRIBE CHECK ***
         is_member, invite = await check_force_subscribe(cyber, user_id)
         if not is_member:
             await cyber.send_message(
                 user_id,
-                "You must join our channel to receive files.",
+                "⚠️ You must join our channel to receive the files.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("Join Channel", url=invite)]
                 ])
             )
             return
 
-        # 3) Fetch files
+        # *** FETCH FILES ***
         files = await get_all_files_by_season_and_quality(series, season, quality, lang)
-
         if not files:
-            await cyber.send_message(user_id, "No files found.")
+            await cyber.send_message(user_id, "❌ No files found.")
             return
 
         bot_name = (await cyber.get_me()).username
 
-        # 4) Send all episodes
+        # *** NOTIFY BEFORE SENDING ***
+        await cyber.send_message(
+            user_id,
+            f"📥 Sending all episodes now...\n"
+            f"🎬 <b>{series}</b> — Season {season}",
+            parse_mode=enums.ParseMode.HTML
+        )
+
+        # *** SEND FILES ***
         for f in files:
             file_id = f.get("file_id")
             caption = CUSTOM_CAPTION_TEXT.format(
@@ -184,9 +207,11 @@ def register_group_handlers(cyber: Client):
             except Exception:
                 continue
 
+        # *** FINAL MESSAGE ***
         await cyber.send_message(
             user_id,
-            f"Completed sending **{series} – S{season} ({quality})**"
+            f"✅ Completed sending **{series} — S{season} ({quality})**",
+            parse_mode=enums.ParseMode.MARKDOWN
         )
 
     return [
