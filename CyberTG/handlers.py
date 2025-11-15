@@ -71,19 +71,19 @@ def register_conversation_handlers(cyber: Client):
                 payload_b64 = text.split("send_", 1)[1]
                 decoded = _b64_urlsafe_decode_payload(payload_b64)
 
-                # The payload format (B2) is: series_quoted|season|lang_quoted|quality_quoted
+                # Payload format: series_quoted | season | lang_quoted | quality_quoted
                 parts = decoded.split("|", 3)
                 if len(parts) != 4:
                     raise ValueError("Decoded payload does not have 4 parts.")
 
                 series_enc, season_str, lang_enc, quality_enc = parts
 
-                # Unquote percent-encoded parts
+                # Unquote percent-encoded values
                 series = urllib.parse.unquote(series_enc)
                 lang = urllib.parse.unquote(lang_enc)
                 quality = urllib.parse.unquote(quality_enc)
 
-                # Validate season as integer
+                # Convert season to int
                 season = int(season_str)
 
             except ValueError as ve:
@@ -93,7 +93,7 @@ def register_conversation_handlers(cyber: Client):
                 logger.error(f"[PM START] Unexpected decode error: {e}")
                 return await message.reply("Failed to parse deep-link payload.")
 
-            # Force Sub
+            # Force Subscribe Check
             is_member, link = await check_force_subscribe(cyber, message.from_user.id)
             if not is_member:
                 return await message.reply(
@@ -108,12 +108,12 @@ def register_conversation_handlers(cyber: Client):
                 f"{series} – S{season} • {lang} • {quality}"
             )
 
-            # >>> FIXED ARGUMENT ORDER (IMPORTANT) <<<
-            # DB expects (series, season, language, quality)
-            files = await get_all_files_by_season_and_quality(series, season, lang, quality)
+            # >>> FINAL CORRECT ARG ORDER FOR YOUR DB <<<
+            # DB expects (series, season, QUALITY, LANGUAGE)
+            files = await get_all_files_by_season_and_quality(series, season, quality, lang)
 
             if not files:
-                return await message.reply("No files found.")
+                return await message.reply("No files found for your selection.")
 
             bot_username = (await cyber.get_me()).username
 
@@ -124,6 +124,7 @@ def register_conversation_handlers(cyber: Client):
                     bot_username=bot_username
                 )
                 try:
+                    # If file_id exists, send directly
                     if f.get("file_id"):
                         await cyber.send_document(
                             message.chat.id,
@@ -131,24 +132,25 @@ def register_conversation_handlers(cyber: Client):
                             caption=caption
                         )
                     else:
+                        # Otherwise copy from source channel
                         await cyber.copy_message(
                             message.chat.id,
                             f["channel_id"],
                             f["message_id"],
                             caption=caption
                         )
+
                     sent += 1
                     await asyncio.sleep(1)
+
                 except Exception as e:
                     logger.error(f"[PM START] Failed to send file entry: {e}")
                     continue
 
-            # STOP other /start handlers
-            return
+            return  # IMPORTANT: Prevent other /start handlers
 
-        # Normal /start (non-deep-link)
+        # Normal /start (not deep-link)
         pass
-
 
     @cyber.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"]))
     async def search_handler(cyber, message: Message):
