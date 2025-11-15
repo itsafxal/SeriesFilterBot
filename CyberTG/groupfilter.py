@@ -31,54 +31,48 @@ from DB.database import (
 from .poster import get_series_poster_async
 
 
-# --------------------------------------------------------------------
-# POSTER BUILDER
-# --------------------------------------------------------------------
+# ---------------------------------------------------------
+# Poster Builder
+# ---------------------------------------------------------
 async def _build_poster_for_series(series_name: str):
-    """
-    Return cached poster or fetch using get_series_poster_async().
-    Returns DEFAULT_POSTER if not available.
-    """
     poster_url = DEFAULT_POSTER
 
-    # 1) Try cache first
     try:
         cache_file = OMDB_CACHE_DB or "/tmp/omdb_cache.db"
         with shelve.open(cache_file) as cache:
             key = f"poster::{series_name.strip().lower()}"
             if key in cache:
                 poster_url = cache[key]
-    except Exception:
+    except:
         pass
 
-    # 2) Fetch fresh from OMDB if default or empty
     try:
         poster_tmp = await get_series_poster_async(series_name)
         poster_url = poster_tmp or DEFAULT_POSTER
     except Exception as e:
-        logger.warning(f"[POSTER FETCH FAIL] {series_name} -> {e}")
+        logger.warning(f"[POSTER FAIL] {series_name}: {e}")
         poster_url = DEFAULT_POSTER
 
     return poster_url
 
 
-# --------------------------------------------------------------------
-# DEEP LINK ENCODER
-# --------------------------------------------------------------------
+# ---------------------------------------------------------
+# Encode deep-link payload
+# ---------------------------------------------------------
 def _encode_start_payload(series: str, season: int, language: str, quality: str) -> str:
     raw = f"{series}|{season}|{language}|{quality}"
     b64 = base64.urlsafe_b64encode(raw.encode()).decode()
     return f"send_{quote(b64)}"
 
 
-# --------------------------------------------------------------------
-# HANDLER REGISTRATION
-# --------------------------------------------------------------------
+# ---------------------------------------------------------
+# Register group filter handlers
+# ---------------------------------------------------------
 def register_groupfilter_handlers(cyber: Client):
 
-    # ============================================================
-    # 1. GROUP TEXT SEARCH (OPTION A)
-    # ============================================================
+    # ======================================================
+    # GROUP SEARCH
+    # ======================================================
     @cyber.on_message(filters.text & filters.group)
     async def group_search_handler(_, message: Message):
 
@@ -86,61 +80,51 @@ def register_groupfilter_handlers(cyber: Client):
         if not text:
             return
 
-        # Ignore commands, links, mentions
+        # ignore commands + links
         if (
             text.startswith("/")
-            or text.startswith(".")
-            or text.startswith("#")
             or "http://" in text
             or "https://" in text
         ):
             return
 
-        # Search
+        # Search DB
         try:
-            results = await search_series(text)
+            matches = await search_series(text)
         except Exception as e:
             logger.error(f"[GROUP SEARCH ERR] {e}")
-            results = []
+            matches = []
 
-        if not results:
-            return  # do not spam groups
+        if not matches:
+            return
 
-        series = clean_series_name(results[0])
+        series = clean_series_name(matches[0])
 
         # Poster
         poster = await _build_poster_for_series(series)
 
-        # Summary: seasons, languages, qualities
+        # Summary
         try:
             summary = await get_series_summary(series)
             seasons = summary.get("seasons", [])
-        except Exception as e:
-            logger.error(f"[SUMMARY ERR] {e}")
+        except:
             seasons = []
 
         if not seasons:
             return
 
-        # Build Season keyboard (gss|)
-        keyboard = []
         series_short = series[:MAX_CALLBACK_LENGTH]
+        keyboard = []
 
         for s in seasons:
             keyboard.append([
-                InlineKeyboardButton(
-                    f"Season {s}",
-                    callback_data=f"gss|{series_short}|{s}"
-                )
+                InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series_short}|{s}")
             ])
-
-        # Optionally PM redirect
-        keyboard.append([InlineKeyboardButton("PM Mode", switch_inline_query_current_chat="")])
 
         caption = (
             f"**{series}**\n\n"
             f"Available Seasons: {len(seasons)}\n\n"
-            f"Select a season to continue:"
+            f"Select a season:"
         )
 
         try:
@@ -150,18 +134,18 @@ def register_groupfilter_handlers(cyber: Client):
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode=enums.ParseMode.MARKDOWN
             )
-        except Exception:
+        except:
             await message.reply_text(
                 caption,
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode=enums.ParseMode.MARKDOWN
             )
 
-    # ============================================================
-    # 2. SEASON SELECTED (gss|)
-    # ============================================================
+    # ======================================================
+    # SEASON SELECT (gss|)
+    # ======================================================
     @cyber.on_callback_query(filters.regex(r"^gss\|"))
-    async def gss_handler(cyber, query: CallbackQuery):
+    async def gss_handler(_, query: CallbackQuery):
 
         try:
             _, series, season = query.data.split("|")
@@ -170,7 +154,6 @@ def register_groupfilter_handlers(cyber: Client):
             await query.answer("Invalid data", show_alert=True)
             return
 
-        # Summary for languages
         try:
             summary = await get_series_summary(series)
             languages = summary.get("languages", [])
@@ -181,25 +164,19 @@ def register_groupfilter_handlers(cyber: Client):
             await query.answer("No languages found", show_alert=True)
             return
 
-        keyboard = []
         series_short = series[:MAX_CALLBACK_LENGTH]
+        keyboard = []
 
         for lang in languages:
             keyboard.append([
-                InlineKeyboardButton(
-                    lang,
-                    callback_data=f"gls|{series_short}|{season}|{lang}"
-                )
+                InlineKeyboardButton(lang, callback_data=f"gls|{series_short}|{season}|{lang}")
             ])
 
         keyboard.append([
             InlineKeyboardButton("↺ Back", callback_data=f"gback|{series_short}")
         ])
 
-        caption = (
-            f"🎬 **{series}** — Season {season}\n\n"
-            f"Select Audio Language:"
-        )
+        caption = f"🎬 **{series} — S{season}**\n\nSelect Language:"
 
         try:
             await query.message.edit_caption(
@@ -208,20 +185,13 @@ def register_groupfilter_handlers(cyber: Client):
                 parse_mode=enums.ParseMode.MARKDOWN
             )
         except:
-            try:
-                await query.message.edit_text(
-                    caption,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-            except:
-                pass
+            pass
 
         await query.answer()
 
-    # ============================================================
-    # 3. LANGUAGE SELECTED (gls|)
-    # ============================================================
+    # ======================================================
+    # LANGUAGE SELECT (gls|)
+    # ======================================================
     @cyber.on_callback_query(filters.regex(r"^gls\|"))
     async def gls_handler(_, query: CallbackQuery):
 
@@ -232,7 +202,7 @@ def register_groupfilter_handlers(cyber: Client):
             await query.answer("Invalid data", show_alert=True)
             return
 
-        # Summary for qualities
+        # Fetch qualities from summary
         try:
             summary = await get_series_summary(series)
             qualities = summary.get("qualities", [])
@@ -248,21 +218,15 @@ def register_groupfilter_handlers(cyber: Client):
 
         for q in qualities:
             keyboard.append([
-                InlineKeyboardButton(
-                    q,
-                    callback_data=f"gqs|{series_short}|{season}|{language}|{q}"
-                )
+                InlineKeyboardButton(q, callback_data=f"gqs|{series_short}|{season}|{language}|{q}")
             ])
 
         keyboard.append([
-            InlineKeyboardButton(
-                "↺ Back",
-                callback_data=f"gss|{series_short}|{season}"
-            )
+            InlineKeyboardButton("↺ Back", callback_data=f"gss|{series_short}|{season}")
         ])
 
         caption = (
-            f"📺 **{series}** — S{season} ({language})\n\n"
+            f"📺 **{series} — S{season} ({language})**\n\n"
             f"Select Quality:"
         )
 
@@ -273,20 +237,13 @@ def register_groupfilter_handlers(cyber: Client):
                 parse_mode=enums.ParseMode.MARKDOWN
             )
         except:
-            try:
-                await query.message.edit_text(
-                    caption,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-            except:
-                pass
+            pass
 
         await query.answer()
 
-    # ============================================================
-    # 4. QUALITY SELECTED → SEND DEEP LINK (gqs|)
-    # ============================================================
+    # ======================================================
+    # QUALITY SELECT — ONLY SHOW PM LINK (gqs|)
+    # ======================================================
     @cyber.on_callback_query(filters.regex(r"^gqs\|"))
     async def gqs_handler(cyber, query: CallbackQuery):
 
@@ -297,19 +254,18 @@ def register_groupfilter_handlers(cyber: Client):
             await query.answer("Invalid data", show_alert=True)
             return
 
-        # Encode deep-link
+        # Create deep link
         param = _encode_start_payload(series, season, language, quality)
         bot = await cyber.get_me()
         deeplink = f"https://t.me/{bot.username}?start={param}"
 
         keyboard = [
-            [InlineKeyboardButton("🔐 Open Bot", url=deeplink)],
-            [InlineKeyboardButton("Check Subscribe", callback_data=f"gcheck|{series}|{season}|{language}|{quality}")]
+            [InlineKeyboardButton("🔐 Open Bot (PM)", url=deeplink)]
         ]
 
         caption = (
             f"✔ **{series} — S{season} ({language}) [{quality}]**\n\n"
-            f"Tap *Open Bot* to receive files in PM."
+            f"Tap 'Open Bot' to receive files in private chat."
         )
 
         try:
@@ -319,55 +275,13 @@ def register_groupfilter_handlers(cyber: Client):
                 parse_mode=enums.ParseMode.MARKDOWN
             )
         except:
-            try:
-                await query.message.edit_text(
-                    caption,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-            except:
-                pass
+            pass
 
-        await query.answer("Open bot in PM to continue", show_alert=True)
+        await query.answer("Open bot in PM", show_alert=True)
 
-    # ============================================================
-    # 5. FORCE-SUB CHECK BUTTON (gcheck|)
-    # ============================================================
-    @cyber.on_callback_query(filters.regex(r"^gcheck\|"))
-    async def gcheck_handler(cyber, query: CallbackQuery):
-
-        try:
-            _, series, season, language, quality = query.data.split("|")
-            season = int(season)
-        except:
-            await query.answer("Invalid data", show_alert=True)
-            return
-
-        is_member, link = await check_force_subscribe(cyber, query.from_user.id)
-
-        if not is_member:
-            btn = [[InlineKeyboardButton("📣 Join Channel", url=link)]]
-            await query.answer("Join channel first", show_alert=True)
-            await query.message.reply_text(
-                "You must join the required channel to continue.",
-                reply_markup=InlineKeyboardMarkup(btn),
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
-            return
-
-        # If subscribed → send PM link
-        param = _encode_start_payload(series, season, language, quality)
-        bot = await cyber.get_me()
-        deeplink = f"https://t.me/{bot.username}?start={param}"
-
-        await query.answer("You are subscribed!", show_alert=True)
-        await query.message.reply_text(
-            f"✔ You are subscribed.\nOpen bot:\n{deeplink}"
-        )
-
-    # ============================================================
-    # 6. BACK BUTTON (gback|)
-    # ============================================================
+    # ======================================================
+    # BACK BUTTON (gback|)
+    # ======================================================
     @cyber.on_callback_query(filters.regex(r"^gback\|"))
     async def gback_handler(_, query: CallbackQuery):
 
@@ -377,7 +291,6 @@ def register_groupfilter_handlers(cyber: Client):
             await query.answer()
             return
 
-        # load seasons again
         try:
             summary = await get_series_summary(series)
             seasons = summary.get("seasons", [])
@@ -385,20 +298,18 @@ def register_groupfilter_handlers(cyber: Client):
             seasons = []
 
         if not seasons:
-            await query.answer("Not found", show_alert=True)
+            await query.answer("No seasons found", show_alert=True)
             return
 
-        keyboard = []
         series_short = series[:MAX_CALLBACK_LENGTH]
+        keyboard = []
 
         for s in seasons:
             keyboard.append([
                 InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series_short}|{s}")
             ])
 
-        keyboard.append([InlineKeyboardButton("PM Mode", switch_inline_query_current_chat="")])
-
-        caption = f"**{series}**\n\nSelect a season:"
+        caption = f"**{series}**\n\nSelect Season:"
 
         try:
             await query.message.edit_caption(
@@ -407,16 +318,8 @@ def register_groupfilter_handlers(cyber: Client):
                 parse_mode=enums.ParseMode.MARKDOWN
             )
         except:
-            try:
-                await query.message.edit_text(
-                    caption,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-            except:
-                pass
+            pass
 
         await query.answer()
 
-    # end of register function
-
+    # end register()
