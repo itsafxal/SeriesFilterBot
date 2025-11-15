@@ -61,6 +61,7 @@ def register_conversation_handlers(cyber: Client):
         # --- BLOCK DEFAULT /start WHEN IT IS A SEND COMMAND ---
     @cyber.on_message(filters.private & filters.command("start"))
     async def pm_start_handler(cyber, message: Message):
+        print("PM_START_HANDLER_TRIGGERED:", message.text)
 
         text = message.text.strip()
 
