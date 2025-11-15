@@ -38,7 +38,79 @@ from .menus import (
 )
 
 def register_conversation_handlers(cyber: Client):
-        
+        # --- AUTO PM SENDER VIA /start send_xxx  ---
+    @cyber.on_message(filters.private & filters.command("start"))
+    async def pm_start_handler(cyber, message: Message):
+
+        text = message.text
+
+        # Deep-link handler: /start send_series_season_lang_quality
+        if text.startswith("/start send_"):
+            try:
+                # remove "/start "
+                payload = text.replace("/start ", "").replace("send_", "")
+                series, season, lang, quality = payload.split("_")
+                season = int(season)
+            except Exception:
+                return await message.reply("Invalid start link. Try again.")
+
+            # Force Subscribe Check
+            is_member, invite_link = await check_force_subscribe(cyber, message.from_user.id)
+            if not is_member:
+                return await message.reply(
+                    "Join the required channel to receive files.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Join Channel", url=invite_link)]
+                    ])
+                )
+
+            await message.reply(
+                f"⏳ Preparing your files...\n"
+                f"🎬 {series}\n"
+                f"📀 Season {season} • {lang} • {quality}"
+            )
+
+            # Fetch files
+            files = await get_all_files_by_season_and_quality(series, season, quality, lang)
+            if not files:
+                return await message.reply("❌ No files found.")
+
+            bot_username = (await cyber.get_me()).username
+
+            # Send files one by one
+            sent = 0
+            for f in files:
+                caption = CUSTOM_CAPTION_TEXT.format(
+                    file_name=f.get("file_name"),
+                    bot_username=bot_username
+                )
+
+                try:
+                    if f.get("file_id"):
+                        await cyber.send_document(
+                            message.chat.id,
+                            f["file_id"],
+                            caption=caption
+                        )
+                    else:
+                        await cyber.copy_message(
+                            chat_id=message.chat.id,
+                            from_chat_id=f["channel_id"],
+                            message_id=f["message_id"],
+                            caption=caption
+                        )
+                    sent += 1
+                    await asyncio.sleep(1)
+                except:
+                    continue
+
+            return await message.reply(
+                f"✅ Sent {sent} episodes from {series} S{season} ({quality})"
+            )
+
+        # --- Normal /start ---
+        await message.reply("Welcome! Send a series name to search.")
+
     @cyber.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"]))
     async def search_handler(cyber, message: Message):
         """Handles text messages for series search."""
