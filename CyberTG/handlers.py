@@ -36,6 +36,32 @@ from .menus import (
     show_language_menu, show_quality_menu, help_menu_handler, cyber_menu_handler, admin_menu_handler, 
     about_menu_handler, close_menu_handler, back_to_language_handler, back_to_search_handler, 
 )
+from groupfilter import safe_decode  
+
+@cyber.on_message(filters.command("start") & filters.private)
+async def deep_link_start_handler(cyber, message: Message):
+    if len(message.command) > 1:
+        payload = message.command[1]
+
+        if payload.startswith("file_request|"):
+            parts = payload.split("|")
+            if len(parts) == 5:
+                # parts: [0:'file_request', 1:series, 2:season, 3:lang, 4:quality]
+
+                # -------- FIXED DECODING --------
+                series_name = safe_decode(parts[1])
+                try:
+                    season = int(parts[2])
+                except ValueError:
+                    return await message.reply_text("❌ Invalid season number.")
+
+                language = safe_decode(parts[3])
+                quality = safe_decode(parts[4])
+                # -------- END FIX --------
+
+                user_id = message.from_user.id
+                await send_files_to_user(cyber, user_id, series_name, season, quality, language)
+                return
 
 # --- NEW SHARED FUNCTION FOR FILE DELIVERY ---
 
