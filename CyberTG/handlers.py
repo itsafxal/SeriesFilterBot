@@ -38,64 +38,55 @@ from .menus import (
 )
 
 def register_conversation_handlers(cyber: Client):
-        # --- AUTO PM SENDER VIA /start send_xxx  ---
+        # --- BLOCK DEFAULT /start WHEN IT IS A SEND COMMAND ---
     @cyber.on_message(filters.private & filters.command("start"))
     async def pm_start_handler(cyber, message: Message):
 
-        text = message.text
+        text = message.text.strip()
 
-        # Deep-link handler: /start send_series_season_lang_quality
+        # Deep-link auto send (priority, stops here)
         if text.startswith("/start send_"):
             try:
                 payload = text.replace("/start ", "").replace("send_", "")
                 series, season, lang, quality = payload.split("_")
                 season = int(season)
             except Exception:
-                return await message.reply("Invalid start link. Try again.")
+                return await message.reply("Invalid link.")
 
-            # Force Subscribe Check
-            is_member, invite_link = await check_force_subscribe(cyber, message.from_user.id)
+            # Force Sub
+            is_member, link = await check_force_subscribe(cyber, message.from_user.id)
             if not is_member:
                 return await message.reply(
-                    "Join the required channel to receive files.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Join Channel", url=invite_link)]
-                    ])
+                    "Join channel to receive files.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url=link)]])
                 )
 
             await message.reply(
-                f"⏳ Preparing your files...\n"
-                f"🎬 {series}\n"
-                f"📀 Season {season} • {lang} • {quality}"
+                f"Preparing your files...\n"
+                f"{series} – S{season} • {lang} • {quality}"
             )
 
             # Fetch files
             files = await get_all_files_by_season_and_quality(series, season, quality, lang)
             if not files:
-                return await message.reply("❌ No files found.")
+                return await message.reply("No files found.")
 
             bot_username = (await cyber.get_me()).username
 
-            # Send files
             sent = 0
             for f in files:
                 caption = CUSTOM_CAPTION_TEXT.format(
                     file_name=f.get("file_name"),
                     bot_username=bot_username
                 )
-
                 try:
                     if f.get("file_id"):
-                        await cyber.send_document(
-                            message.chat.id,
-                            f["file_id"],
-                            caption=caption
-                        )
+                        await cyber.send_document(message.chat.id, f["file_id"], caption=caption)
                     else:
                         await cyber.copy_message(
-                            chat_id=message.chat.id,
-                            from_chat_id=f["channel_id"],
-                            message_id=f["message_id"],
+                            message.chat.id,
+                            f["channel_id"],
+                            f["message_id"],
                             caption=caption
                         )
                     sent += 1
@@ -103,13 +94,12 @@ def register_conversation_handlers(cyber: Client):
                 except:
                     continue
 
-            # IMPORTANT: Stop here!
-            return await message.reply(
-                f"✅ Sent {sent} episodes from {series} S{season} ({quality})"
-            )
+            # IMPORTANT: STOP HERE. DO NOT LET ANY OTHER /start HANDLER RUN
+            return
 
-        # --- Normal /start handler ---
-        await message.reply("Welcome! Send a series name to search.")
+        # If this is a normal start (not deep-link), we ALLOW other handlers to respond
+        # DO NOT WRITE ANYTHING HERE
+        pass
 
 
     @cyber.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"]))
