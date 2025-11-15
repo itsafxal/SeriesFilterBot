@@ -47,7 +47,6 @@ def register_conversation_handlers(cyber: Client):
         # Deep-link handler: /start send_series_season_lang_quality
         if text.startswith("/start send_"):
             try:
-                # remove "/start "
                 payload = text.replace("/start ", "").replace("send_", "")
                 series, season, lang, quality = payload.split("_")
                 season = int(season)
@@ -77,7 +76,7 @@ def register_conversation_handlers(cyber: Client):
 
             bot_username = (await cyber.get_me()).username
 
-            # Send files one by one
+            # Send files
             sent = 0
             for f in files:
                 caption = CUSTOM_CAPTION_TEXT.format(
@@ -104,12 +103,14 @@ def register_conversation_handlers(cyber: Client):
                 except:
                     continue
 
+            # IMPORTANT: Stop here!
             return await message.reply(
                 f"✅ Sent {sent} episodes from {series} S{season} ({quality})"
             )
 
-        # --- Normal /start ---
+        # --- Normal /start handler ---
         await message.reply("Welcome! Send a series name to search.")
+
 
     @cyber.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"]))
     async def search_handler(cyber, message: Message):
@@ -519,7 +520,7 @@ def register_conversation_handlers(cyber: Client):
     return [
         search_handler, sugg_select_handler, close_suggestion_handler,
         season_select_handler, language_select_handler, quality_select_handler,
-        file_select_handler,
+        file_select_handler, pm_start_handler,
         help_menu_proxy, cyber_menu_proxy, admin_menu_proxy, about_menu_proxy,
         close_menu_proxy, back_to_language_proxy, back_to_search_proxy
     ]
