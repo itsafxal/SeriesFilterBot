@@ -1,4 +1,6 @@
-# groupfilter.py
+# groupfilter.py (Corrected Full Version)
+# FIXED: Series name truncation, safe callback encoding, deep-link consistency, full name preservation
+
 import asyncio
 import re
 import shelve
@@ -12,7 +14,6 @@ from pyrogram.types import (
 )
 from pyrogram.errors import MessageNotModified
 
-# Assuming these are available from your project structure
 from DB.database import (
     search_series,
     get_series_summary,
@@ -33,23 +34,27 @@ from utils import (
 from .poster import get_series_poster_async
 
 
-# --- Group Search Handler ---
+# Utility for safe callback
+
+def safe_encode(text: str) -> str:
+    return text.replace("|", "_pipe_").replace(" ", "_space_")
+
+def safe_decode(text: str) -> str:
+    return text.replace("_pipe_", "|").replace("_space_", " ")
+
+
+# --- GROUP HANDLERS ---
 
 def register_group_handlers(cyber: Client):
-    
+
     @cyber.on_message(filters.text & filters.group & ~filters.command(["start", "imdb"]))
     async def group_search_handler(cyber, message: Message):
-        """
-        Handles text messages in groups for series search.
-        Displays suggestions or the main season menu for the best match.
-        """
         query = message.text.strip()
         if query.startswith("/") and query.lower() not in ["/index"]:
             return
 
-        # Basic query cleaning
         clean_query = re.sub(
-            r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil|file|that|find|und(o)*|kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*|aya(k)*(um(o)*)?|full\smovie|any(one)|with\ssubtitle(s)?)",
+            r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\\sme)?)|movie(s)?|new|latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil|file|that|find|und(o)*|kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*|aya(k)*(um(o)*)?|full\\smovie|any(one)|with\\ssubtitle(s)?)",
             "", message.text, flags=re.IGNORECASE).strip()
 
         search_term = clean_query or query
@@ -57,347 +62,210 @@ def register_group_handlers(cyber: Client):
             return
 
         try:
-            # Search for series names
-            all_found_names = await search_series(search_term) 
-        except Exception as e:
-            logger.warning(f"[GROUP SEARCH ERROR] search_series failed for `{search_term}`: {e}")
-            all_found_names = []
-            
-        unique_names = list(dict.fromkeys([clean_series_name(name) for name in all_found_names]))
+            all_found = await search_series(search_term)
+        except Exception:
+            all_found = []
 
+        unique_names = list(dict.fromkeys([clean_series_name(n) for n in all_found]))
         if not unique_names:
-            # Do not spam the group chat with "No series found"
-            return 
+            return
 
-        # --- Display Suggestions or Single Result ---
-        
+        # Multiple results → suggestions
         if len(unique_names) > 1:
-            # If multiple results (suggestions) were found, display the top 5
-            movielist = unique_names[:5] 
+            top5 = unique_names[:5]
             user_id = message.from_user.id
-            
-            btn = [[
+
+            kb = [[
                 InlineKeyboardButton(
-                    text=movie,
-                    # Use 'gsugg_select' for group suggestion selection
-                    callback_data=f"gsugg_select|{user_id}|{movie}", 
+                    movie,
+                    callback_data=f"gsugg_select|{user_id}|{safe_encode(movie)}"
                 )
-            ] for movie in movielist]
-            
-            # Use 'close_suggestion' which is handled in handlers.py
-            btn.append([InlineKeyboardButton(text="Close", callback_data=f'close_suggestion|{user_id}')]) 
-            
-            sent_message = await message.reply(
-                f"🎬 Found {len(unique_names)} results for **{query}**.\nSelect the correct series below:",
-                reply_markup=InlineKeyboardMarkup(btn),
+            ] for movie in top5]
+            kb.append([InlineKeyboardButton("Close", callback_data=f"close_suggestion|{user_id}")])
+
+            sent = await message.reply(
+                f"🎬 Found {len(unique_names)} results for **{query}**. Select below:",
+                reply_markup=InlineKeyboardMarkup(kb),
                 parse_mode=enums.ParseMode.MARKDOWN
             )
-            
-            # Use a shorter auto-delete for groups to reduce spam (60 seconds)
-            asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, 60))
-            
+            asyncio.create_task(delete_message_later(cyber, sent.chat.id, sent.id, 60))
             return
-        
-        # --- Display Single Search Result (Most likely result is unique_names[0]) ---
-        series_to_display = unique_names[0]
-        await display_series_menu(cyber, message, series_to_display, is_callback=False)
 
+        # Single result
+        await display_series_menu(cyber, message, unique_names[0], is_callback=False)
 
-    # --- Group Suggestion/Selection Callbacks ---
 
     @cyber.on_callback_query(filters.regex(r"^gsugg_select\|"))
     async def group_sugg_select_handler(cyber, query: CallbackQuery):
-        """Handles selection from group search suggestions."""
-        data = query.data.split("|", 2)
-        if len(data) < 3:
-            await query.answer("❌ Error: Invalid suggestion data.", show_alert=True)
-            return
-
-        series_name = data[2]
-        await query.answer(f"Selected: {series_name}...", cache_time=0)
-        
-        await display_series_menu(cyber, query.message, series_name, is_callback=True, callback_query=query)
+        _, _, encoded_name = query.data.split("|", 2)
+        series_name = safe_decode(encoded_name)
+        await query.answer(f"Selected: {series_name}")
+        await display_series_menu(cyber, query.message, series_name, True, query)
 
 
     @cyber.on_callback_query(filters.regex(r"^gss\|"))
-    async def group_season_select_handler(cyber, query: CallbackQuery):
-        """Handles season selection in group and shows the language menu (group version)."""
-        data = query.data.split("|")
-        if len(data) < 3:
-            logger.error(f"Malformed callback data for group_season_select_handler: {query.data}")
-            await query.answer("❌ Error: Invalid season selection data.", show_alert=True)
-            return
-
-        series_name = data[1]
-        try:
-            season = int(data[2])
-        except ValueError:
-            logger.error(f"Callback data had non-integer season: {data[2]}")
-            await query.answer("❌ Error: Invalid season number format.", show_alert=True)
-            return
-
-        await show_group_language_menu(cyber, query, series_name, season)
-        await query.answer()
+    async def group_season_select(cyber, query: CallbackQuery):
+        _, encoded_series, season = query.data.split("|")
+        series_name = safe_decode(encoded_series)
+        await show_group_language_menu(cyber, query, series_name, int(season))
 
 
     @cyber.on_callback_query(filters.regex(r"^gls\|"))
-    async def group_language_select_handler(cyber, query: CallbackQuery):
-        """Handles language selection in group and shows the quality menu (group version)."""
-        data = query.data.split("|")
-        if len(data) < 4:
-            await query.answer("❌ Error: Invalid language selection data.", show_alert=True)
-            return
+    async def group_lang_select(cyber, query: CallbackQuery):
+        _, encoded_series, season, lang = query.data.split("|")
+        series_name = safe_decode(encoded_series)
+        await show_group_quality_menu(cyber, query, series_name, safe_decode(lang), int(season))
 
-        series_name = data[1]
-        try:
-            season = int(data[2])
-        except ValueError:
-            await query.answer("❌ Error: Invalid season number.", show_alert=True)
-            return
-        language = data[3]
-        
-        await show_group_quality_menu(cyber, query, series_name, language, season)
-        await query.answer()
 
-    
     @cyber.on_callback_query(filters.regex(r"^gqs\|"))
-    async def group_quality_select_handler(cyber, query: CallbackQuery):
-        """
-        Handles quality selection in group.
-        Redirects the user to the bot's PM for file delivery using a deep link.
-        """
-        data = query.data.split("|")
-        if len(data) < 5:
-            await query.answer("❌ Error: Invalid quality selection data.", show_alert=True)
-            return
+    async def group_quality_select(cyber, query: CallbackQuery):
+        _, encoded_series, season, lang, quality = query.data.split("|")
+        series_name = safe_decode(encoded_series)
+        lang = safe_decode(lang)
+        quality = safe_decode(quality)
 
-        series_name = data[1]
-        season = data[2]
-        language = data[3]
-        quality = data[4]
+        bot_username = (await cyber.get_me()).username
+        payload = f"file_request|{safe_encode(series_name)}|{season}|{safe_encode(lang)}|{safe_encode(quality)}"
+        deeplink = f"https://t.me/{bot_username}?start={payload}"
 
-        # Get bot info to generate the start link
-        bot_info = await cyber.get_me()
-        bot_username = bot_info.username
-
-        # Construct the deep link to start the bot with the file request
-        # Payload format: 'file_request|series|season|lang|quality'
-        start_payload = f"file_request|{series_name}|{season}|{language}|{quality}"
-        
-        deeplink = f"https://t.me/{bot_username}?start={start_payload}"
-
-        # Create the redirect button
-        redirect_keyboard = InlineKeyboardMarkup([
+        kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(
-                f"📥 Get S{season} ({quality}/{language}) in PM 📥", 
+                f"📥 Get S{season} ({quality}/{lang}) in PM",
                 url=deeplink
             )]
         ])
-        
-        # ADDED EMPHASIS on starting the bot first
-        redirect_caption = (
-            f"✅ **Redirecting to PM for Files**\n\n"
-            f"**🚨 IMPORTANT:** If I don't send files immediately, please go to my chat and click **'Start'** first!\n\n"
-            f"Please click the button below to receive all episodes for:\n"
-            f"**{series_name}** - Season **{season}**\n"
-            f"Quality: **{quality}** | Language: **{language}**\n\n"
-            f"**Note:** Files will be sent in my Private Chat."
+
+        caption = (
+            f"✅ Redirecting to PM for files\n\n"
+            f"Go to bot chat and press Start if needed.\n\n"
+            f"**{series_name}** S{season}\n"
+            f"Quality: **{quality}**, Language: **{lang}**"
         )
 
         try:
-            await query.message.edit_caption(
-                redirect_caption,
-                reply_markup=redirect_keyboard,
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.error(f"Failed to edit group message with redirect button: {e}. Falling back to edit_text.")
-            try:
-                await query.message.edit_text(
-                    redirect_caption, 
-                    reply_markup=redirect_keyboard, 
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-            except Exception:
-                pass
+            await query.message.edit_caption(caption, reply_markup=kb)
+        except Exception:
+            await query.message.edit_text(caption, reply_markup=kb)
 
-        await query.answer("Redirecting you to Private Message for files...", show_alert=False)
+        await query.answer("Open PM to get files")
 
 
-    # --- Helper Functions for Group Menus ---
+    # ---------- DISPLAY FUNCTIONS ----------
 
-    async def display_series_menu(cyber, message: Message, series_name: str, is_callback: bool, callback_query: CallbackQuery = None):
-        """Displays the main search result/season selection menu in a group."""
-        poster_url = DEFAULT_POSTER
+    async def display_series_menu(cyber, message: Message, series_name: str, is_callback: bool,
+                                  callback_query: CallbackQuery = None):
+
+        poster = DEFAULT_POSTER
         imdb_enabled = True
         try:
             imdb_enabled = await get_global_setting("IMDB_POSTER_ENABLED", True)
         except Exception:
             pass
 
-        # Check Cache for Poster
+        # cache
         try:
-            cache_file = OMDB_CACHE_DB or "/tmp/omdb_cache.db"
-            with shelve.open(cache_file) as db_cache:
-                key = f"poster::{series_name.strip().lower()}"
-                if key in db_cache:
-                    poster_url = db_cache[key]
+            with shelve.open(OMDB_CACHE_DB) as db:
+                key = f"poster::{series_name.lower()}"
+                if key in db:
+                    poster = db[key]
         except Exception:
             pass
 
-        # Fetch Poster if needed
-        if (not poster_url or poster_url == DEFAULT_POSTER) and imdb_enabled:
+        if poster == DEFAULT_POSTER and imdb_enabled:
             try:
-                poster_tmp = await get_series_poster_async(series_name)
-                poster_url = poster_tmp or DEFAULT_POSTER
-            except Exception as e:
-                logger.warning(f"[OMDB FETCH FAIL - group_menu] {series_name} -> {e}")
-                poster_url = DEFAULT_POSTER
+                newposter = await get_series_poster_async(series_name)
+                poster = newposter or DEFAULT_POSTER
+            except Exception:
+                pass
 
         summary = await get_series_summary(series_name)
 
-        languages_list = ", ".join(summary.get("languages", []))
-        seasons_count = len(summary.get("seasons", []))
-        qualities_list = ", ".join(summary.get("qualities", []))
-
-        response = (
+        caption = (
             f"**○ Title:** {series_name}\n"
-            f"**○ Language:** {languages_list or 'N/A'}\n"
-            f"**○ Season Available:** {seasons_count}\n"
-            f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
-            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲d 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
+            f"**○ Languages:** {', '.join(summary.get('languages', []))}\n"
+            f"**○ Seasons:** {len(summary.get('seasons', []))}\n"
+            f"**○ Qualities:** {', '.join(summary.get('qualities', []))}\n\n"
+            f"Select a season below:"
         )
 
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for season in summary.get("seasons", []):
-            # Use 'gss' for group season select callback
-            callback_data = f"gss|{series_name_short}|{season}"
-            keyboard.append([InlineKeyboardButton(f"Season {season}", callback_data=callback_data)])
+        kb = []
+        encoded_series = safe_encode(series_name)
+        for s in summary.get("seasons", []):
+            kb.append([InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{encoded_series}|{s}")])
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        markup = InlineKeyboardMarkup(kb)
 
-        # Handle message editing if it's a callback, or sending a new message if it's a new search
-        if is_callback and callback_query:
+        if is_callback:
             try:
                 await callback_query.message.edit_media(
-                    media=InputMediaPhoto(media=poster_url, caption=response, parse_mode=enums.ParseMode.MARKDOWN),
-                    reply_markup=reply_markup,
+                    InputMediaPhoto(poster, caption=caption), reply_markup=markup
                 )
-            except MessageNotModified:
-                pass
-            except Exception as e:
-                logger.error(f"Failed to edit media for group search result: {e}. Falling back to edit_text.")
-                try:
-                    await callback_query.message.edit_text(
-                        response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN
-                    )
-                except Exception:
-                    pass
-            sent_message = callback_query.message
+            except Exception:
+                await callback_query.message.edit_text(caption, reply_markup=markup)
         else:
-            # New message
             try:
-                sent_message = await message.reply_photo(
-                    photo=poster_url,
-                    caption=response,
-                    reply_markup=reply_markup,
-                    parse_mode=enums.ParseMode.MARKDOWN,
-                )
-            except Exception as e:
-                logger.error(f"Failed to reply with photo for group search: {e}. Falling back to reply_text.")
-                sent_message = await message.reply_text(response, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-
-        # Use a shorter auto-delete for groups to reduce spam (60 seconds)
-        asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, 60))
+                sent = await message.reply_photo(poster, caption=caption, reply_markup=markup)
+            except Exception:
+                sent = await message.reply_text(caption, reply_markup=markup)
+            asyncio.create_task(delete_message_later(cyber, sent.chat.id, sent.id, 60))
 
 
-    async def show_group_language_menu(cyber: Client, query: CallbackQuery, series_name: str, season: int):
-        """Displays language menu for a group chat."""
-        languages = await get_unique_languages_by_season(series_name, season)
-        if not languages:
-            await query.answer(f"❌ No languages found for {series_name} S{season}.", show_alert=True)
+    async def show_group_language_menu(cyber, query, series_name, season: int):
+        langs = await get_unique_languages_by_season(series_name, season)
+        if not langs:
+            await query.answer("No languages found", show_alert=True)
             return
 
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for lang in languages:
-            # Callback: gls|series_name_short|season|lang (Group Language Select)
-            callback_data = f"gls|{series_name_short}|{season}|{lang}"
-            display_text = f"🔸 {lang} 🔸"
-            keyboard.append([InlineKeyboardButton(display_text, callback_data=callback_data)])
+        kb = []
+        encoded_series = safe_encode(series_name)
+        for lang in langs:
+            kb.append([
+                InlineKeyboardButton(f"{lang}", callback_data=f"gls|{encoded_series}|{season}|{safe_encode(lang)}")
+            ])
 
-        # Back to Season Select (Group version)
-        keyboard.append([InlineKeyboardButton(
-            "↺ Bᴀᴄᴋ Tᴏ Sᴇᴀsᴏɴ ↻", callback_data=f"gss|{series_name_short}|{season}")
-        ])
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        kb.append([InlineKeyboardButton("↺ Back", callback_data=f"gss|{encoded_series}|{season}")])
 
-        caption = (
-            f"📺 Title **{series_name}** — Season **{season}**\n\n"
-            f"🌐 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲d 𝗔𝘂𝗱𝗶𝗼 𝗟𝗮𝗻𝗴𝘂𝗮𝗴𝗲 👇:"
-        )
-
+        caption = f"Select language for {series_name} S{season}"
         try:
-            await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.error(f"Error editing message caption in show_group_language_menu: {e}")
-            try:
-                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            except Exception:
-                pass
+            await query.message.edit_caption(caption, reply_markup=InlineKeyboardMarkup(kb))
+        except Exception:
+            await query.message.edit_text(caption, reply_markup=InlineKeyboardMarkup(kb))
 
-        await query.answer()
 
-    
-    async def show_group_quality_menu(cyber: Client, query: CallbackQuery, series_name: str, language: str, season: int):
-        """Displays quality menu for a group chat."""
-        qualities = await get_unique_qualities_by_lang_season(series_name, language, season)
+    async def show_group_quality_menu(cyber, query, series_name, lang, season: int):
+        qualities = await get_unique_qualities_by_lang_season(series_name, lang, season)
         if not qualities:
-            await query.answer(f"❌ No quality files found for S{season} ({language}).", show_alert=True)
+            await query.answer("No qualities found", show_alert=True)
             return
 
-        keyboard = []
-        series_name_short = series_name[:MAX_CALLBACK_LENGTH]
-        for quality in qualities:
-            # Callback: gqs|series_name_short|season|language|quality (Group Quality Select)
-            callback_data = f"gqs|{series_name_short}|{season}|{language}|{quality}"
-            keyboard.append([InlineKeyboardButton(f"🔹 {quality} 🔹", callback_data=callback_data)])
+        kb = []
+        encoded_series = safe_encode(series_name)
+        encoded_lang = safe_encode(lang)
 
-        # Back to Language Select (Group version)
-        keyboard.append([InlineKeyboardButton(
-            "↺ Bᴀᴄᴋ Tᴏ Lᴀɴɢᴜᴀɢᴇs ↻", callback_data=f"gls|{series_name_short}|{season}|{language}")
+        for q in qualities:
+            kb.append([
+                InlineKeyboardButton(
+                    q, callback_data=f"gqs|{encoded_series}|{season}|{encoded_lang}|{safe_encode(q)}"
+                )
+            ])
+
+        kb.append([
+            InlineKeyboardButton(
+                "↺ Back", callback_data=f"gls|{encoded_series}|{season}|{encoded_lang}"
+            )
         ])
-        reply_markup = InlineKeyboardMarkup(keyboard)
 
-        caption = (
-            f"🎬 **{series_name}** – Season **{season}** ({language})\n\n"
-            f"📌 Quality Selector\n\n"
-            f"Tap a quality below to receive all episodes in my **Private Chat**.\n\n"
-            f"**Note:** This ensures smooth, non-spammy delivery."
-        )
-
+        caption = f"Select quality for {series_name} S{season} ({lang})"
         try:
-            await query.message.edit_caption(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.error(f"Error editing message caption in show_group_quality_menu: {e}")
-            try:
-                await query.message.edit_text(caption, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            except Exception:
-                pass
+            await query.message.edit_caption(caption, reply_markup=InlineKeyboardMarkup(kb))
+        except Exception:
+            await query.message.edit_text(caption, reply_markup=InlineKeyboardMarkup(kb))
 
-        await query.answer()
 
-    
-    # Returning the handlers for registration
     return [
-        group_search_handler, group_sugg_select_handler, 
-        group_season_select_handler, group_language_select_handler,
-        group_quality_select_handler
+        group_search_handler,
+        group_sugg_select_handler,
+        group_season_select,
+        group_lang_select,
+        group_quality_select,
     ]
