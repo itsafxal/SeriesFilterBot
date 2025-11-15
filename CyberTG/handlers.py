@@ -2,6 +2,9 @@
 import asyncio
 import re
 import shelve
+import base64
+import urllib.parse
+import json
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
     Message,
@@ -24,7 +27,7 @@ from config import (
     DEFAULT_POSTER,
     ADMIN_USERS,
     OMDB_CACHE_DB,
-    MAX_CALLBACK_LENGTH, # Keep MAX_CALLBACK_LENGTH in config/imported
+    MAX_CALLBACK_LENGTH,
 )
 from utils import (
     clean_series_name,
@@ -37,8 +40,25 @@ from .menus import (
     about_menu_handler, close_menu_handler, back_to_language_handler, back_to_search_handler, 
 )
 
+
+def _b64_urlsafe_decode_payload(payload_b64: str) -> str:
+    """
+    Decode a urlsafe base64 payload and return the decoded string.
+    Adds padding if necessary.
+    """
+    try:
+        # Add padding if missing
+        padding_needed = (-len(payload_b64)) % 4
+        if padding_needed:
+            payload_b64 += "=" * padding_needed
+        decoded = base64.urlsafe_b64decode(payload_b64.encode("ascii"))
+        return decoded.decode("utf-8")
+    except Exception as e:
+        raise ValueError(f"Invalid base64 payload: {e}")
+
+
 def register_conversation_handlers(cyber: Client):
-        # --- BLOCK DEFAULT /start WHEN IT IS A SEND COMMAND ---
+    # --- BLOCK DEFAULT /start WHEN IT IS A SEND COMMAND ---
     @cyber.on_message(filters.private & filters.command("start"))
     async def pm_start_handler(cyber, message: Message):
 
@@ -47,11 +67,31 @@ def register_conversation_handlers(cyber: Client):
         # Deep-link auto send (priority, stops here)
         if text.startswith("/start send_"):
             try:
-                payload = text.replace("/start ", "").replace("send_", "")
-                series, season, lang, quality = payload.split("_")
-                season = int(season)
-            except Exception:
-                return await message.reply("Invalid link.")
+                # Extract base64 payload after 'send_'
+                payload_b64 = text.split("send_", 1)[1]
+                decoded = _b64_urlsafe_decode_payload(payload_b64)
+
+                # The payload format (B2) is: series_quoted|season|lang_quoted|quality_quoted
+                parts = decoded.split("|", 3)
+                if len(parts) != 4:
+                    raise ValueError("Decoded payload does not have 4 parts.")
+
+                series_enc, season_str, lang_enc, quality_enc = parts
+
+                # Unquote percent-encoded parts
+                series = urllib.parse.unquote(series_enc)
+                lang = urllib.parse.unquote(lang_enc)
+                quality = urllib.parse.unquote(quality_enc)
+
+                # Validate season as integer
+                season = int(season_str)
+
+            except ValueError as ve:
+                logger.warning(f"[PM START] Invalid deep-link payload: {ve}")
+                return await message.reply("Invalid or corrupted link payload.")
+            except Exception as e:
+                logger.error(f"[PM START] Unexpected decode error: {e}")
+                return await message.reply("Failed to parse deep-link payload.")
 
             # Force Sub
             is_member, link = await check_force_subscribe(cyber, message.from_user.id)
@@ -67,6 +107,9 @@ def register_conversation_handlers(cyber: Client):
             )
 
             # Fetch files
+            # Note: get_all_files_by_season_and_quality signature used elsewhere in code as:
+            #   get_all_files_by_season_and_quality(series, season, quality, lang)
+            # Keep that ordering here to match other handlers.
             files = await get_all_files_by_season_and_quality(series, season, quality, lang)
             if not files:
                 return await message.reply("No files found.")
@@ -91,7 +134,8 @@ def register_conversation_handlers(cyber: Client):
                         )
                     sent += 1
                     await asyncio.sleep(1)
-                except:
+                except Exception as e:
+                    logger.error(f"[PM START] Failed to send file entry: {e}")
                     continue
 
             # IMPORTANT: STOP HERE. DO NOT LET ANY OTHER /start HANDLER RUN
