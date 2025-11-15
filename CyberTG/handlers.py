@@ -58,7 +58,7 @@ def _b64_urlsafe_decode_payload(payload_b64: str) -> str:
 
 
 def register_conversation_handlers(cyber: Client):
-    # --- BLOCK DEFAULT /start WHEN IT IS A SEND COMMAND ---
+        # --- BLOCK DEFAULT /start WHEN IT IS A SEND COMMAND ---
     @cyber.on_message(filters.private & filters.command("start"))
     async def pm_start_handler(cyber, message: Message):
 
@@ -98,7 +98,9 @@ def register_conversation_handlers(cyber: Client):
             if not is_member:
                 return await message.reply(
                     "Join channel to receive files.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url=link)]])
+                    reply_markup=InlineKeyboardMarkup(
+                        [[InlineKeyboardButton("Join Channel", url=link)]]
+                    )
                 )
 
             await message.reply(
@@ -106,11 +108,10 @@ def register_conversation_handlers(cyber: Client):
                 f"{series} – S{season} • {lang} • {quality}"
             )
 
-            # Fetch files
-            # Note: get_all_files_by_season_and_quality signature used elsewhere in code as:
-            #   get_all_files_by_season_and_quality(series, season, quality, lang)
-            # Keep that ordering here to match other handlers.
-            files = await get_all_files_by_season_and_quality(series, season, quality, lang)
+            # >>> FIXED ARGUMENT ORDER (IMPORTANT) <<<
+            # DB expects (series, season, language, quality)
+            files = await get_all_files_by_season_and_quality(series, season, lang, quality)
+
             if not files:
                 return await message.reply("No files found.")
 
@@ -124,7 +125,11 @@ def register_conversation_handlers(cyber: Client):
                 )
                 try:
                     if f.get("file_id"):
-                        await cyber.send_document(message.chat.id, f["file_id"], caption=caption)
+                        await cyber.send_document(
+                            message.chat.id,
+                            f["file_id"],
+                            caption=caption
+                        )
                     else:
                         await cyber.copy_message(
                             message.chat.id,
@@ -138,11 +143,10 @@ def register_conversation_handlers(cyber: Client):
                     logger.error(f"[PM START] Failed to send file entry: {e}")
                     continue
 
-            # IMPORTANT: STOP HERE. DO NOT LET ANY OTHER /start HANDLER RUN
+            # STOP other /start handlers
             return
 
-        # If this is a normal start (not deep-link), we ALLOW other handlers to respond
-        # DO NOT WRITE ANYTHING HERE
+        # Normal /start (non-deep-link)
         pass
 
 
