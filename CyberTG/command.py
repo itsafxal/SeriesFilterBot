@@ -29,6 +29,9 @@ def register_command_handlers(cyber: Client):
     async def start_command(_, message: Message):
         """Handles the /start command."""
         await add_user(message.from_user.id)
+        text = message.text.strip()
+        if text.startswith("/start send_"):
+            return  
         user = message.from_user
         bot = await cyber.get_me()
         user_mention = user.mention if user else "User"
