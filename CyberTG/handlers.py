@@ -45,7 +45,7 @@ from .menus import (
 )
 
 # IMPORTANT — for decoding deep-link arguments
-from groupfilter import safe_decode
+from .groupfilter import safe_decode
 
 
 # -------------------------------------------------------------------
