@@ -27,11 +27,114 @@ def register_command_handlers(cyber: Client):
 
     @cyber.on_message(filters.command("start") & filters.private)
     async def start_command(_, message: Message):
-        """Handles the /start command."""
+        """Handles the /start command and deep-link /start send_... payloads."""
+        # Ensure user is recorded
         await add_user(message.from_user.id)
-        text = message.text.strip()
-        if text.startswith("/start send_"):
-            return  
+
+        # If there's a start payload like: /start send_<b64>
+        start_arg = None
+        try:
+            if len(message.command) > 1:
+                start_arg = message.command[1]
+        except Exception:
+            start_arg = None
+
+        # Deep-link handling: send_<b64>
+        if start_arg and start_arg.startswith("send_"):
+            b64 = start_arg[5:]
+            # Add padding if missing
+            import base64
+            try:
+                # URL unquote is not strictly required because Telegram passes already decoded,
+                # but be defensive: replace spaces and safe chars
+                from urllib.parse import unquote
+                b64 = unquote(b64)
+                # restore padding if necessary
+                padding = '=' * (-len(b64) % 4)
+                raw = base64.urlsafe_b64decode(b64 + padding).decode("utf-8")
+                # raw is series|season|language|quality
+                parts = raw.split("|")
+                if len(parts) < 4:
+                    raise ValueError("Invalid payload")
+                series_name = parts[0]
+                season = int(parts[1])
+                language = parts[2]
+                quality = parts[3]
+            except Exception as e:
+                logger.error(f"[START_DEEPLINK] Failed to decode start payload: {e}")
+                return await message.reply_text("❌ Invalid or corrupted start payload.")
+
+            # Check force-subscribe (if configured)
+            try:
+                from utils import check_force_subscribe
+                is_member, invite_link = await check_force_subscribe(cyber, message.from_user.id)
+            except Exception as e:
+                logger.warning(f"[START_DEEPLINK] force-subscribe check failed: {e}")
+                is_member, invite_link = True, None
+
+            if not is_member:
+                # Ask user to join via button
+                try:
+                    await message.reply_text(
+                        "🛑 You must join the required channel to receive files. Click below to join and then re-open the bot.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📣 Join Channel", url=invite_link)]]),
+                        parse_mode=enums.ParseMode.MARKDOWN
+                    )
+                except Exception:
+                    await message.reply_text("🛑 You must join the required channel to receive files.")
+                return
+
+            # If subscribed — fetch files and send them
+            await message.reply_text(f"✅ Preparing files for **{series_name}** — Season {season} ({language}) [{quality}]",
+                                      parse_mode=enums.ParseMode.MARKDOWN)
+
+            try:
+                files = await get_all_files_by_season_and_quality(series_name, season, quality, language)
+            except Exception as e:
+                logger.error(f"[START_DEEPLINK] DB fetch fail for {series_name} S{season} {language} {quality}: {e}")
+                files = []
+
+            if not files:
+                return await message.reply_text("❌ No files found for the requested selection.")
+
+            bot_username = (await cyber.get_me()).username
+            sent_count = 0
+            for file_entry in files:
+                channel_id = file_entry["channel_id"]
+                message_id = file_entry["message_id"]
+                file_name = file_entry.get("file_name", f"S{file_entry.get('season',0)}E{file_entry.get('episode',99)}")
+                custom_caption = CUSTOM_CAPTION_TEXT.format(file_name=file_name, bot_username=bot_username)
+                try:
+                    file_id = file_entry.get("file_id")
+                    if file_id:
+                        await cyber.send_document(
+                            chat_id=message.from_user.id,
+                            document=file_id,
+                            caption=custom_caption,
+                            parse_mode=enums.ParseMode.MARKDOWN,
+                        )
+                    else:
+                        await cyber.copy_message(
+                            chat_id=message.from_user.id,
+                            from_chat_id=channel_id,
+                            message_id=message_id,
+                            caption=custom_caption,
+                            parse_mode=enums.ParseMode.MARKDOWN,
+                        )
+                    sent_count += 1
+                except Exception as e:
+                    logger.error(f"[START_DEEPLINK] Fail sending {message_id} from {channel_id}: {e}")
+                    continue
+
+                # throttle
+                if sent_count < len(files):
+                    await asyncio.sleep(1.5)
+
+            await message.reply_text(f"✅ Delivered {sent_count} files for **{series_name}** — Season {season} ({quality})",
+                                     parse_mode=enums.ParseMode.MARKDOWN)
+            return
+
+        # --- Default welcome / normal start (unchanged behaviour) ---
         user = message.from_user
         bot = await cyber.get_me()
         user_mention = user.mention if user else "User"
@@ -42,7 +145,6 @@ def register_command_handlers(cyber: Client):
             "<blockquote>Let’s dive into the world of entertainment 🌙</blockquote>"
         )
 
-        # Define the inline keyboard with 'Help' and 'About' buttons
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞", switch_inline_query_current_chat="")
@@ -61,11 +163,6 @@ def register_command_handlers(cyber: Client):
             reply_markup=keyboard
         )
 
-    # --- REMOVED HANDLER: /setskip (Moved to index.py) ---
-    # @cyber.on_message(filters.command("setskip") & filters.user(ADMIN_USERS) & filters.private)
-    # async def setskip_command... (MOVED)
-
-    # --- OTHER ADMIN COMMANDS ---
 
     @cyber.on_message(filters.command("broadcast") & filters.user(ADMIN_USERS))
     async def broadcast_cmd(bot, msg):
