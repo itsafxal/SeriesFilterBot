@@ -82,10 +82,10 @@ async def run_bot_async(cyber: Client):
         logger.exception("Failed to register index handlers: %s", e)
 
     # ENABLE INDEX RESUME ON STARTUP
-    try:
-        asyncio.create_task(check_and_resume_index(cyber))
-    except Exception as e:
-        logger.exception("Failed to schedule check_and_resume_index: %s", e)
+    #try:
+    #    asyncio.create_task(check_and_resume_index(cyber))
+    #except Exception as e:
+    #    logger.exception("Failed to schedule check_and_resume_index: %s", e)
         
     # --- ADDED: Send Restart Message to Admin ---
     admin_id = ADMIN_USERS[0] if ADMIN_USERS else None
