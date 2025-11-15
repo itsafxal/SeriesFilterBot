@@ -1,173 +1,222 @@
 # groupfilter.py
 """
-Group-based search → Season → Language → Quality → Redirect to PM
-
-IMPORTANT:
-- This version uses the EXACT SAME normalizer as SQLITE (_normalized_series_from_filename)
-- NO series name truncation (MAX_CALLBACK_LENGTH removed)
-- Deep-link payload is fully correct for DB lookup
+Group-based search + filter + auto-PM-send system
 """
 
 import asyncio
-import base64
-import urllib.parse
-
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
-    Message,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    CallbackQuery
+    Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 )
-
-# ---- IMPORT DB HELPERS ----
 from DB.database import (
     search_series,
     get_series_summary,
     get_unique_languages_by_season,
-    get_unique_qualities_by_lang_season
+    get_unique_qualities_by_lang_season,
+    get_all_files_by_season_and_quality
 )
-
-# USE SQLITE NORMALIZER to match DB storage EXACTLY
-from DB.sqlite_db import _normalized_series_from_filename
-
-from config import DEFAULT_POSTER
+from utils import clean_series_name, check_force_subscribe
+from config import DEFAULT_POSTER, CUSTOM_CAPTION_TEXT, MAX_CALLBACK_LENGTH
 from .poster import get_series_poster_async
 
 
-
-# -----------------------------------------------------------
-# Build Base64 deep-link payload
-# -----------------------------------------------------------
-def _make_send_payload_b64(series: str, season: int, lang: str, quality: str) -> str:
-    s_enc = urllib.parse.quote(series, safe="")
-    lang_enc = urllib.parse.quote(lang, safe="")
-    quality_enc = urllib.parse.quote(quality, safe="")
-
-    raw = f"{s_enc}|{season}|{lang_enc}|{quality_enc}"
-    b64 = base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
-    return b64
-
-
-
-# -----------------------------------------------------------
-# REGISTER GROUP HANDLERS
-# -----------------------------------------------------------
 def register_group_handlers(cyber: Client):
 
     # -------------------------------------------------------
-    # GROUP SEARCH HANDLER
+    # 1. GROUP SEARCH HANDLER
     # -------------------------------------------------------
     @cyber.on_message(filters.group & filters.text)
     async def group_search_handler(cyber, message: Message):
+
         query = message.text.strip()
         if query.startswith("/"):
             return
 
+        # search
         results = await search_series(query)
         if not results:
             return
 
-        # Normalize series name EXACTLY like SQLite
-        series = _normalized_series_from_filename(results[0])
-
+        series = clean_series_name(results[0])
         summary = await get_series_summary(series)
+
         poster = await get_series_poster_async(series) or DEFAULT_POSTER
 
-        keyboard = [
-            [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series}|{s}")]
-            for s in summary.get("seasons", [])
-        ]
+        # Build season buttons
+        keyboard = []
+        short = series[:MAX_CALLBACK_LENGTH]
+
+        for s in summary.get("seasons", []):
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"Season {s}",
+                    callback_data=f"gss|{short}|{s}"
+                )
+            ])
 
         await message.reply_photo(
-            poster,
-            caption=f"🎬 **{series}**\nSelect Season:",
+            photo=poster,
+            caption=f"🎬 **{series}**\n"
+                    f"Select a season:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode=enums.ParseMode.MARKDOWN
         )
 
-
-
     # -------------------------------------------------------
-    # SEASON → LANGUAGE
+    # 2. SEASON → LANGUAGE MENU
     # -------------------------------------------------------
     @cyber.on_callback_query(filters.regex(r"^gss\|"))
-    async def gss_handler(cyber, query: CallbackQuery):
-        _, series, season = query.data.split("|", 2)
+    async def group_season_handler(cyber, query: CallbackQuery):
+        _, series, season = query.data.split("|")
         season = int(season)
 
         langs = await get_unique_languages_by_season(series, season)
         if not langs:
-            return await query.answer("No languages available.", show_alert=True)
+            await query.answer("No languages found.", show_alert=True)
+            return
 
-        keyboard = [
-            [InlineKeyboardButton(lang, callback_data=f"gls|{series}|{season}|{lang}")]
-            for lang in langs
-        ]
+        keyboard = []
+        for lang in langs:
+            keyboard.append([
+                InlineKeyboardButton(
+                    lang,
+                    callback_data=f"gls|{series}|{season}|{lang}"
+                )
+            ])
 
         await query.message.edit_caption(
-            f"🎬 {series} — Season {season}\nSelect Language:",
+            f"🎬 **{series}** — Season {season}\n"
+            f"Select Language:",
             reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode=enums.ParseMode.MARKDOWN,
+            parse_mode=enums.ParseMode.MARKDOWN
         )
         await query.answer()
 
-
-
     # -------------------------------------------------------
-    # LANGUAGE → QUALITY
+    # 3. LANGUAGE → QUALITY MENU
     # -------------------------------------------------------
     @cyber.on_callback_query(filters.regex(r"^gls\|"))
-    async def gls_handler(cyber, query: CallbackQuery):
-        _, series, season, lang = query.data.split("|", 3)
+    async def group_language_handler(cyber, query: CallbackQuery):
+        _, series, season, lang = query.data.split("|")
         season = int(season)
 
         qualities = await get_unique_qualities_by_lang_season(series, lang, season)
         if not qualities:
-            return await query.answer("No qualities available.", show_alert=True)
+            await query.answer("No qualities found.", show_alert=True)
+            return
 
-        keyboard = [
-            [InlineKeyboardButton(q, callback_data=f"gqs|{series}|{season}|{lang}|{q}")]
-            for q in qualities
-        ]
+        keyboard = []
+        for q in qualities:
+            keyboard.append([
+                InlineKeyboardButton(
+                    q,
+                    callback_data=f"gqs|{series}|{season}|{lang}|{q}"
+                )
+            ])
 
         await query.message.edit_caption(
-            f"🎬 {series} — S{season} ({lang})\nSelect Quality:",
+            f"🎬 {series} – S{season} ({lang})\n"
+            f"Select Quality:",
             reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode=enums.ParseMode.MARKDOWN,
+            parse_mode=enums.ParseMode.MARKDOWN
         )
         await query.answer()
 
-
-
     # -------------------------------------------------------
-    # QUALITY → DEEP LINK TO PM (Auto-send)
+    # 4. QUALITY → AUTO-PM → FORCE-SUB → SEND FILES + NOTIFY
     # -------------------------------------------------------
     @cyber.on_callback_query(filters.regex(r"^gqs\|"))
-    async def gqs_handler(cyber, query: CallbackQuery):
-        _, series, season, lang, quality = query.data.split("|", 4)
+    async def group_quality_handler(cyber, query: CallbackQuery):
+        _, series, season, lang, quality = query.data.split("|")
         season = int(season)
 
-        bot = await cyber.get_me()
+        user_id = query.from_user.id
 
-        # Build encoded payload
-        b64_payload = _make_send_payload_b64(series, season, lang, quality)
+        # *** GROUP NOTIFICATION ***
+        await query.message.reply_text(
+            f"📩 <b>{query.from_user.first_name}</b>, please check your DM.\n"
+            f"The bot is sending:\n"
+            f"🎬 <b>{series}</b>\n"
+            f"📀 Season <b>{season}</b> • {lang} • {quality}",
+            parse_mode=enums.ParseMode.HTML
+        )
 
-        # Deep-link format
-        deep_link = f"https://t.me/{bot.username}?start=send_{b64_payload}"
+        # *** SEND START MESSAGE TO USER PM ***
+        try:
+            await cyber.send_message(
+                user_id,
+                f"⏳ Preparing your files...\n\n"
+                f"🎬 <b>{series}</b>\n"
+                f"📀 Season <b>{season}</b>\n"
+                f"🌐 {lang} • {quality}",
+                parse_mode=enums.ParseMode.HTML
+            )
+        except:
+            await query.answer("Open bot PM and press START!", show_alert=True)
+            return
 
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📩 Open Bot & Start Download", url=deep_link)]
-        ])
+        await query.answer("Check your PM", cache_time=0)
 
-        await query.message.edit_caption(
-            f"📥 Tap below to receive files in DM.\n\n"
-            f"🎬 {series}\n"
-            f"Season {season} • {lang} • {quality}",
-            reply_markup=keyboard,
+        # *** FORCE SUBSCRIBE CHECK ***
+        is_member, invite = await check_force_subscribe(cyber, user_id)
+        if not is_member:
+            await cyber.send_message(
+                user_id,
+                "⚠️ You must join our channel to receive the files.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Join Channel", url=invite)]
+                ])
+            )
+            return
+
+        # *** FETCH FILES ***
+        files = await get_all_files_by_season_and_quality(series, season, quality, lang)
+        if not files:
+            await cyber.send_message(user_id, "❌ No files found.")
+            return
+
+        bot_name = (await cyber.get_me()).username
+
+        # *** NOTIFY BEFORE SENDING ***
+        await cyber.send_message(
+            user_id,
+            f"📥 Sending all episodes now...\n"
+            f"🎬 <b>{series}</b> — Season {season}",
+            parse_mode=enums.ParseMode.HTML
+        )
+
+        # *** SEND FILES ***
+        for f in files:
+            file_id = f.get("file_id")
+            caption = CUSTOM_CAPTION_TEXT.format(
+                file_name=f.get("file_name"),
+                bot_username=bot_name
+            )
+
+            try:
+                if file_id:
+                    await cyber.send_document(user_id, file_id, caption=caption)
+                else:
+                    await cyber.copy_message(
+                        user_id,
+                        f["channel_id"],
+                        f["message_id"],
+                        caption=caption
+                    )
+                await asyncio.sleep(1)
+            except Exception:
+                continue
+
+        # *** FINAL MESSAGE ***
+        await cyber.send_message(
+            user_id,
+            f"✅ Completed sending **{series} — S{season} ({quality})**",
             parse_mode=enums.ParseMode.MARKDOWN
         )
 
-        await query.answer()
-
-    return []
+    return [
+        group_search_handler,
+        group_season_handler,
+        group_language_handler,
+        group_quality_handler
+    ]
