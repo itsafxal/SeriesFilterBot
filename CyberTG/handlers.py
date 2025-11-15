@@ -36,7 +36,7 @@ from .menus import (
     show_language_menu, show_quality_menu, help_menu_handler, cyber_menu_handler, admin_menu_handler, 
     about_menu_handler, close_menu_handler, back_to_language_handler, back_to_search_handler, 
 )
-from groupfilter import safe_decode  
+from .groupfilter import safe_decode  
 
 @cyber.on_message(filters.command("start") & filters.private)
 async def deep_link_start_handler(cyber, message: Message):
