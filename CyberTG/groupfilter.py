@@ -152,7 +152,7 @@ def register_groupfilter_handlers(cyber: Client):
     # -------------------------
     # Group text search handler
     # -------------------------
-    @cyber.on_message(filters.text & filters.group & ~filters.edited)
+    @cyber.on_message(filters.text & filters.group)
     async def group_search_handler(_, message: Message):
         text = (message.text or "").strip()
         if not text or len(text) < 2:
