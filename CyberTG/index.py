@@ -1,10 +1,10 @@
-# index.py
+# ======================= index.py (CLEAN FINAL VERSION) ============================
 import asyncio
 import gc
 from typing import Optional
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, ChannelPrivate
-from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import logger, ADMIN_USERS, INDEX_CHANNELS
 from DB.database import (
@@ -14,226 +14,186 @@ from DB.database import (
     set_global_setting,
     delete_all_index_states,
 )
-from utils import save_series_file_for_bulk_index, extract_links
+from utils import extract_links, save_series_file_for_bulk_index
 
-# --- CONFIGURABLE GLOBALS ---
+
+# ------------------ GLOBAL SETTINGS ------------------
 lock = asyncio.Lock()
 media_filter = filters.document | filters.video | filters.audio
 index_task: Optional[asyncio.Task] = None
 
-INDEX_STATUS_KEY = "CURRENT_INDEX_TASK"
 INDEX_SKIP_ID_KEY = "INDEX_SKIP_ID"
+INDEX_STATUS_KEY = "CURRENT_INDEX_TASK"
 
 STATUS_UPDATE_EVERY = 800
-CHECKPOINT_EVERY = 800
 YIELD_EVERY = 500
 
 
-# ================== Safe wrappers ====================
+# ------------------ SAFE WRAPPERS ------------------
 
 async def safe_sleep_for_floodwait(exc: FloodWait):
-    wait = int(getattr(exc, "value", 10))
-    logger.warning("FloodWait detected - sleeping for %s seconds", wait)
-    await asyncio.sleep(wait)
+    await asyncio.sleep(int(getattr(exc, "value", 10)))
 
 
-async def safe_get_messages(bot: Client, chat_id: int, message_ids: int):
+async def safe_get_messages(bot: Client, chat_id: int, msg_id: int):
     while True:
         try:
-            return await bot.get_messages(chat_id=chat_id, message_ids=message_ids, replies=0)
-        except FloodWait as e:
-            await safe_sleep_for_floodwait(e)
-        except ChannelPrivate:
-            raise
+            return await bot.get_messages(chat_id=chat_id, message_ids=msg_id, replies=0)
+        except FloodWait as f:
+            await safe_sleep_for_floodwait(f)
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            logger.warning("safe_get_messages failed for %s:%s -> %s", chat_id, message_ids, e)
+        except Exception:
             return None
 
 
-async def safe_send_message(bot: Client, chat_id: int, text: str, **kwargs):
+async def safe_send_message(bot: Client, uid: int, text: str, **kwargs):
     while True:
         try:
-            return await bot.send_message(chat_id, text, **kwargs)
-        except FloodWait as e:
-            await safe_sleep_for_floodwait(e)
+            return await bot.send_message(uid, text, **kwargs)
+        except FloodWait as f:
+            await safe_sleep_for_floodwait(f)
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            logger.error("safe_send_message failed: %s", e)
-            return None
 
 
-async def safe_edit_message(msg_obj: Message, text: str, **kwargs):
-    if msg_obj is None:
-        return None
-    attempts = 0
+async def safe_edit(msg: Message, text: str, **kwargs):
+    if not msg:
+        return
     while True:
         try:
-            return await msg_obj.edit_text(text, **kwargs)
-        except FloodWait as e:
-            await safe_sleep_for_floodwait(e)
+            return await msg.edit_text(text, **kwargs)
+        except FloodWait as f:
+            await safe_sleep_for_floodwait(f)
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            attempts += 1
-            logger.warning("safe_edit_message failed attempt %s: %s", attempts, e)
-            if attempts >= 3:
-                logger.error("Giving up on editing message after 3 attempts")
-                return None
-            await asyncio.sleep(1)
+        except Exception:
+            return
 
 
-# ================== Helper ====================
+# ------------------ INDEX ENGINE ------------------
 
-async def update_status_message(msg_obj, checked, saved, skipped_duplicates=0, skipped_movies=0, total_series=0):
-    text = f"""Total messages checked: **{checked}**
-Total series added: **{total_series}**
-Duplicate skipped: **{skipped_duplicates}**
-Movies skipped: **{skipped_movies}**
-Total files saved: **{saved}**
-"""
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel Indexing", callback_data="cancel_index")]])
-    return await safe_edit_message(msg_obj, text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
-
-
-# ================== INDEXING ENGINE ====================
-
-async def index_files_task(bot: Client, status_msg: Message, chat_id: int, start_msg_id: int, last_msg_id: int):
-    """
-    Index messages from `current`..`last_msg_id`.
-    `current` is computed as max(start_msg_id, last_processed, skip_id + 1).
-    """
+async def index_files_task(bot: Client, status_msg: Message, chat_id: int, start_id: int, last_id: int):
     global index_task
 
     chat_key = f"index_{chat_id}"
-    last_processed = await get_bot_state(chat_key)
 
-    # read skip and coerce to int, default 0
-    raw_skip = await get_global_setting(INDEX_SKIP_ID_KEY, 0)
+    last_processed = await get_bot_state(chat_key)
+    skip_raw = await get_global_setting(INDEX_SKIP_ID_KEY, 0)
+
     try:
-        skip_id = int(raw_skip) if raw_skip is not None else 0
-    except Exception:
-        logger.warning("INDEX_SKIP_ID malformed (%r), defaulting to 0", raw_skip)
+        skip_id = int(skip_raw)
+    except:
         skip_id = 0
 
-    # build candidates and pick max
-    candidates = [start_msg_id, skip_id + 1]
-    if last_processed is not None:
+    candidates = [start_id, skip_id + 1]
+    if last_processed:
         try:
             candidates.append(int(last_processed))
-        except Exception:
-            logger.warning("last_processed malformed (%r), ignoring", last_processed)
+        except:
+            pass
 
     current = max(candidates)
-    total = last_msg_id
 
-    logger.info(
-        "Index start: chat=%s total=%s | start_msg_id=%s | last_processed=%r | skip=%s | chosen_current=%s",
-        chat_id, total, start_msg_id, last_processed, skip_id, current
-    )
+    await safe_edit(status_msg, f"Starting from message ID: **{current}**")
 
-    await set_global_setting(INDEX_STATUS_KEY, f"RUNNING|{chat_id}|{current}|{last_msg_id}")
-
-    saved = 0
     checked = 0
+    saved = 0
     counter = 0
 
     try:
-        if current > start_msg_id and status_msg:
-            await safe_edit_message(status_msg, f"Resumed at ID {current}...")
+        while current <= last_id:
 
-        while current <= total:
             if current % YIELD_EVERY == 0:
                 await asyncio.sleep(0)
                 gc.collect()
 
-            try:
-                message = await safe_get_messages(bot, chat_id, current)
-            except ChannelPrivate:
-                await safe_edit_message(status_msg, f"❌ Channel private or bot not admin.")
-                return
+            msg = await safe_get_messages(bot, chat_id, current)
 
-            if message and (message.document or message.video or message.audio):
+            if msg and (msg.document or msg.video or msg.audio):
                 try:
-                    saved_flag, count = await save_series_file_for_bulk_index(message)
+                    saved_flag, count = await save_series_file_for_bulk_index(msg)
                     if saved_flag:
                         saved += count or 0
                 except Exception as e:
-                    logger.exception("Error saving message %s: %s", current, e)
+                    logger.error(f"Save error at {current}: {e}")
+
+            current_msg_id = current  # display before incrementation
 
             current += 1
             checked += 1
             counter += 1
 
             if counter >= STATUS_UPDATE_EVERY:
-                await save_bot_state(chat_key, current)
-                await set_global_setting(INDEX_STATUS_KEY, f"RUNNING|{chat_id}|{current}|{last_msg_id}")
-
-                if status_msg:
-                    await update_status_message(status_msg, checked, saved)
-
+                await save_bot_state(chat_key, current_msg_id)
+                await safe_edit(
+                    status_msg,
+                    f"Currently checking message ID: **{current_msg_id}**\n"
+                    f"Files Saved: **{saved}**"
+                )
                 counter = 0
 
         await save_bot_state(chat_key, None)
-        await safe_edit_message(status_msg, f"🎉 Completed!\nTotal Saved: **{saved}**")
+        await safe_edit(status_msg, f"Indexing Complete!\nTotal Files Saved: **{saved}**")
+
     except asyncio.CancelledError:
         await save_bot_state(chat_key, current)
-        await safe_edit_message(status_msg, f"⛔ Cancelled at ID {current}")
+        await safe_edit(status_msg, f"Indexing Cancelled at message ID: **{current}**")
+
     finally:
         await set_global_setting(INDEX_STATUS_KEY, "IDLE")
         index_task = None
 
 
-# ================== HANDLERS ====================
+# ------------------ HANDLERS ------------------
 
 def register_index_handlers(cyber: Client):
     global index_task
 
-    # Real-time auto-index
-    @cyber.on_message((filters.document | filters.video | filters.audio) & filters.channel)
-    async def media_handler(_, message):
-        try:
-            if message.chat.id in INDEX_CHANNELS:
-                saved, count = await save_series_file_for_bulk_index(message)
+    # Real-Time Auto Index (for allowed channels)
+    @cyber.on_message(media_filter & filters.channel)
+    async def rti_handler(_, msg):
+        if msg.chat.id in INDEX_CHANNELS:
+            try:
+                saved, count = await save_series_file_for_bulk_index(msg)
                 if saved:
-                    logger.info("RTI Saved %s items", count)
-        except Exception as e:
-            logger.exception("RTI error: %s", e)
+                    logger.info(f"RTI Saved {count} files")
+            except Exception as e:
+                logger.error(f"RTI error: {e}")
 
-    # Forwarded message for indexing
+    # Forwarded message indexing
     @cyber.on_message(filters.private & filters.forwarded & filters.user(ADMIN_USERS) & media_filter)
-    async def index_files_forwarded(bot, message):
+    async def forward_index(bot, message):
         if lock.locked():
-            return await message.reply("Wait until previous finished.")
+            return await message.reply("Previous indexing still running.")
 
         origin = message.forward_origin
         if not origin or origin.type != enums.MessageOriginType.CHANNEL:
-            return await message.reply("Forward original message from channel (not copy).")
+            return await message.reply("Forward original message from channel.")
 
-        chat = origin.chat
-        chat_id = chat.id
-        last_msg_id = origin.message_id
-
+        chat_id = origin.chat.id
+        last_id = origin.message_id
         start_id = 2
 
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"Proceed", callback_data=f"index {chat_id} {start_id} {last_msg_id}"),
-                InlineKeyboardButton("Cancel", callback_data="can-index"),
-            ],
+                InlineKeyboardButton("Proceed", callback_data=f"index {chat_id} {start_id} {last_id}"),
+                InlineKeyboardButton("Cancel", callback_data="cancel_prompt")
+            ]
         ])
 
-        await bot.send_message(message.from_user.id,
-                               f"Confirm indexing `{chat_id}` from {start_id} → {last_msg_id}",
-                               reply_markup=kb)
+        await bot.send_message(
+            message.from_user.id,
+            f"Confirm indexing `{chat_id}` from {start_id} → {last_id}",
+            reply_markup=kb,
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
 
-    # Manual /indexlink
+    # /indexlink command
     @cyber.on_message(filters.private & filters.user(ADMIN_USERS) & filters.command("indexlink"))
-    async def manual_index(bot, message):
+    async def indexlink(bot, message):
         if lock.locked():
-            return await message.reply("Wait until previous completed.")
+            return await message.reply("Previous indexing still running.")
 
         args = message.text.split()[1:]
         chat_id, start_id, last_id = extract_links(args)
@@ -241,127 +201,103 @@ def register_index_handlers(cyber: Client):
         kb = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("Proceed", callback_data=f"index {chat_id} {start_id} {last_id}"),
-                InlineKeyboardButton("Cancel", callback_data="can-index"),
-            ],
+                InlineKeyboardButton("Cancel", callback_data="cancel_prompt")
+            ]
         ])
 
         await bot.send_message(
             message.from_user.id,
-            f"Confirm indexing `{chat_id}` from {start_id} → {last_id}",
-            reply_markup=kb,
+            f"Confirm indexing `{chat_id}` {start_id} → {last_id}",
+            reply_markup=kb
         )
 
-    # ======================= START INDEX (PRESERVE SKIP) ==========================
+    # Start Index
     @cyber.on_callback_query(filters.regex(r"^index -?\d+ \d+ \d+"))
     async def start_index(bot, query):
         global index_task
-        user_id = query.from_user.id
 
         if index_task and not index_task.done():
-            return await query.answer("Already running.", show_alert=True)
+            return await query.answer("Index already running.", show_alert=True)
 
-        # parse params
         chat_id, start_id, last_id = map(int, query.data.split()[1:])
 
-        # Preserve skip before clearing any states
         raw_skip = await get_global_setting(INDEX_SKIP_ID_KEY, None)
         try:
             preserved_skip = int(raw_skip) if raw_skip is not None else None
-        except Exception:
-            logger.warning("Preserve skip failed: malformed value %r", raw_skip)
+        except:
             preserved_skip = None
 
-        # Clear only index_ keys and restore skip if it existed
         await delete_all_index_states()
+
         if preserved_skip is not None:
-            await set_global_setting(INDEX_SKIP_ID_KEY, int(preserved_skip))
+            await set_global_setting(INDEX_SKIP_ID_KEY, preserved_skip)
 
-        # Ensure bot state exists (index task will compute actual start using skip)
         await save_bot_state(f"index_{chat_id}", start_id)
-        await set_global_setting(INDEX_STATUS_KEY, "IDLE")
 
-        logger.info("Starting index for chat=%s start=%s last=%s preserved_skip=%r", chat_id, start_id, last_id, preserved_skip)
-        await query.message.edit_text("Starting index...")
+        await query.message.edit_text("Indexing started...")
+
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel Indexing", callback_data="cancel_index")]])
 
         status_msg = await safe_send_message(
-            bot, user_id,
-            f"Indexing `{chat_id}` from **{start_id}** → **{last_id}**",
-            reply_markup=kb,
-            parse_mode=enums.ParseMode.MARKDOWN
+            bot, query.from_user.id,
+            f"Indexing `{chat_id}`...",
+            reply_markup=kb
         )
 
         index_task = asyncio.create_task(
             index_files_task(bot, status_msg, chat_id, start_id, last_id)
         )
+
         await query.answer("Index started.")
 
-    # ======================= CANCEL INDEX ==========================
-    @cyber.on_callback_query(filters.regex(r"^cancel_index$"))
-    async def cancel_indexing(bot, query):
+    # Cancel index
+    @cyber.on_callback_query(filters.regex("cancel_index"))
+    async def cancel(bot, query):
         global index_task
-        
-        if query.from_user.id not in ADMIN_USERS:
-            return await query.answer("Not allowed.", show_alert=True)
-
         if index_task and not index_task.done():
             index_task.cancel()
-            return await query.answer("Cancelling...")
+            await query.answer("Cancelling...")
         else:
-            try:
-                await query.message.edit_text("No active index.")
-            except Exception:
-                pass
+            await query.message.edit_text("No active index.")
             await query.answer("Nothing to cancel.")
 
-    @cyber.on_callback_query(filters.regex(r"^can-index$"))
-    async def cancel_index_confirmation(bot, query):
+    # Cancel prompt
+    @cyber.on_callback_query(filters.regex("cancel_prompt"))
+    async def cancel_prompt(bot, query):
         try:
             await query.message.delete()
         except:
             pass
         await query.answer("Cancelled.")
 
-    # Default /index
-    @cyber.on_message(filters.command(["index"]) & filters.user(ADMIN_USERS) & filters.private)
-    async def index_comm(bot, message):
-        await message.reply("Forward last message or use /indexlink.")
-
-    # ======================= /setskip ==========================
+    # /setskip
     @cyber.on_message(filters.private & filters.user(ADMIN_USERS) & filters.command("setskip"))
-    async def set_skip_cmd(bot, message):
-        args = message.text.split()
-        if len(args) < 2:
+    async def setskip(bot, message):
+        parts = message.text.split()
+        if len(parts) < 2:
             return await message.reply("Usage: /setskip <msg_id>")
 
         try:
-            skip_id = int(args[1])
-        except Exception:
-            return await message.reply("Invalid message ID.")
+            skip_val = int(parts[1])
+        except:
+            return await message.reply("Invalid number.")
 
-        await set_global_setting(INDEX_SKIP_ID_KEY, int(skip_id))
-        await message.reply(f"Skip ID updated.\nIndexer will start from **{skip_id + 1}**.")
+        await set_global_setting(INDEX_SKIP_ID_KEY, skip_val)
+        await message.reply(f"Skip set. Index will start from {skip_val + 1}")
 
-    # ======================= /getskip ==========================
+    # /getskip
     @cyber.on_message(filters.private & filters.user(ADMIN_USERS) & filters.command("getskip"))
-    async def get_skip_cmd(bot, message):
-        val = await get_global_setting(INDEX_SKIP_ID_KEY, None)
-        if val is None:
-            return await message.reply("No skip set.")
-        try:
-            v = int(val)
-        except Exception:
-            return await message.reply(f"Current skip stored but malformed: {val!r}")
-        return await message.reply(f"Current skip: **{v}** → indexing starts from **{v+1}**")
+    async def getskip(bot, message):
+        raw = await get_global_setting(INDEX_SKIP_ID_KEY, None)
+        await message.reply(f"Skip stored: {raw!r}")
 
     return [
-        media_handler,
-        index_files_forwarded,
-        manual_index,
+        rti_handler,
+        forward_index,
+        indexlink,
         start_index,
-        cancel_indexing,
-        cancel_index_confirmation,
-        index_comm,
-        set_skip_cmd,
-        get_skip_cmd,
+        cancel,
+        cancel_prompt,
+        setskip,
+        getskip,
     ]
