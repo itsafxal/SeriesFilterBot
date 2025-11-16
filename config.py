@@ -7,7 +7,7 @@ from pymongo import TEXT
 API_ID = 28643132
 API_HASH = "510c3009ea589830a89e045bf8aae656"
 BOT_TOKEN = "8528994143:AAECwfe5KQ0YixO_DPj0jVus_qhpf97jJ-A"
-MONGO_URI = "mongodb+srv://ss:ss@seriesfilterbot.p88od4y.mongodb.net/?appName=SeriesFilterBOT"
+MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
 
 # --- Indexing Configuration ---
 INDEX_CHANNELS = [-1001996538290] 
