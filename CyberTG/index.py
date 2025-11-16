@@ -284,6 +284,29 @@ def register_index_handlers(cyber: Client):
     async def index_comm(bot, message):
         await message.reply("Forward last message or use /indexlink.")
 
+        # ======================= /setskip COMMAND ==========================
+    @cyber.on_message(filters.private & filters.user(ADMIN_USERS) & filters.command("setskip"))
+    async def set_skip_cmd(bot, message):
+        """
+        Usage: /setskip <message_id>
+        Forces indexer to skip all messages <= that ID.
+        """
+        args = message.text.split()
+        if len(args) < 2:
+            return await message.reply("Usage: `/setskip <msg_id>`", parse_mode=enums.ParseMode.MARKDOWN)
+
+        try:
+            skip_id = int(args[1])
+        except ValueError:
+            return await message.reply("Invalid ID. Provide a numeric message_id.")
+
+        await set_global_setting(INDEX_SKIP_ID_KEY, skip_id)
+
+        await message.reply(
+            f"Skip ID updated.\nAll indexing will resume from **{skip_id + 1}**.",
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+
     return [
         media_handler,
         index_files_forwarded,
