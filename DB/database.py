@@ -123,7 +123,7 @@ async def delete_all_index_states():
 
 async def get_all_bot_state_keys():
     """Return list of all state keys stored."""
-    return bot_state_collection.distinct("_id")  # Mongo version
+    return await asyncio.to_thread(lambda: list(state_collection.distinct("_id")))
 
 
 # --- NEW FUNCTION: Get Series Summary (SQLite Async Wrapper) ---
