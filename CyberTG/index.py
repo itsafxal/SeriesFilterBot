@@ -13,7 +13,7 @@ from DB.database import (
     save_bot_state,
     get_global_setting,
     set_global_setting,
-    delete_all_index_states,   # <-- ADDED
+    delete_all_index_states,
 )
 from utils import save_series_file_for_bulk_index, extract_links
 
@@ -22,7 +22,6 @@ lock = asyncio.Lock()
 media_filter = filters.document | filters.video | filters.audio
 index_task: Optional[asyncio.Task] = None
 
-# Patterns / keys
 link_pattern = r"https://t\.me/c/(\d+)/(\d+)"
 INDEX_STATUS_KEY = "CURRENT_INDEX_TASK"
 INDEX_SKIP_ID_KEY = "INDEX_SKIP_ID"
@@ -114,7 +113,7 @@ async def index_files_task(bot: Client, status_msg: Message, chat_id: int, start
     current = max(last_processed or 0, start_msg_id, skip_id + 1)
     total = last_msg_id
 
-    logger.info("Indexing %s from %s → %s", chat_id, current, total)
+    logger.info("Indexing %s from %s → %s (skip=%s)", chat_id, current, total, skip_id)
 
     await set_global_setting(INDEX_STATUS_KEY, f"RUNNING|{chat_id}|{current}|{last_msg_id}")
 
@@ -201,8 +200,10 @@ def register_index_handlers(cyber: Client):
         start_id = 2
 
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"Proceed", callback_data=f"index {chat_id} {start_id} {last_msg_id}"),
-             InlineKeyboardButton("Cancel", callback_data="can-index")],
+            [
+                InlineKeyboardButton(f"Proceed", callback_data=f"index {chat_id} {start_id} {last_msg_id}"),
+                InlineKeyboardButton("Cancel", callback_data="can-index"),
+            ],
         ])
 
         await bot.send_message(message.from_user.id,
@@ -219,15 +220,19 @@ def register_index_handlers(cyber: Client):
         chat_id, start_id, last_id = extract_links(args)
 
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Proceed", callback_data=f"index {chat_id} {start_id} {last_id}"),
-             InlineKeyboardButton("Cancel", callback_data="can-index")],
+            [
+                InlineKeyboardButton("Proceed", callback_data=f"index {chat_id} {start_id} {last_id}"),
+                InlineKeyboardButton("Cancel", callback_data="can-index"),
+            ],
         ])
 
-        await bot.send_message(message.from_user.id,
-                               f"Confirm indexing `{chat_id}` from {start_id} → {last_id}",
-                               reply_markup=kb)
+        await bot.send_message(
+            message.from_user.id,
+            f"Confirm indexing `{chat_id}` from {start_id} → {last_id}",
+            reply_markup=kb,
+        )
 
-    # ======================= START INDEX (FULL FIX ADDED) ==========================
+    # ======================= START INDEX (FIXED) ==========================
     @cyber.on_callback_query(filters.regex(r"^index -?\d+ \d+ \d+"))
     async def start_index(bot, query):
         global index_task
@@ -238,23 +243,28 @@ def register_index_handlers(cyber: Client):
 
         chat_id, start_id, last_id = map(int, query.data.split()[1:])
 
-        # ********** 🔥 FULL FIX: CLEAR OLD INDEX STATES ************
-        await set_global_setting(INDEX_STATUS_KEY, "IDLE")
-        await delete_all_index_states()                  # <---- FULL FIX
+        # Preserve skip ID before clearing index states
+        skip_val = await get_global_setting(INDEX_SKIP_ID_KEY, None)
+        await delete_all_index_states()
+        if skip_val is not None:
+            await set_global_setting(INDEX_SKIP_ID_KEY, int(skip_val))
+
         await save_bot_state(f"index_{chat_id}", start_id)
-        # ***********************************************************
+        await set_global_setting(INDEX_STATUS_KEY, "IDLE")
 
         await query.message.edit_text("Starting index...")
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel Indexing", callback_data="cancel_index")]])
 
         status_msg = await safe_send_message(
             bot, user_id,
-            f"Indexing `{chat_id}` from **{start_id}** → **{last_id}**\nUpdating every {STATUS_UPDATE_EVERY} messages.",
+            f"Indexing `{chat_id}` from **{start_id}** → **{last_id}**",
             reply_markup=kb,
             parse_mode=enums.ParseMode.MARKDOWN
         )
 
-        index_task = asyncio.create_task(index_files_task(bot, status_msg, chat_id, start_id, last_id))
+        index_task = asyncio.create_task(
+            index_files_task(bot, status_msg, chat_id, start_id, last_id)
+        )
         await query.answer("Index started.")
 
     # ======================= CANCEL INDEX ==========================
@@ -280,32 +290,33 @@ def register_index_handlers(cyber: Client):
             pass
         await query.answer("Cancelled.")
 
+    # Default /index
     @cyber.on_message(filters.command(["index"]) & filters.user(ADMIN_USERS) & filters.private)
     async def index_comm(bot, message):
         await message.reply("Forward last message or use /indexlink.")
 
-        # ======================= /setskip COMMAND ==========================
+    # ======================= /setskip ==========================
     @cyber.on_message(filters.private & filters.user(ADMIN_USERS) & filters.command("setskip"))
     async def set_skip_cmd(bot, message):
-        """
-        Usage: /setskip <message_id>
-        Forces indexer to skip all messages <= that ID.
-        """
         args = message.text.split()
         if len(args) < 2:
-            return await message.reply("Usage: `/setskip <msg_id>`", parse_mode=enums.ParseMode.MARKDOWN)
+            return await message.reply("Usage: /setskip <msg_id>")
 
         try:
             skip_id = int(args[1])
-        except ValueError:
-            return await message.reply("Invalid ID. Provide a numeric message_id.")
+        except:
+            return await message.reply("Invalid message ID.")
 
         await set_global_setting(INDEX_SKIP_ID_KEY, skip_id)
+        await message.reply(f"Skip ID updated.\nIndexer will start from **{skip_id + 1}**.")
 
-        await message.reply(
-            f"Skip ID updated.\nAll indexing will resume from **{skip_id + 1}**.",
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
+    # ======================= /getskip ==========================
+    @cyber.on_message(filters.private & filters.user(ADMIN_USERS) & filters.command("getskip"))
+    async def get_skip_cmd(bot, message):
+        val = await get_global_setting(INDEX_SKIP_ID_KEY, None)
+        if val is None:
+            return await message.reply("No skip set.")
+        return await message.reply(f"Current skip: **{val}** → indexing starts from **{int(val)+1}**")
 
     return [
         media_handler,
@@ -315,4 +326,6 @@ def register_index_handlers(cyber: Client):
         cancel_indexing,
         cancel_index_confirmation,
         index_comm,
+        set_skip_cmd,
+        get_skip_cmd,
     ]
