@@ -1,4 +1,4 @@
-# ======================= index.py (CLEAN FINAL VERSION) ============================
+# ======================= index.py (FINAL FULL VERSION WITH CONFIRM-SKIP) ============================
 import asyncio
 import gc
 from typing import Optional
@@ -31,42 +31,36 @@ YIELD_EVERY = 500
 
 # ------------------ SAFE WRAPPERS ------------------
 
-async def safe_sleep_for_floodwait(exc: FloodWait):
+async def safe_floodwait_sleep(exc: FloodWait):
     await asyncio.sleep(int(getattr(exc, "value", 10)))
 
 
-async def safe_get_messages(bot: Client, chat_id: int, msg_id: int):
+async def safe_get(bot: Client, chat_id: int, msg_id: int):
     while True:
         try:
-            return await bot.get_messages(chat_id=chat_id, message_ids=msg_id, replies=0)
+            return await bot.get_messages(chat_id, msg_id)
         except FloodWait as f:
-            await safe_sleep_for_floodwait(f)
-        except asyncio.CancelledError:
-            raise
+            await safe_floodwait_sleep(f)
         except Exception:
             return None
 
 
-async def safe_send_message(bot: Client, uid: int, text: str, **kwargs):
+async def safe_send(bot: Client, uid: int, text: str, **kwargs):
     while True:
         try:
             return await bot.send_message(uid, text, **kwargs)
         except FloodWait as f:
-            await safe_sleep_for_floodwait(f)
-        except asyncio.CancelledError:
-            raise
+            await safe_floodwait_sleep(f)
 
 
 async def safe_edit(msg: Message, text: str, **kwargs):
-    if not msg:
+    if msg is None:
         return
     while True:
         try:
             return await msg.edit_text(text, **kwargs)
         except FloodWait as f:
-            await safe_sleep_for_floodwait(f)
-        except asyncio.CancelledError:
-            raise
+            await safe_floodwait_sleep(f)
         except Exception:
             return
 
@@ -108,41 +102,57 @@ async def index_files_task(bot: Client, status_msg: Message, chat_id: int, start
                 await asyncio.sleep(0)
                 gc.collect()
 
-            msg = await safe_get_messages(bot, chat_id, current)
+            msg = await safe_get(bot, chat_id, current)
 
             if msg and (msg.document or msg.video or msg.audio):
                 try:
-                    saved_flag, count = await save_series_file_for_bulk_index(msg)
-                    if saved_flag:
+                    ok, count = await save_series_file_for_bulk_index(msg)
+                    if ok:
                         saved += count or 0
-                except Exception as e:
-                    logger.error(f"Save error at {current}: {e}")
+                except:
+                    pass
 
-            current_msg_id = current  # display before incrementation
+            current_msg = current  # correct message ID for display
 
             current += 1
             checked += 1
             counter += 1
 
             if counter >= STATUS_UPDATE_EVERY:
-                await save_bot_state(chat_key, current_msg_id)
+                await save_bot_state(chat_key, current_msg)
                 await safe_edit(
                     status_msg,
-                    f"Currently checking message ID: **{current_msg_id}**\n"
+                    f"Currently checking message ID: **{current_msg}**\n"
                     f"Files Saved: **{saved}**"
                 )
                 counter = 0
 
         await save_bot_state(chat_key, None)
-        await safe_edit(status_msg, f"Indexing Complete!\nTotal Files Saved: **{saved}**")
+        await safe_edit(status_msg, f"Index Completed!\nTotal Files Saved: **{saved}**")
 
     except asyncio.CancelledError:
         await save_bot_state(chat_key, current)
-        await safe_edit(status_msg, f"Indexing Cancelled at message ID: **{current}**")
+        await safe_edit(status_msg, f"Index Cancelled at: **{current}**")
 
     finally:
         await set_global_setting(INDEX_STATUS_KEY, "IDLE")
         index_task = None
+
+
+# ------------------ CONFIRMATION START CALCULATOR ------------------
+
+async def compute_effective_start(chat_id: int, default_start: int):
+    """Compute real starting message using skip, resume and start_id."""
+    skip_raw = await get_global_setting(INDEX_SKIP_ID_KEY, 0)
+    try:
+        skip_id = int(skip_raw)
+    except:
+        skip_id = 0
+
+    last_processed = await get_bot_state(f"index_{chat_id}")
+    lp = int(last_processed) if last_processed else 0
+
+    return max(default_start, skip_id + 1, lp)
 
 
 # ------------------ HANDLERS ------------------
@@ -150,68 +160,65 @@ async def index_files_task(bot: Client, status_msg: Message, chat_id: int, start
 def register_index_handlers(cyber: Client):
     global index_task
 
-    # Real-Time Auto Index (for allowed channels)
+    # ------- RTI AUTO-INDEXING -------
     @cyber.on_message(media_filter & filters.channel)
-    async def rti_handler(_, msg):
+    async def rti(_, msg):
         if msg.chat.id in INDEX_CHANNELS:
             try:
-                saved, count = await save_series_file_for_bulk_index(msg)
-                if saved:
-                    logger.info(f"RTI Saved {count} files")
+                ok, cnt = await save_series_file_for_bulk_index(msg)
+                if ok:
+                    logger.info(f"RTI saved {cnt} files.")
             except Exception as e:
                 logger.error(f"RTI error: {e}")
 
-    # Forwarded message indexing
+    # ------- FORWARDED INDEX -------
     @cyber.on_message(filters.private & filters.forwarded & filters.user(ADMIN_USERS) & media_filter)
-    async def forward_index(bot, message):
-        if lock.locked():
-            return await message.reply("Previous indexing still running.")
-
+    async def forwarded(bot, message):
         origin = message.forward_origin
         if not origin or origin.type != enums.MessageOriginType.CHANNEL:
-            return await message.reply("Forward original message from channel.")
+            return await message.reply("Forward ORIGINAL message from channel.")
 
         chat_id = origin.chat.id
         last_id = origin.message_id
-        start_id = 2
 
-        kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("Proceed", callback_data=f"index {chat_id} {start_id} {last_id}"),
+        effective_start = await compute_effective_start(chat_id, 2)
+
+        kb = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton("Proceed", callback_data=f"index {chat_id} {effective_start} {last_id}"),
                 InlineKeyboardButton("Cancel", callback_data="cancel_prompt")
-            ]
-        ])
-
-        await bot.send_message(
-            message.from_user.id,
-            f"Confirm indexing `{chat_id}` from {start_id} → {last_id}",
-            reply_markup=kb,
-            parse_mode=enums.ParseMode.MARKDOWN
+            ]]
         )
 
-    # /indexlink command
-    @cyber.on_message(filters.private & filters.user(ADMIN_USERS) & filters.command("indexlink"))
-    async def indexlink(bot, message):
-        if lock.locked():
-            return await message.reply("Previous indexing still running.")
-
-        args = message.text.split()[1:]
-        chat_id, start_id, last_id = extract_links(args)
-
-        kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("Proceed", callback_data=f"index {chat_id} {start_id} {last_id}"),
-                InlineKeyboardButton("Cancel", callback_data="cancel_prompt")
-            ]
-        ])
-
         await bot.send_message(
             message.from_user.id,
-            f"Confirm indexing `{chat_id}` {start_id} → {last_id}",
+            f"Confirm indexing `{chat_id}` from **{effective_start}** → **{last_id}**",
+            parse_mode=enums.ParseMode.MARKDOWN,
             reply_markup=kb
         )
 
-    # Start Index
+    # ------- /indexlink -------
+    @cyber.on_message(filters.private & filters.user(ADMIN_USERS) & filters.command("indexlink"))
+    async def indexlink(bot, message):
+        args = message.text.split()[1:]
+        chat_id, start_id, last_id = extract_links(args)
+
+        effective_start = await compute_effective_start(chat_id, start_id)
+
+        kb = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton("Proceed", callback_data=f"index {chat_id} {effective_start} {last_id}"),
+                InlineKeyboardButton("Cancel", callback_data="cancel_prompt")
+            ]]
+        )
+
+        await bot.send_message(
+            message.from_user.id,
+            f"Confirm indexing `{chat_id}` from **{effective_start}** → **{last_id}**",
+            reply_markup=kb
+        )
+
+    # ------- START INDEX -------
     @cyber.on_callback_query(filters.regex(r"^index -?\d+ \d+ \d+"))
     async def start_index(bot, query):
         global index_task
@@ -219,11 +226,13 @@ def register_index_handlers(cyber: Client):
         if index_task and not index_task.done():
             return await query.answer("Index already running.", show_alert=True)
 
-        chat_id, start_id, last_id = map(int, query.data.split()[1:])
+        _, chat_id, start_id, last_id = query.data.split()
+        chat_id, start_id, last_id = int(chat_id), int(start_id), int(last_id)
 
-        raw_skip = await get_global_setting(INDEX_SKIP_ID_KEY, None)
+        # preserve skip
+        skip_raw = await get_global_setting(INDEX_SKIP_ID_KEY, None)
         try:
-            preserved_skip = int(raw_skip) if raw_skip is not None else None
+            preserved_skip = int(skip_raw) if skip_raw is not None else None
         except:
             preserved_skip = None
 
@@ -238,7 +247,7 @@ def register_index_handlers(cyber: Client):
 
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel Indexing", callback_data="cancel_index")]])
 
-        status_msg = await safe_send_message(
+        status_msg = await safe_send(
             bot, query.from_user.id,
             f"Indexing `{chat_id}`...",
             reply_markup=kb
@@ -248,9 +257,9 @@ def register_index_handlers(cyber: Client):
             index_files_task(bot, status_msg, chat_id, start_id, last_id)
         )
 
-        await query.answer("Index started.")
+        await query.answer("Started.")
 
-    # Cancel index
+    # ------- CANCEL INDEX -------
     @cyber.on_callback_query(filters.regex("cancel_index"))
     async def cancel(bot, query):
         global index_task
@@ -258,10 +267,10 @@ def register_index_handlers(cyber: Client):
             index_task.cancel()
             await query.answer("Cancelling...")
         else:
-            await query.message.edit_text("No active index.")
-            await query.answer("Nothing to cancel.")
+            await query.message.edit_text("No active index to cancel.")
+            await query.answer("Nothing running.")
 
-    # Cancel prompt
+    # ------- CANCEL PROMPT -------
     @cyber.on_callback_query(filters.regex("cancel_prompt"))
     async def cancel_prompt(bot, query):
         try:
@@ -270,7 +279,7 @@ def register_index_handlers(cyber: Client):
             pass
         await query.answer("Cancelled.")
 
-    # /setskip
+    # ------- /setskip -------
     @cyber.on_message(filters.private & filters.user(ADMIN_USERS) & filters.command("setskip"))
     async def setskip(bot, message):
         parts = message.text.split()
@@ -278,22 +287,22 @@ def register_index_handlers(cyber: Client):
             return await message.reply("Usage: /setskip <msg_id>")
 
         try:
-            skip_val = int(parts[1])
+            val = int(parts[1])
         except:
-            return await message.reply("Invalid number.")
+            return await message.reply("Invalid ID.")
 
-        await set_global_setting(INDEX_SKIP_ID_KEY, skip_val)
-        await message.reply(f"Skip set. Index will start from {skip_val + 1}")
+        await set_global_setting(INDEX_SKIP_ID_KEY, val)
+        await message.reply(f"Skip set. Index will start from **{val + 1}**")
 
-    # /getskip
+    # ------- /getskip -------
     @cyber.on_message(filters.private & filters.user(ADMIN_USERS) & filters.command("getskip"))
     async def getskip(bot, message):
         raw = await get_global_setting(INDEX_SKIP_ID_KEY, None)
-        await message.reply(f"Skip stored: {raw!r}")
+        await message.reply(f"Skip stored: **{raw!r}**")
 
     return [
-        rti_handler,
-        forward_index,
+        rti,
+        forwarded,
         indexlink,
         start_index,
         cancel,
