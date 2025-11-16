@@ -1,6 +1,5 @@
-# ======================= index.py (FULL FIXED VERSION) ============================
+# index.py
 import asyncio
-import re
 import gc
 from typing import Optional
 from pyrogram import Client, filters, enums
@@ -22,7 +21,6 @@ lock = asyncio.Lock()
 media_filter = filters.document | filters.video | filters.audio
 index_task: Optional[asyncio.Task] = None
 
-link_pattern = r"https://t\.me/c/(\d+)/(\d+)"
 INDEX_STATUS_KEY = "CURRENT_INDEX_TASK"
 INDEX_SKIP_ID_KEY = "INDEX_SKIP_ID"
 
@@ -90,8 +88,7 @@ async def safe_edit_message(msg_obj: Message, text: str, **kwargs):
 # ================== Helper ====================
 
 async def update_status_message(msg_obj, checked, saved, skipped_duplicates=0, skipped_movies=0, total_series=0):
-    text = f"""
-Total messages checked: **{checked}**
+    text = f"""Total messages checked: **{checked}**
 Total series added: **{total_series}**
 Duplicate skipped: **{skipped_duplicates}**
 Movies skipped: **{skipped_movies}**
@@ -104,16 +101,38 @@ Total files saved: **{saved}**
 # ================== INDEXING ENGINE ====================
 
 async def index_files_task(bot: Client, status_msg: Message, chat_id: int, start_msg_id: int, last_msg_id: int):
+    """
+    Index messages from `current`..`last_msg_id`.
+    `current` is computed as max(start_msg_id, last_processed, skip_id + 1).
+    """
     global index_task
 
     chat_key = f"index_{chat_id}"
     last_processed = await get_bot_state(chat_key)
-    skip_id = await get_global_setting(INDEX_SKIP_ID_KEY, 0)
 
-    current = max(last_processed or 0, start_msg_id, skip_id + 1)
+    # read skip and coerce to int, default 0
+    raw_skip = await get_global_setting(INDEX_SKIP_ID_KEY, 0)
+    try:
+        skip_id = int(raw_skip) if raw_skip is not None else 0
+    except Exception:
+        logger.warning("INDEX_SKIP_ID malformed (%r), defaulting to 0", raw_skip)
+        skip_id = 0
+
+    # build candidates and pick max
+    candidates = [start_msg_id, skip_id + 1]
+    if last_processed is not None:
+        try:
+            candidates.append(int(last_processed))
+        except Exception:
+            logger.warning("last_processed malformed (%r), ignoring", last_processed)
+
+    current = max(candidates)
     total = last_msg_id
 
-    logger.info("Indexing %s from %s → %s (skip=%s)", chat_id, current, total, skip_id)
+    logger.info(
+        "Index start: chat=%s total=%s | start_msg_id=%s | last_processed=%r | skip=%s | chosen_current=%s",
+        chat_id, total, start_msg_id, last_processed, skip_id, current
+    )
 
     await set_global_setting(INDEX_STATUS_KEY, f"RUNNING|{chat_id}|{current}|{last_msg_id}")
 
@@ -232,7 +251,7 @@ def register_index_handlers(cyber: Client):
             reply_markup=kb,
         )
 
-    # ======================= START INDEX (FIXED) ==========================
+    # ======================= START INDEX (PRESERVE SKIP) ==========================
     @cyber.on_callback_query(filters.regex(r"^index -?\d+ \d+ \d+"))
     async def start_index(bot, query):
         global index_task
@@ -241,17 +260,27 @@ def register_index_handlers(cyber: Client):
         if index_task and not index_task.done():
             return await query.answer("Already running.", show_alert=True)
 
+        # parse params
         chat_id, start_id, last_id = map(int, query.data.split()[1:])
 
-        # Preserve skip ID before clearing index states
-        skip_val = await get_global_setting(INDEX_SKIP_ID_KEY, None)
-        await delete_all_index_states()
-        if skip_val is not None:
-            await set_global_setting(INDEX_SKIP_ID_KEY, int(skip_val))
+        # Preserve skip before clearing any states
+        raw_skip = await get_global_setting(INDEX_SKIP_ID_KEY, None)
+        try:
+            preserved_skip = int(raw_skip) if raw_skip is not None else None
+        except Exception:
+            logger.warning("Preserve skip failed: malformed value %r", raw_skip)
+            preserved_skip = None
 
+        # Clear only index_ keys and restore skip if it existed
+        await delete_all_index_states()
+        if preserved_skip is not None:
+            await set_global_setting(INDEX_SKIP_ID_KEY, int(preserved_skip))
+
+        # Ensure bot state exists (index task will compute actual start using skip)
         await save_bot_state(f"index_{chat_id}", start_id)
         await set_global_setting(INDEX_STATUS_KEY, "IDLE")
 
+        logger.info("Starting index for chat=%s start=%s last=%s preserved_skip=%r", chat_id, start_id, last_id, preserved_skip)
         await query.message.edit_text("Starting index...")
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel Indexing", callback_data="cancel_index")]])
 
@@ -279,7 +308,10 @@ def register_index_handlers(cyber: Client):
             index_task.cancel()
             return await query.answer("Cancelling...")
         else:
-            await query.message.edit_text("No active index.")
+            try:
+                await query.message.edit_text("No active index.")
+            except Exception:
+                pass
             await query.answer("Nothing to cancel.")
 
     @cyber.on_callback_query(filters.regex(r"^can-index$"))
@@ -304,10 +336,10 @@ def register_index_handlers(cyber: Client):
 
         try:
             skip_id = int(args[1])
-        except:
+        except Exception:
             return await message.reply("Invalid message ID.")
 
-        await set_global_setting(INDEX_SKIP_ID_KEY, skip_id)
+        await set_global_setting(INDEX_SKIP_ID_KEY, int(skip_id))
         await message.reply(f"Skip ID updated.\nIndexer will start from **{skip_id + 1}**.")
 
     # ======================= /getskip ==========================
@@ -316,7 +348,11 @@ def register_index_handlers(cyber: Client):
         val = await get_global_setting(INDEX_SKIP_ID_KEY, None)
         if val is None:
             return await message.reply("No skip set.")
-        return await message.reply(f"Current skip: **{val}** → indexing starts from **{int(val)+1}**")
+        try:
+            v = int(val)
+        except Exception:
+            return await message.reply(f"Current skip stored but malformed: {val!r}")
+        return await message.reply(f"Current skip: **{v}** → indexing starts from **{v+1}**")
 
     return [
         media_handler,
