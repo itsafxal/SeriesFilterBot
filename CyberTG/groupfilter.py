@@ -1,6 +1,4 @@
 # groupfilter.py
-# FINAL VERSION WITH STRICTMATCH + FUZZY SUGGESTIONS + NO FALSE AUTO-SELECT
-
 import asyncio
 import base64
 import re
@@ -8,33 +6,35 @@ import shelve
 from urllib.parse import quote
 
 from pyrogram import Client, filters, enums
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto
+from pyrogram.types import (
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+    InputMediaPhoto,
+)
 
-# NOTE: These imports rely on your project structure (config, utils, DB.database, .poster)
 from config import (
-    logger,
-    DEFAULT_POSTER,
-    MAX_CALLBACK_LENGTH,
-    OMDB_CACHE_DB,
+    logger,
+    DEFAULT_POSTER,
+    MAX_CALLBACK_LENGTH,
+    OMDB_CACHE_DB,
 )
 
 from utils import clean_series_name, delete_message_later
 from DB.database import (
-    search_series,
-    get_series_summary,
-    get_unique_languages_by_season,
-    get_unique_qualities_by_lang_season,
+    search_series,
+    get_series_summary,
+    get_unique_languages_by_season,
+    get_unique_qualities_by_lang_season,
 )
 from .poster import get_series_poster_async
 
-# ----------------------------
-# Try RapidFuzz
-# ----------------------------
 try:
-    from rapidfuzz import process as rf_process, fuzz as rf_fuzz
-    HAVE_RAPIDFUZZ = True
-except ImportError: # Catch specific import error
-    HAVE_RAPIDFUZZ = False
+    from rapidfuzz import process as rf_process, fuzz as rf_fuzz
+    HAVE_RAPIDFUZZ = True
+except ImportError:
+    HAVE_RAPIDFUZZ = False
 
 
 # ---------------------------------------------------------
