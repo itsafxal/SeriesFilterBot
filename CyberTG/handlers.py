@@ -157,8 +157,7 @@ def register_conversation_handlers(cyber: Client):
                 btn.append([InlineKeyboardButton(text="Close", callback_data=f'close_suggestion|{user_id}')])
                 
                 sent_message = await message.reply(
-                    f"I couldn't find anything related to `<code>{query}</code>`.
-Did you mean any one of these?",
+                    f"I couldn't find anything related to `<code>{query}</code>`.\nDid you mean any one of these?",
                     reply_markup=InlineKeyboardMarkup(btn),
                     parse_mode=enums.ParseMode.HTML
                 )
