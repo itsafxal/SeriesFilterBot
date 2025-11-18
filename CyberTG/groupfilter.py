@@ -1,6 +1,5 @@
 # groupfilter.py
-# FINAL VERSION WITH STRICT MATCH + FUZZY SUGGESTIONS + NO FALSE AUTO-SELECT
-# WEDNESDA -> SUGGESTIONS (NOT AUTO Wednesday)
+# FINAL VERSION WITH STRICTMATCH + FUZZY SUGGESTIONS + NO FALSE AUTO-SELECT
 
 import asyncio
 import base64
@@ -106,7 +105,7 @@ def _fuzzy_match(query: str, candidates: list, limit=5):
         )
         return [(x[0], x[1]) for x in res if x[1] >= 30]
     else:
-        # simple fallback
+        # basic fallback
         scored = []
         ql = query.lower()
         for c in candidates:
@@ -120,20 +119,37 @@ def _fuzzy_match(query: str, candidates: list, limit=5):
 
 
 # ---------------------------------------------------------
-# STRICT MATCH CHECK
+# STRICT MATCH CHECK (NEW 70% PREFIX RULE)
 # ---------------------------------------------------------
 def _strict_match_only(query: str, names: list):
     """
-    Return only exact or strict-prefix matches.
-    Wednesday.startswith("wednesda") == False → NOT strict
-    Wednesday.startswith("wednes") == True → strict
+    Strict prefix match:
+    - Only accept prefix if query_length >= 70% of full title
+    - Example: Wednesday (9 letters) -> min_prefix = 7
+      'wedne' (5)   -> reject
+      'wednes' (6)  -> reject
+      'wednesd' (7) -> ACCEPT
     """
     q = query.lower().strip()
+    qlen = len(q)
     matches = []
+
     for n in names:
         nl = n.lower().strip()
-        if nl == q or nl.startswith(q):
+        nlen = len(nl)
+
+        # exact match always ok
+        if nl == q:
             matches.append(n)
+            continue
+
+        # dynamic minimum prefix
+        min_prefix = max(1, int(nlen * 0.70))
+
+        # accept only long-enough prefix
+        if qlen >= min_prefix and nl.startswith(q):
+            matches.append(n)
+
     return matches
 
 
@@ -155,7 +171,7 @@ def register_groupfilter_handlers(cyber: Client):
         if text.startswith("/") or "http" in text:
             return
 
-        # 1) Search exact/loose from DB
+        # 1) initial DB search
         try:
             results = await search_series(text)
         except:
@@ -163,20 +179,18 @@ def register_groupfilter_handlers(cyber: Client):
 
         results = [clean_series_name(r) for r in results]
 
-        # 2) STRICT MATCH FILTER
+        # 2) STRICT MATCH
         strict = _strict_match_only(text, results)
 
         if strict:
-            # We have a strict match → AUTO SELECT
+            # auto forwarding ONLY if long prefix
             series = strict[0]
             return await _send_series_entry(cyber, m, series)
 
-        # No strict match → DO NOT AUTO SELECT
-        # Continue to suggestions.
-
-        # 3) CLEAN QUERY & SEARCH AGAIN
+        # 3) CLEANED query
         cleaned = _clean_query(text)
         cleaned_results = []
+
         if cleaned:
             try:
                 cleaned_results = await search_series(cleaned)
@@ -185,13 +199,12 @@ def register_groupfilter_handlers(cyber: Client):
 
         cleaned_results = [clean_series_name(r) for r in cleaned_results]
 
-        # if cleaned_results still has strict match
         strict2 = _strict_match_only(cleaned, cleaned_results)
         if strict2:
             series = strict2[0]
             return await _send_series_entry(cyber, m, series)
 
-        # 4) Build fuzzy candidate pool
+        # 4) fuzzy suggestions
         candidates = list({*results, *cleaned_results})
         if not candidates:
             return await m.reply_text(
@@ -206,30 +219,30 @@ def register_groupfilter_handlers(cyber: Client):
                 parse_mode=enums.ParseMode.HTML
             )
 
-        # Take top 3 unique
+        # top 3 suggestions
         suggestions = []
-        for n, score in fuzzy:
+        for n, s in fuzzy:
             if n not in suggestions:
                 suggestions.append(n)
             if len(suggestions) >= 3:
                 break
 
-        # Show suggestions
+        # suggestion UI
         uid = m.from_user.id if m.from_user else 0
         kb = [[InlineKeyboardButton(s, callback_data=f"sugg_select|{uid}|{s}")]
               for s in suggestions]
         kb.append([InlineKeyboardButton("Close", callback_data=f"close_suggestion|{uid}")])
 
-        msg = await m.reply(
+        await m.reply(
             f"I couldn't find anything related to `<code>{text}</code>`.\nDid you mean any of these?",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=enums.ParseMode.HTML
         )
-
         return
 
+
     # -----------------------------------------------------
-    # SUGGESTION SELECTION
+    # SUGGESTION SELECT
     # -----------------------------------------------------
     @cyber.on_callback_query(filters.regex("^sugg_select\\|"))
     async def suggestion_select(_, q: CallbackQuery):
@@ -245,8 +258,9 @@ def register_groupfilter_handlers(cyber: Client):
             pass
         await q.answer()
 
+
     # -----------------------------------------------------
-    # gss → gls → gqs handlers
+    # gss -> gls -> gqs
     # -----------------------------------------------------
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q: CallbackQuery):
@@ -270,6 +284,7 @@ def register_groupfilter_handlers(cyber: Client):
         )
         await q.answer()
 
+
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q: CallbackQuery):
         _, series, season, lang = q.data.split("|")
@@ -283,9 +298,7 @@ def register_groupfilter_handlers(cyber: Client):
             [InlineKeyboardButton(qy, callback_data=f"gqs|{series}|{season}|{lang}|{qy}")]
             for qy in qualities
         ]
-        kb.append([
-            InlineKeyboardButton("↺ Back", callback_data=f"gss|{series}|{season}")
-        ])
+        kb.append([InlineKeyboardButton("↺ Back", callback_data=f"gss|{series}|{season}")])
 
         await q.message.edit_text(
             f"🎬 {series} — S{season} ({lang})\n\nSelect Quality:",
@@ -293,6 +306,7 @@ def register_groupfilter_handlers(cyber: Client):
             parse_mode=enums.ParseMode.MARKDOWN
         )
         await q.answer()
+
 
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
     async def gqs(_, q: CallbackQuery):
@@ -312,6 +326,7 @@ def register_groupfilter_handlers(cyber: Client):
             parse_mode=enums.ParseMode.MARKDOWN
         )
         await q.answer("Open bot in PM", show_alert=True)
+
 
     @cyber.on_callback_query(filters.regex("^gback\\|"))
     async def gback(_, q: CallbackQuery):
@@ -333,7 +348,7 @@ def register_groupfilter_handlers(cyber: Client):
 
 
 # ---------------------------------------------------------
-# SEND SERIES RESULT TO GROUP (STRICT MATCH only)
+# SEND SERIES RESULT
 # ---------------------------------------------------------
 async def _send_series_entry(cyber, m: Message, series: str):
     poster = await _build_poster_for_series(series)
@@ -367,7 +382,7 @@ async def _send_series_entry(cyber, m: Message, series: str):
 
 
 # ---------------------------------------------------------
-# EDIT SUGGESTION → SEASON MENU
+# EDIT FROM SUGGESTION -> SEASON MENU
 # ---------------------------------------------------------
 async def _edit_to_series_entry(cyber, q: CallbackQuery, series: str):
     summary = await get_series_summary(series)
