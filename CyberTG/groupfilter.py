@@ -8,13 +8,7 @@ import shelve
 from urllib.parse import quote
 
 from pyrogram import Client, filters, enums
-from pyrogram.types import (
-    Message,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    CallbackQuery,
-    InputMediaPhoto, # CRITICAL FIX: Required to edit a text message to a photo message with caption
-)
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto
 
 # NOTE: These imports rely on your project structure (config, utils, DB.database, .poster)
 from config import (
