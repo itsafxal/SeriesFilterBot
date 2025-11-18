@@ -123,12 +123,14 @@ def _fuzzy_match(query: str, candidates: list, limit=5):
 # ---------------------------------------------------------
 def _strict_match_only(query: str, names: list):
     """
-    Strict prefix match:
-    - Only accept prefix if query_length >= 70% of full title
-    - Example: Wednesday (9 letters) -> min_prefix = 7
-      'wedne' (5)   -> reject
-      'wednes' (6)  -> reject
-      'wednesd' (7) -> ACCEPT
+    STRICT match:
+    - exact match accepted
+    - prefix match ONLY if prefix >= 80% of full title length
+    Example:
+      Wednesday = 9 letters → need >= 8 letters
+      'wednes' (6)      -> reject
+      'wednesd' (7)     -> reject
+      'wednesda' (8)    -> ACCEPT
     """
     q = query.lower().strip()
     qlen = len(q)
@@ -138,15 +140,14 @@ def _strict_match_only(query: str, names: list):
         nl = n.lower().strip()
         nlen = len(nl)
 
-        # exact match always ok
+        # exact match always accepted
         if nl == q:
             matches.append(n)
             continue
 
-        # dynamic minimum prefix
-        min_prefix = max(1, int(nlen * 0.70))
+        # MINIMUM = 80% of name length
+        min_prefix = max(1, int(nlen * 0.80))
 
-        # accept only long-enough prefix
         if qlen >= min_prefix and nl.startswith(q):
             matches.append(n)
 
