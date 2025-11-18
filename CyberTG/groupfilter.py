@@ -13,6 +13,7 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     CallbackQuery,
+    InputMediaPhoto,
 )
 
 from config import (
@@ -364,20 +365,20 @@ async def _send_series_entry(cyber, m: Message, series: str):
         for s in seasons
     ]
 
-    # Send photo or fallback
-    try:
-        return await m.reply_photo(
-            poster,
-            caption,
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-    except:
-        return await m.reply_text(
-            caption,
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
+    try:
+        return await m.reply_photo(
+            poster,
+            caption,
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+    except:
+        # Fallback
+        return await m.reply_text(
+            caption,
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
 
 # ---------------------------------------------------------
 # EDIT FROM SUGGESTION -> SEASON MENU
