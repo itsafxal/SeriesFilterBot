@@ -382,28 +382,57 @@ async def _send_series_entry(cyber, m: Message, series: str):
 # ---------------------------------------------------------
 # EDIT FROM SUGGESTION -> SEASON MENU
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# EDIT FROM SUGGESTION -> FULL SERIES ENTRY (WITH CAPTION)
+# ---------------------------------------------------------
 async def _edit_to_series_entry(cyber, q: CallbackQuery, series: str):
+
+    poster = await _build_poster_for_series(series)
     summary = await get_series_summary(series)
     seasons = summary.get("seasons", [])
 
+    # Collect ALL languages and qualities (same as _send_series_entry)
+    all_langs = set()
+    all_qualities = set()
+
+    for s in seasons:
+        langs = await get_unique_languages_by_season(series, s)
+        for L in langs:
+            all_langs.add(L)
+            ql = await get_unique_qualities_by_lang_season(series, L, s)
+            all_qualities.update(ql)
+
+    # Build caption (same as _send_series_entry)
+    caption = (
+        f"**{series}**\n\n"
+        f"**Available Seasons:** {', '.join(map(str, seasons)) if seasons else 'No seasons'}\n"
+        f"**Languages:** {', '.join(sorted(all_langs)) if all_langs else 'N/A'}\n"
+        f"**Qualities:** {', '.join(sorted(all_qualities)) if all_qualities else 'N/A'}\n\n"
+        f"Select a season to continue:"
+    )
+
+    # Build season buttons
     kb = [
         [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series}|{s}")]
         for s in seasons
     ]
 
-    txt = (
-        f"**Title:** {series}\n"
-        f"**Seasons:** {len(seasons)}\n\n"
-        f"Select a season:"
-    )
-
+    # EDIT MESSAGE → with poster if possible
     try:
+        await q.message.edit_media(
+            media=InputMediaPhoto(
+                media=poster,
+                caption=caption,
+                parse_mode=enums.ParseMode.MARKDOWN,
+            ),
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+    except:
+        # Fallback (message was not a photo)
         await q.message.edit_text(
-            txt,
+            caption,
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=enums.ParseMode.MARKDOWN
         )
-    except:
-        pass
 
     await q.answer()
