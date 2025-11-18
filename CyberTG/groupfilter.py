@@ -332,24 +332,39 @@ def register_groupfilter_handlers(cyber: Client):
 
 
 # ---------------------------------------------------------
-# SEND SERIES RESULT
-# ---------------------------------------------------------
+
 async def _send_series_entry(cyber, m: Message, series: str):
     poster = await _build_poster_for_series(series)
     summary = await get_series_summary(series)
     seasons = summary.get("seasons", [])
 
+    # Collect ALL languages and qualities
+    all_langs = set()
+    all_qualities = set()
+
+    for s in seasons:
+        langs = await get_unique_languages_by_season(series, s)
+        for L in langs:
+            all_langs.add(L)
+            ql = await get_unique_qualities_by_lang_season(series, L, s)
+            all_qualities.update(ql)
+
+    # Build caption
+    caption = (
+        f"**{series}**\n\n"
+        f"**Available Seasons:** {', '.join(map(str, seasons)) if seasons else 'No seasons'}\n"
+        f"**Languages:** {', '.join(sorted(all_langs)) if all_langs else 'N/A'}\n"
+        f"**Qualities:** {', '.join(sorted(all_qualities)) if all_qualities else 'N/A'}\n\n"
+        f"Select a season to continue:"
+    )
+
+    # season buttons
     kb = [
         [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series}|{s}")]
         for s in seasons
     ]
 
-    caption = (
-        f"**{series}**\n\n"
-        f"Available Seasons: {len(seasons)}\n"
-        f"Select a season to continue:"
-    )
-
+    # Send photo or fallback
     try:
         return await m.reply_photo(
             poster,
@@ -363,7 +378,6 @@ async def _send_series_entry(cyber, m: Message, series: str):
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=enums.ParseMode.MARKDOWN
         )
-
 
 # ---------------------------------------------------------
 # EDIT FROM SUGGESTION -> SEASON MENU
