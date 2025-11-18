@@ -37,6 +37,7 @@ from .menus import (
     about_menu_handler, close_menu_handler, back_to_language_handler, back_to_search_handler, 
 )
 
+
 def register_conversation_handlers(cyber: Client):
         
     @cyber.on_message(filters.text & filters.private & ~filters.command(["start", "imdb", "autodel", "forcesub"]))
@@ -62,7 +63,71 @@ def register_conversation_handlers(cyber: Client):
             logger.warning(f"[SEARCH ERROR] search_series failed for ORIGINAL query `{query}`: {e}")
             unique_names = []
 
+        # -------------------------------
+        # STRICT MATCH LOGIC (Option A)
+        # - Only apply strict-match here in search_handler (per user's choice)
+        # - exact match -> continue to display
+        # - otherwise -> show suggestion buttons (if any)
+        # -------------------------------
+        if unique_names:
+            try:
+                # Normalize query for strict comparison
+                clean_query_lower = query.strip().lower()
+                cleaned_query = re.sub(r"\s+", "", clean_query_lower)
+
+                cleaned_db_names = [
+                    re.sub(r"\s+", "", clean_series_name(name).lower())
+                    for name in unique_names
+                ]
+
+                exact_matches = []
+                partial_matches = []
+
+                for original_name, cleaned_db in zip(unique_names, cleaned_db_names):
+                    if cleaned_db == cleaned_query:
+                        exact_matches.append(original_name)
+                    elif cleaned_query in cleaned_db:
+                        partial_matches.append(original_name)
+
+                if exact_matches:
+                    # use only exact matches (prefer first exact)
+                    unique_names = exact_matches
+                else:
+                    # No exact match -> show suggestions if any partial matches
+                    suggestion_list = partial_matches[:3]
+                    if suggestion_list:
+                        movielist = [clean_series_name(name) for name in suggestion_list]
+                        movielist = list(dict.fromkeys(movielist))
+
+                        user_id = message.from_user.id
+                        btn = [[
+                            InlineKeyboardButton(
+                                text=movie,
+                                callback_data=f"sugg_select|{user_id}|{movie}",
+                            )
+                        ] for movie in movielist]
+
+                        btn.append([InlineKeyboardButton(text="Close", callback_data=f'close_suggestion|{user_id}')])
+
+                        sent_message = await message.reply(
+                            f"I couldn't find an exact match for `<code>{query}</code>`.
+Did you mean any one of these?",
+                            reply_markup=InlineKeyboardMarkup(btn),
+                            parse_mode=enums.ParseMode.HTML
+                        )
+
+                        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+                        if auto_delete_timer and int(auto_delete_timer) > 0:
+                            asyncio.create_task(delete_message_later(cyber, sent_message.chat.id, sent_message.id, int(auto_delete_timer)))
+
+                        return
+                    # else: fall through to normal 'no results' handling below
+            except Exception as e:
+                logger.warning(f"[STRICT MATCH ERROR] {e}")
+
+        # If there were no results at all, or strict-match logic didn't find anything
         if not unique_names:
+            # Try a cleaned/stripped fallback search to prepare suggestions
             clean_query = re.sub(
                 r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil|file|that|find|und(o)*|kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*|aya(k)*(um(o)*)?|full\smovie|any(one)|with\ssubtitle(s)?)",
                 "", message.text, flags=re.IGNORECASE).strip()
@@ -93,7 +158,8 @@ def register_conversation_handlers(cyber: Client):
                 btn.append([InlineKeyboardButton(text="Close", callback_data=f'close_suggestion|{user_id}')])
                 
                 sent_message = await message.reply(
-                    f"I couldn't find anything related to `<code>{query}</code>`.\nDid you mean any one of these?",
+                    f"I couldn't find anything related to `<code>{query}</code>`.
+Did you mean any one of these?",
                     reply_markup=InlineKeyboardMarkup(btn),
                     parse_mode=enums.ParseMode.HTML
                 )
