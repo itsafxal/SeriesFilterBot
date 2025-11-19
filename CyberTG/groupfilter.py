@@ -389,6 +389,9 @@ async def _edit_to_series_entry(cyber, q: CallbackQuery, series: str):
     poster = await _build_poster_for_series(series)
     summary = await get_series_summary(series)
     seasons = summary.get("seasons", [])
+    languages_list = ", ".join(summary.get("languages", []))
+    qualities_list = ", ".join(summary.get("qualities", []))
+    seasons_count = len(seasons)
 
     # Collect ALL languages and qualities (same as _send_series_entry)
     all_langs = set()
@@ -406,11 +409,11 @@ async def _edit_to_series_entry(cyber, q: CallbackQuery, series: str):
 
     # Build caption (same as _send_series_entry)
     caption = (
-        f"**{series}**\n\n"
-        f"**Available Seasons:** {', '.join(map(str, seasons)) if seasons else 'No seasons'}\n"
-        f"**Languages:** {', '.join(sorted(all_langs)) if all_langs else 'N/A'}\n"
-        f"**Qualities:** {', '.join(sorted(all_qualities)) if all_qualities else 'N/A'}\n\n"
-        f"Select a season to continue:"
+        f"**○ Title:** {series}\n"
+        f"**○ Language:** {languages_list or 'N/A'}\n"
+        f"**○ Seasons Available:** {seasons_count}\n"
+        f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
+        f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
     )
 
     # Build season buttons
