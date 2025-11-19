@@ -353,7 +353,7 @@ async def _send_series_entry(cyber, m: Message, series: str):
     kb = [
         [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series}|{s}")]
         for s in seasons
-
+    ]
     # Send photo or fallback
     try:
         return await m.reply_photo(
