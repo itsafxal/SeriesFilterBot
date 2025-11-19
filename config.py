@@ -6,8 +6,8 @@ from pymongo import TEXT
 # --- Bot Configuration ---
 API_ID = 28643132
 API_HASH = "510c3009ea589830a89e045bf8aae656"
-BOT_TOKEN = "8528994143:AAECwfe5KQ0YixO_DPj0jVus_qhpf97jJ-A"
-MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
+BOT_TOKEN = "7661197159:AAHgvfHL2qK-r-7uDiNkAjROGL1nYjM6cZE"
+MONGO_URI = "mongodb+srv://ss:ss@seriesfilterbot.p88od4y.mongodb.net/?appName=SeriesFilterBOT"
 
 # --- Indexing Configuration ---
 INDEX_CHANNELS = [-1001996538290] 
@@ -18,7 +18,7 @@ FORCE_SUB_CHANNEL = None
 START_IMG = "https://sanishtech.com/i/690cfef2312bd-1762459378.jpg"
 
 #Omdb poster config
-OMDB_API_KEY = "969cbb6f"
+OMDB_API_KEY = "f93ab313"
 OMDB_CACHE_DB = "/tmp/omdb_cache.db"
 DEFAULT_POSTER = "https://sanishtech.com/i/690ceab460363-1762454196.jpg"
 
