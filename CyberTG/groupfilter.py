@@ -330,11 +330,14 @@ def register_groupfilter_handlers(cyber: Client):
 # Sends the initial series entry (with poster and options)
 # ---------------------------------------------------------
 async def _send_series_entry(cyber, m: Message, series: str):
+    poster = await _build_poster_for_series(series)
     summary = await get_series_summary(series)
+
+    seasons = summary.get("seasons", [])
     languages_list = ", ".join(summary.get("languages", []))
-    seasons_count = len(summary.get("seasons", []))
     qualities_list = ", ".join(summary.get("qualities", []))
-    
+    seasons_count = len(seasons)
+
     # Collect ALL languages and qualities
     all_langs = set()
     all_qualities = set()
@@ -352,25 +355,26 @@ async def _send_series_entry(cyber, m: Message, series: str):
     caption = (
         f"**○ Title:** {series}\n"
         f"**○ Language:** {languages_list or 'N/A'}\n"
-        f"**○ Season Available:** {seasons_count}\n"
+        f"**○ Seasons Available:** {seasons_count}\n"
         f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
         f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
-        )
+    )
+
     # season buttons
     kb = [
         [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series}|{s}")]
         for s in seasons
     ]
-    # Send photo or fallback
+
     try:
         return await m.reply_photo(
             poster,
-            caption,
+            caption=caption,
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=enums.ParseMode.MARKDOWN
         )
     except Exception as e:
-        logger.error(f"Failed to reply_photo for {series} (will use text fallback): {e}")
+        logger.error(f"Failed to reply_photo for {series}, using text fallback: {e}")
         return await m.reply_text(
             caption,
             reply_markup=InlineKeyboardMarkup(kb),
