@@ -206,7 +206,7 @@ def register_groupfilter_handlers(cyber: Client):
 
         # suggestion UI
         uid = m.from_user.id if m.from_user else 0
-        kb = [[InlineKeyboardButton(s, callback_data=f"sugg_select|{uid}|{s}")]
+        kb = [[InlineKeyboardButton(s, callback_data=f"gsugg|{uid}|{s}")]
               for s in suggestions]
         kb.append([InlineKeyboardButton("Close", callback_data=f"close_suggestion|{uid}")])
 
@@ -221,7 +221,7 @@ def register_groupfilter_handlers(cyber: Client):
     # -----------------------------------------------------
     # SUGGESTION SELECT
     # -----------------------------------------------------
-    @cyber.on_callback_query(filters.regex("^sugg_select\\|"))
+    @cyber.on_callback_query(filters.regex("^gsugg\\|"))
     async def suggestion_select(_, q: CallbackQuery):
         _, uid, series = q.data.split("|", 2)
         # Optional check if user matches uid, omitted for brevity/simplicity
