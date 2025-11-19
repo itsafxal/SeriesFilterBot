@@ -351,9 +351,6 @@ async def _send_series_entry(cyber, m: Message, series: str):
     # Build caption
     caption = (
         f"**{series}**\n\n"
-        f"**Available Seasons:** {', '.join(map(str, seasons)) if seasons else 'No seasons'}\n"
-        f"**Languages:** {', '.join(sorted(all_langs)) if all_langs else 'N/A'}\n"
-        f"**Qualities:** {', '.join(sorted(all_qualities)) if all_qualities else 'N/A'}\n\n"
         f"Select a season to continue:"
     )
 
