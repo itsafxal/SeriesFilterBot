@@ -348,30 +348,24 @@ async def _send_series_entry(cyber, m: Message, series: str):
         except Exception as e:
             logger.warning(f"Error gathering season data for {series} S{s}: {e}")
 
-    # Build caption
-    caption = (
-        f"**{series}**\n\n"
-        f"Select a season to continue:"
-    )
-
+    
     # season buttons
     kb = [
         [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series}|{s}")]
         for s in seasons
-    ]
 
     # Send photo or fallback
     try:
         return await m.reply_photo(
             poster,
-            caption,
+            caption = "hlo",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=enums.ParseMode.MARKDOWN
         )
     except Exception as e:
         logger.error(f"Failed to reply_photo for {series} (will use text fallback): {e}")
         return await m.reply_text(
-            caption,
+            caption = "hlo",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=enums.ParseMode.MARKDOWN
         )
