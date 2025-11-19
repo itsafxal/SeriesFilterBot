@@ -257,7 +257,7 @@ def register_groupfilter_handlers(cyber: Client):
         kb.append([InlineKeyboardButton("↺ Back", callback_data=f"gback|{series}")])
 
         await q.message.edit_caption( # Use edit_caption if the message is a photo
-            f"📺 **{series} — S{season}**\n\nSelect Language:",
+            f"📺 Title **{series}  — Season {season}**\n\nExcellent choice!✨ {series} is a fantastic show. I hope, you will enjoy this TV Series\n\n🌐 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗔𝘂𝗱𝗶𝗼 𝗟𝗮𝗻𝗴𝘂𝗮𝗴𝗲 👇",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=enums.ParseMode.MARKDOWN
         )
@@ -280,7 +280,7 @@ def register_groupfilter_handlers(cyber: Client):
         kb.append([InlineKeyboardButton("↺ Back", callback_data=f"gss|{series}|{season}")])
 
         await q.message.edit_caption( # Use edit_caption if the message is a photo
-            f"🎬 {series} — S{season} ({lang})\n\nSelect Quality:",
+            f"🎬 {series} – Season {season} ({lang})\n\n📌 Quality Selector\n\nTap a quality below —\n▶️ Bot will instantly auto-send the **WHOLE SEASON** (all episodes) in that same resolution.\n\n>⚡ Lightning Fast\n>📦 Full Season Pack\n>🎥 Download And Watch:",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=enums.ParseMode.MARKDOWN
         )
