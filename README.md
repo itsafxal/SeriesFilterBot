@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://i.ibb.co/qpxpGmC/image.jpg" alt="Series-filter-Bot">
+  <img src="https://ibb.co/LFk78Pr" alt="Series-filter-Bot">
 </p>
 <h1 align="center">
   <a href="https://telegram.me/TomxSupport">afsal</a>
