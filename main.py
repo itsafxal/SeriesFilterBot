@@ -8,6 +8,7 @@ from CyberTG.handlers import register_conversation_handlers
 from CyberTG.groupfilter import register_groupfilter_handlers
 from DB.database import initialize_sql_db, get_global_setting, set_global_setting
 from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # --- New Index Resumption Checker ---
 async def check_and_resume_index(cyber: Client):
@@ -39,8 +40,6 @@ async def check_and_resume_index(cyber: Client):
             return
 
         # Import types here to avoid circular imports at module import time
-        from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel Indexing", callback_data="cancel_index")]])
 
         msg = await cyber.send_message(
