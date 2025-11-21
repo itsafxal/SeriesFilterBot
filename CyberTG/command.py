@@ -14,75 +14,125 @@ from DB.database import (
     get_total_files,
     get_total_users,
     get_all_files_by_season_and_quality,
-    get_index_channels, # NEW: Import for channel indexing
-    set_index_channels, # NEW: Import for channel indexing
+    get_index_channels, # Import for channel indexing
+    set_index_channels, # Import for channel indexing
 )
-from .index import register_index_handlers # NEW: Import index handlers
+from .index import register_index_handlers # Import index handlers
 
 # --- GLOBALS REMOVED: lock, media_filter, index_task, link_pattern, INDEX_STATUS_KEY, INDEX_SKIP_ID_KEY, extract_links, index_files_task ---
 # The above were moved to index.py
-
-# --- NEW INDEX CHANNEL MANAGEMENT COMMANDS ---
-
-@Client.on_message(filters.command("addindex") & filters.user(ADMIN_USERS))
-async def add_index_channel(_, message):
-    """Adds a channel ID to the list of channels to be indexed."""
-    if len(message.command) < 2:
-        return await message.reply("Usage:\n`/addindex <channel_id>`", parse_mode=enums.ParseMode.MARKDOWN)
-
-    try:
-        cid = int(message.command[1])
-    except:
-        return await message.reply("❌ Invalid Channel ID. It must be an integer (e.g., -1001234567890).")
-
-    channels = await get_index_channels()
-    if cid in channels:
-        return await message.reply("⚠️ Channel ID is already in the index list.")
-
-    channels.append(cid)
-    await set_index_channels(channels)
-    await message.reply(f"✅ Added index channel: `{cid}`", parse_mode=enums.ParseMode.MARKDOWN)
-
-
-@Client.on_message(filters.command("delindex") & filters.user(ADMIN_USERS))
-async def delete_index_channel(_, message):
-    """Removes a channel ID from the list of channels to be indexed."""
-    if len(message.command) < 2:
-        return await message.reply("Usage:\n`/delindex <channel_id>`", parse_mode=enums.ParseMode.MARKDOWN)
-
-    try:
-        cid = int(message.command[1])
-    except:
-        return await message.reply("❌ Invalid Channel ID. It must be an integer.")
-
-    channels = await get_index_channels()
-    if cid not in channels:
-        return await message.reply("⚠️ Channel ID not found in the current index list.")
-
-    channels.remove(cid)
-    await set_index_channels(channels)
-    await message.reply(f"🗑️ Removed index channel: `{cid}`", parse_mode=enums.ParseMode.MARKDOWN)
-
-
-@Client.on_message(filters.command("listindex") & filters.user(ADMIN_USERS))
-async def list_index_channels(_, message):
-    """Lists all channel IDs currently set for indexing."""
-    channels = await get_index_channels()
-    if not channels:
-        return await message.reply("📝 No index channels set.")
-
-    text = "📝 **Current Index Channels:**\n"
-    text += "\n".join(f"`{c}`" for c in channels)
-    await message.reply(text, parse_mode=enums.ParseMode.MARKDOWN)
-
-# --- END NEW INDEX CHANNEL MANAGEMENT COMMANDS ---
-
 
 def register_command_handlers(cyber: Client):
     """Registers all command-based message handlers with the Pyrogram client."""
 
     # Register indexing handlers from the new file
     index_handlers = register_index_handlers(cyber)
+
+    # ================================
+    #        ADD INDEX CHANNEL
+    # ================================
+    @cyber.on_message(filters.command("addindex") & filters.user(ADMIN_USERS))
+    async def add_index_channel(_, message):
+        if len(message.command) < 2:
+            return await message.reply(
+                "Usage:\n`/addindex <channel_id>`",
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+
+        try:
+            cid = int(message.command[1])
+        except:
+            return await message.reply("❌ Invalid Channel ID. It must be an integer.")
+
+        channels = await get_index_channels()
+        if cid in channels:
+            return await message.reply("⚠️ Channel ID already exists.")
+
+        channels.append(cid)
+        await set_index_channels(channels)
+
+        await message.reply(
+            f"✅ Added index channel: `{cid}`",
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+
+    # ================================
+    #        DELETE INDEX CHANNEL
+    # ================================
+    @cyber.on_message(filters.command("delindex") & filters.user(ADMIN_USERS))
+    async def delete_index_channel(_, message):
+
+        if len(message.command) < 2:
+            return await message.reply(
+                "Usage:\n`/delindex <channel_id>`",
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+
+        try:
+            cid = int(message.command[1])
+        except:
+            return await message.reply("❌ Invalid Channel ID. It must be an integer.")
+
+        channels = await get_index_channels()
+        if cid not in channels:
+            return await message.reply("⚠️ Channel ID not found.")
+
+        channels.remove(cid)
+        await set_index_channels(channels)
+
+        text = f"🗑️ Removed index channel: `{cid}`"
+        await message.reply(
+            text,
+            parse_mode=enums.ParseMode.MARKDOWN,
+            disable_web_page_preview=True
+        )
+
+    # ================================
+    #        LIST INDEX CHANNELS
+    # ================================
+    @cyber.on_message(filters.command("listindex") & filters.user(ADMIN_USERS))
+    async def list_index_channels(_, message):
+
+        channels = await get_index_channels()
+        if not channels:
+            return await message.reply("📝 No index channels configured.")
+
+        text = "📝 **Current Index Channels:**\n\n"
+
+        for cid in channels:
+            info = f"• ID: `{cid}`\n"
+            try:
+                chat = await cyber.get_chat(cid)
+                info += f"  Title: **{chat.title}**"
+
+                # Export invite link safely
+                invite = None
+                try:
+                    invite = await cyber.export_chat_invite_link(cid)
+                except:
+                    pass
+
+                if invite:
+                    info += f" ([Invite Link]({invite}))"
+                elif chat.username:
+                    info += f" (@{chat.username})"
+                else:
+                    info += " (Private/No Link)"
+
+                info += "\n"
+
+            except Exception as e:
+                logger.error(f"Error fetching channel {cid}: {e}")
+                info += "  Title: `[Access Denied or Not Found]`\n"
+
+            text += info
+
+        await message.reply(
+            text,
+            parse_mode=enums.ParseMode.MARKDOWN,
+            disable_web_page_preview=True
+        )
+
 
     @cyber.on_message(filters.command("start") & filters.private)
     async def start_command(_, message: Message):
@@ -389,9 +439,10 @@ def register_command_handlers(cyber: Client):
             logger.error(f"Error in autodel_command: {e}")
 
     # The function must return a list of handlers for registration in main.py
+    # The new index channel commands are already registered via their decorators inside this function.
     return [
         start_command,
-        *index_handlers, # NEW: Include all handlers from index.py
+        *index_handlers,
         poster_toggle_command,
         forcesub_command,
         autodel_command,
@@ -399,7 +450,15 @@ def register_command_handlers(cyber: Client):
         deleteall_cmd,
         deletefile_cmd,
         total_cmd,
-        add_index_channel, # NEW
-        delete_index_channel, # NEW
-        list_index_channels, # NEW
+        # The new index channel commands (add_index_channel, delete_index_channel, list_index_channels)
+        # are now automatically registered by their @cyber.on_message decorators,
+        # but since they are defined inside the function, they must be included in the return list.
+        # However, to be consistent with the other commands defined outside the function in the first step,
+        # I've included them here. Wait, since they are defined with @cyber.on_message inside
+        # this function, they don't need to be in the final return list as they are not
+        # being used as a simple function reference, but as decorators on the client object (cyber).
+        # Let's keep them in the list for full clarity and consistency with the previous structure.
+        add_index_channel,
+        delete_index_channel,
+        list_index_channels,
     ]
