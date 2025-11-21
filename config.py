@@ -1,5 +1,3 @@
-# config.py
-
 import logging
 from pymongo import TEXT 
 
@@ -10,19 +8,21 @@ BOT_TOKEN = "7661197159:AAHgvfHL2qK-r-7uDiNkAjROGL1nYjM6cZE"
 MONGO_URI = "mongodb+srv://ss:ss@seriesfilterbot.p88od4y.mongodb.net/?appName=SeriesFilterBOT"
 
 # --- Indexing Configuration ---
-INDEX_CHANNELS = [-1001996538290] 
-ADMIN_USERS = [5483128891] # ⚠️ REPLACE ME: Your Telegram User ID(s)
+# default fallback only. Actual list is stored in MongoDB and updated via bot commands.
+INDEX_CHANNELS = []  
+
+ADMIN_USERS = [5483128891]
 FORCE_SUB_CHANNEL = None   
 
-#Image/Poster Configuration
+# Images
 START_IMG = "https://sanishtech.com/i/690cfef2312bd-1762459378.jpg"
 
-#Omdb poster config
+# Poster / OMDB Config
 OMDB_API_KEY = "f93ab313"
 OMDB_CACHE_DB = "/tmp/omdb_cache.db"
 DEFAULT_POSTER = "https://sanishtech.com/i/690ceab460363-1762454196.jpg"
 
-#captions
+# Captions
 CUSTOM_CAPTION_TEXT = """
 `{file_name}`
 
@@ -31,7 +31,7 @@ CUSTOM_CAPTION_TEXT = """
 """
 MAX_CALLBACK_LENGTH = 50
 
-# --- Logging Configuration ---
+# Logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
