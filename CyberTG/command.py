@@ -14,11 +14,69 @@ from DB.database import (
     get_total_files,
     get_total_users,
     get_all_files_by_season_and_quality,
+    get_index_channels, # NEW: Import for channel indexing
+    set_index_channels, # NEW: Import for channel indexing
 )
 from .index import register_index_handlers # NEW: Import index handlers
 
 # --- GLOBALS REMOVED: lock, media_filter, index_task, link_pattern, INDEX_STATUS_KEY, INDEX_SKIP_ID_KEY, extract_links, index_files_task ---
 # The above were moved to index.py
+
+# --- NEW INDEX CHANNEL MANAGEMENT COMMANDS ---
+
+@Client.on_message(filters.command("addindex") & filters.user(ADMIN_USERS))
+async def add_index_channel(_, message):
+    """Adds a channel ID to the list of channels to be indexed."""
+    if len(message.command) < 2:
+        return await message.reply("Usage:\n`/addindex <channel_id>`", parse_mode=enums.ParseMode.MARKDOWN)
+
+    try:
+        cid = int(message.command[1])
+    except:
+        return await message.reply("❌ Invalid Channel ID. It must be an integer (e.g., -1001234567890).")
+
+    channels = await get_index_channels()
+    if cid in channels:
+        return await message.reply("⚠️ Channel ID is already in the index list.")
+
+    channels.append(cid)
+    await set_index_channels(channels)
+    await message.reply(f"✅ Added index channel: `{cid}`", parse_mode=enums.ParseMode.MARKDOWN)
+
+
+@Client.on_message(filters.command("delindex") & filters.user(ADMIN_USERS))
+async def delete_index_channel(_, message):
+    """Removes a channel ID from the list of channels to be indexed."""
+    if len(message.command) < 2:
+        return await message.reply("Usage:\n`/delindex <channel_id>`", parse_mode=enums.ParseMode.MARKDOWN)
+
+    try:
+        cid = int(message.command[1])
+    except:
+        return await message.reply("❌ Invalid Channel ID. It must be an integer.")
+
+    channels = await get_index_channels()
+    if cid not in channels:
+        return await message.reply("⚠️ Channel ID not found in the current index list.")
+
+    channels.remove(cid)
+    await set_index_channels(channels)
+    await message.reply(f"🗑️ Removed index channel: `{cid}`", parse_mode=enums.ParseMode.MARKDOWN)
+
+
+@Client.on_message(filters.command("listindex") & filters.user(ADMIN_USERS))
+async def list_index_channels(_, message):
+    """Lists all channel IDs currently set for indexing."""
+    channels = await get_index_channels()
+    if not channels:
+        return await message.reply("📝 No index channels set.")
+
+    text = "📝 **Current Index Channels:**\n"
+    text += "\n".join(f"`{c}`" for c in channels)
+    await message.reply(text, parse_mode=enums.ParseMode.MARKDOWN)
+
+# --- END NEW INDEX CHANNEL MANAGEMENT COMMANDS ---
+
 
 def register_command_handlers(cyber: Client):
     """Registers all command-based message handlers with the Pyrogram client."""
@@ -340,5 +398,8 @@ def register_command_handlers(cyber: Client):
         broadcast_cmd,
         deleteall_cmd,
         deletefile_cmd,
-        total_cmd
+        total_cmd,
+        add_index_channel, # NEW
+        delete_index_channel, # NEW
+        list_index_channels, # NEW
     ]
