@@ -1,4 +1,4 @@
-# ======================= index.py (FINAL FULL VERSION WITH CONFIRM-SKIP) ============================
+# ======================= index.py (UPDATED FOR MULTI-CHANNEL) ============================
 import asyncio
 import gc
 from typing import Optional
@@ -6,13 +6,14 @@ from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, ChannelPrivate
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import logger, ADMIN_USERS, INDEX_CHANNELS
+from config import logger, ADMIN_USERS
 from DB.database import (
     get_bot_state,
     save_bot_state,
     get_global_setting,
     set_global_setting,
     delete_all_index_states,
+    get_index_channels,
 )
 from utils import extract_links, save_series_file_for_bulk_index
 
@@ -112,8 +113,7 @@ async def index_files_task(bot: Client, status_msg: Message, chat_id: int, start
                 except:
                     pass
 
-            current_msg = current  # correct message ID for display
-
+            current_msg = current  
             current += 1
             checked += 1
             counter += 1
@@ -142,7 +142,6 @@ async def index_files_task(bot: Client, status_msg: Message, chat_id: int, start
 # ------------------ CONFIRMATION START CALCULATOR ------------------
 
 async def compute_effective_start(chat_id: int, default_start: int):
-    """Compute real starting message using skip, resume and start_id."""
     skip_raw = await get_global_setting(INDEX_SKIP_ID_KEY, 0)
     try:
         skip_id = int(skip_raw)
@@ -163,7 +162,8 @@ def register_index_handlers(cyber: Client):
     # ------- RTI AUTO-INDEXING -------
     @cyber.on_message(media_filter & filters.channel)
     async def rti(_, msg):
-        if msg.chat.id in INDEX_CHANNELS:
+        channels = await get_index_channels()
+        if msg.chat.id in channels:
             try:
                 ok, cnt = await save_series_file_for_bulk_index(msg)
                 if ok:
@@ -229,7 +229,6 @@ def register_index_handlers(cyber: Client):
         _, chat_id, start_id, last_id = query.data.split()
         chat_id, start_id, last_id = int(chat_id), int(start_id), int(last_id)
 
-        # preserve skip
         skip_raw = await get_global_setting(INDEX_SKIP_ID_KEY, None)
         try:
             preserved_skip = int(skip_raw) if skip_raw is not None else None
