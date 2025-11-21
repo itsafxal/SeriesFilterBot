@@ -237,6 +237,9 @@ async def admin_menu_handler(cyber: Client, query: CallbackQuery):
         f"/imdb - To Turn on and off Imdb\n"
         f"/fsub - To Set Force Subscribe\n"
         f"/autodel - To Set Autodelete Time\n"
+        f"/addindex - To Add Index Channel\n"
+        f"/delindex - Delete Index Channel\n"
+        f"/listindex - To List All Indexed Channels\n"
     )
     ADMIN_KEYBOARD = InlineKeyboardMarkup([
         [InlineKeyboardButton("🏡 ʜᴏᴍᴇ", callback_data="cyber|"),
