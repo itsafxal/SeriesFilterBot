@@ -132,7 +132,7 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
 
         key = (normalized, season, episode, quality, language)
         if key in unique:
-            #logger.info(f"[MIGRATION SKIP] Duplicate → {normalized} | S{season}E{episode} | {quality} | {language}")
+            logger.info(f"[MIGRATION SKIP] Duplicate → {normalized} | S{season}E{episode} | {quality} | {language}")
             continue
 
         unique[key] = (
