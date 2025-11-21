@@ -125,6 +125,15 @@ async def get_all_bot_state_keys():
     """Return list of all state keys stored."""
     return await asyncio.to_thread(lambda: list(state_collection.distinct("_id")))
 
+# ---------------- INDEX CHANNEL SETTINGS ----------------
+
+async def get_index_channels():
+    """Returns all dynamic index channel IDs stored in DB."""
+    return await get_global_setting("INDEX_CHANNELS", [])
+
+async def set_index_channels(channel_list: list):
+    """Stores all index channel IDs in DB."""
+    await set_global_setting("INDEX_CHANNELS", channel_list)
 
 # --- NEW FUNCTION: Get Series Summary (SQLite Async Wrapper) ---
 
