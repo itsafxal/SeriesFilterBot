@@ -1,5 +1,5 @@
 # command.py - MODIFIED for interactive, link-based indexing, resumption, AND /setskip command
-
+import io
 import asyncio
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
@@ -27,7 +27,36 @@ def register_command_handlers(cyber: Client):
 
     # Register indexing handlers from the new file
     index_handlers = register_index_handlers(cyber)
+    @cyber.on_message(filters.command("logs") & filters.user(ADMIN_USERS))
+    async def send_logs_cmd(_, message: Message):
+        """Sends the bot's log file to the admin."""
+        try:
+            with open(LOG_FILE_PATH, 'r') as f:
+                log_content = f.read()
 
+            if not log_content:
+                return await message.reply_text("🪵 Log file is currently empty.")
+
+            # Check size before sending
+            if len(log_content.encode('utf-8')) > MAX_LOG_SIZE:
+                log_content = f"⚠️ Log file truncated. Showing last {MAX_LOG_SIZE // 1024} KB.\n\n" + log_content[-(MAX_LOG_SIZE // 2):]
+
+            # Use io.StringIO to create a file-like object in memory
+            log_file = io.StringIO(log_content)
+            log_file.name = "bot_logs.txt"
+
+            await message.reply_document(
+                document=log_file,
+                caption="🪵 **Current Bot Logs**",
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+
+        except FileNotFoundError:
+            await message.reply_text(f"❌ Log file not found at path: `{LOG_FILE_PATH}`")
+        except Exception as e:
+            logger.error(f"Error sending logs: {e}")
+            await message.reply_text(f"❌ An error occurred while fetching logs: `{e}`")
+            
     # ================================
     #        ADD INDEX CHANNEL
     # ================================
