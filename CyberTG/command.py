@@ -3,7 +3,7 @@ import io
 import asyncio
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
-from config import logger, ADMIN_USERS, START_IMG, CUSTOM_CAPTION_TEXT, LOG_FILE_PATH, MAX_LOG_SIZE
+from config import logger, ADMIN_USERS, START_IMG, CUSTOM_CAPTION_TEXT, LOG_FILE_PATH, MAX_LOG_SIZE, MAX_CALLBACK_LENGTH
 from DB.database import (
     add_user,
     get_all_users,
