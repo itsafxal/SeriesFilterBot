@@ -32,28 +32,22 @@ CUSTOM_CAPTION_TEXT = """
 @{bot_username}
 """
 MAX_CALLBACK_LENGTH = 50
-
-# --- New Logging Setup ---
-# Define max log size for the file handler (10MB)
 MAX_LOG_SIZE = 10 * 1024 * 1024 
 
-# Setup Rotating File Handler
 file_handler = RotatingFileHandler(
     LOG_FILE_PATH, 
     maxBytes=MAX_LOG_SIZE, 
-    backupCount=5, # Keep 5 backup files
+    backupCount=5, 
     encoding='utf-8'
 )
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(formatter)
 
-# Configure the root logger to use the file handler
-logging.basicConfig(
-    level=logging.INFO,
-    handlers=[file_handler], # Now explicitly using the file handler
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s' # This format is also applied via basicConfig
-)
+# Configure the root logger
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.addHandler(file_handler) # <-- Explicitly attach to root
+
+# Configure the 'config' logger 
 logger = logging.getLogger("config")
 logger.info("Starting bot process...")
-
-# NOTE: The command.py file also needs MAX_LOG_SIZE now for log truncation.
