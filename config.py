@@ -13,6 +13,7 @@ INDEX_CHANNELS = []
 
 ADMIN_USERS = [5483128891]
 FORCE_SUB_CHANNEL = None   
+LOG_FILE_PATH = "bot.log"
 
 # Images
 START_IMG = "https://sanishtech.com/i/690cfef2312bd-1762459378.jpg"
