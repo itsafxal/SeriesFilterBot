@@ -1,4 +1,5 @@
 import logging
+from logging.handlers import RotatingFileHandler
 from pymongo import TEXT 
 
 # --- Bot Configuration ---
@@ -13,7 +14,7 @@ INDEX_CHANNELS = []
 
 ADMIN_USERS = [5483128891]
 FORCE_SUB_CHANNEL = None   
-LOG_FILE_PATH = "bot.log"
+LOG_FILE_PATH = "bot.log" # Path remains relative, but the handler will create it
 
 # Images
 START_IMG = "https://sanishtech.com/i/690cfef2312bd-1762459378.jpg"
@@ -32,9 +33,27 @@ CUSTOM_CAPTION_TEXT = """
 """
 MAX_CALLBACK_LENGTH = 50
 
-# Logging
+# --- New Logging Setup ---
+# Define max log size for the file handler (10MB)
+MAX_LOG_SIZE = 10 * 1024 * 1024 
+
+# Setup Rotating File Handler
+file_handler = RotatingFileHandler(
+    LOG_FILE_PATH, 
+    maxBytes=MAX_LOG_SIZE, 
+    backupCount=5, # Keep 5 backup files
+    encoding='utf-8'
+)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+
+# Configure the root logger to use the file handler
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    handlers=[file_handler], # Now explicitly using the file handler
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s' # This format is also applied via basicConfig
 )
 logger = logging.getLogger("config")
+logger.info("Starting bot process...")
+
+# NOTE: The command.py file also needs MAX_LOG_SIZE now for log truncation.
