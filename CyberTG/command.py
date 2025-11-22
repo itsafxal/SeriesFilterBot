@@ -3,7 +3,7 @@ import io
 import asyncio
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
-from config import logger, ADMIN_USERS, START_IMG, CUSTOM_CAPTION_TEXT, LOG_FILE_PATH 
+from config import logger, ADMIN_USERS, START_IMG, CUSTOM_CAPTION_TEXT, LOG_FILE_PATH, MAX_LOG_SIZE
 from DB.database import (
     add_user,
     get_all_users,
@@ -27,6 +27,7 @@ def register_command_handlers(cyber: Client):
 
     # Register indexing handlers from the new file
     index_handlers = register_index_handlers(cyber)
+    
     @cyber.on_message(filters.command("logs") & filters.user(ADMIN_USERS))
     async def send_logs_cmd(_, message: Message):
         """Sends the bot's log file to the admin."""
@@ -38,6 +39,7 @@ def register_command_handlers(cyber: Client):
                 return await message.reply_text("🪵 Log file is currently empty.")
 
             # Check size before sending
+            # MAX_LOG_SIZE is now imported from config
             if len(log_content.encode('utf-8')) > MAX_LOG_SIZE:
                 log_content = f"⚠️ Log file truncated. Showing last {MAX_LOG_SIZE // 1024} KB.\n\n" + log_content[-(MAX_LOG_SIZE // 2):]
 
