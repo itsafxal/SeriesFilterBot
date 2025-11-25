@@ -1,187 +1,254 @@
-# database/mongo.py
+
+# database.py
+import asyncio
 import re
-import datetime
-import pytz
-from motor.motor_asyncio import AsyncIOMotorClient
-from config import Config
+from pymongo import MongoClient, TEXT, DESCENDING
+# Assuming config.py contains MONGO_URI and logger
+from config import MONGO_URI, logger
 
-class MongoDB:
-    def __init__(self):
-        self.client = AsyncIOMotorClient(Config.MONGO_URI)
-        self.db = self.client[Config.MONGO_DB_NAME]
-        
-        # Collections
-        self.col = self.db["files"] 
-        self.user_col = self.db["users"]
-        self.group_col = self.db["groups"]
-        self.settings_col = self.db["settings"]
+# --- MONGODB CONFIG & STATE ---
+# ... (MongoDB setup remains the same)
+mongo_client = MongoClient(MONGO_URI)
+db = mongo_client["SeriesBotDB"]
+files_collection = db["files"] 
+state_collection = db["bot_state"] 
+users_collection = db["users"]
 
-    # --------------------------------------------------------
-    # PROCESS FILENAME
-    # --------------------------------------------------------
+# Ensure MongoDB Indexes (for search/backup if needed)
+try:
+    files_collection.create_index([("normalized_name", 1), ("season", 1)], background=True)
+    files_collection.create_index(
+        [("normalized_name", TEXT)], 
+        name="series_name_text_index", 
+        background=True, 
+        language_override="text_index_lang", 
+    )
+    files_collection.create_index([("normalized_name", 1), ("season", 1), ("quality", 1), ("language", 1)], background=True)
+    state_collection.create_index([("_id", 1)]) 
+    logger.info("✅ MongoDB Indexes ensured/created successfully.")
+except Exception as e:
+    logger.error(f"❌ Failed to ensure/create MongoDB Indexes: {e}")
 
-    def _process_file_name(self, file_name: str, caption: str | None):
-        """
-        Applies filename cleaning:
-        1. Uses caption if available
-        2. Detects SxxExx patterns
-        3. Removes watermarks / Telegram tags
-        """
-        raw_name = caption or file_name or "N/A"
+# --- SQLITE CONFIG AND IMPORT HOOK ---
+# Import necessary SQLite functions from the dedicated file
+from .sqlite_db import (
+    SQLITE_DB_PATH,
+    sql_db_lock,
+    create_sql_schema,
+    migrate_data_from_mongo_to_sql_sync,
+    repair_normalized_names_in_sqlite_sync,
+    get_series_summary_sync,
+    search_series_sync,
+    get_unique_languages_by_name_sync,
+    get_unique_seasons_by_name_sync,
+    get_unique_qualities_by_season_sync,
+    get_all_files_by_season_and_quality_sync,
+    get_unique_languages_by_season_sync,
+    get_unique_qualities_by_lang_season_sync,
+    get_file_by_message_id_and_channel_id_sync,
+    delete_all_files_sync,
+    delete_one_file_sync,
+    get_total_files_sync,
+    _normalized_series_from_filename, # Import helper for MongoDB save/migration context
+    save_file_to_sql_sync, # Import sync function for use in save_file_to_db
+    clear_all_caches # <--- NEW IMPORT for cache invalidation
+)
 
-        # ---------------------------
-        # Season / Episode Detection
-        # ---------------------------
+# --- MIGRATION / INITIALIZATION ---
+# ... (initialize_sql_db remains the same)
 
-        season_pattern = re.compile(
-            r'(?<!\w)(?:s|season)[\s._-]*?(\d{1,2})[\s._-]*?(?:e|ep|episode)[\s._-]*?(\d{1,2})(?!\d)',
-            re.IGNORECASE
-        )
-        match = season_pattern.search(raw_name)
+def initialize_sql_db():
+    """Synchronously initializes the SQL database and runs the migration + repair."""
+    logger.info("Starting migration from MongoDB to SQLite...")
+    # Pass MongoDB collection and logger to the sync function
+    migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema, logger)
+    try:
+        repair_normalized_names_in_sqlite_sync(logger)
+    except Exception as e:
+        logger.error(f"repair_normalized_names_in_sqlite failed: {e}")
+    logger.info("SQLite initialization complete.")
 
-        prefix = ""
-        if match:
-            s = int(match.group(1))
-            e = int(match.group(2))
-            prefix = f"[S{s:02d} EP{e:02d}] "
 
-            # remove original SxxExx from string
-            raw_name = season_pattern.sub("", raw_name)
+# --- BOT STATE FUNCTIONS (MongoDB) ---
+# ... (save_bot_state, get_bot_state remain the same)
 
-        # ---------------------------
-        # Watermark Removal
-        # ---------------------------
-
-        removal_pattern = re.compile(
-            r"(_|\+\s|\-|\.|\+|\[MM\]\s|\[MM\]_|\@TvSeriesBay|\@Cinema\sCompany|"
-            r"\@Cinema_Company|\@CC_|\@CC|\@MM_New|\@MM_Linkz|\@MOVIEHUNT|\@CL|"
-            r"\@FBM|\@CKMSERIES|www_DVDWap_Com_|MLM|\@WMR|\[CF\]\s|\[CF\]|"
-            r"\@IndianMoviez|\@tamil_mm|\@infotainmentmedia|\@trolldcompany|"
-            r"\@Rarefilms|\@yamandanmovies|\[YM\]|\@Mallu_Movies|\@YTSLT|"
-            r"\@DailyMovieZhunt|\@I_M_D_B|\@CC_All|\@PM_Old|Dvdworld|\[KMH\]|"
-            r"\@FBM_HW|\@Film_Kottaka|\@CC_X265|\@CelluloidCineClub|"
-            r"\@cinemaheist|\@telugu_moviez|\@CR_Rockers|\@CCineClub|KC_|"
-            r"\[KC\]|\[AML\])",
-            re.IGNORECASE
-        )
-
-        cleaned_name = removal_pattern.sub(" ", raw_name)
-        cleaned_name = re.sub(r'\s{2,}', ' ', cleaned_name).strip()
-
-        return f"{prefix}{cleaned_name}".strip()
-
-    # --------------------------------------------------------
-    # FILE MANAGEMENT (Upsert)
-    # --------------------------------------------------------
-
-    async def add_file(self, media: dict):
-        """Saves file metadata to the 'files' collection."""
-        processed_name = self._process_file_name(
-            file_name=media.get("file_name"),
-            caption=media.get("caption")
-        )
-
-        document = {
-            "unique_id": media["unique_id"],
-            "file_id": media["file_id"],
-            "file_name": processed_name,
-            "file_size": media.get("file_size", 0),
-            "mime_type": media.get("mime_type"),
-            "caption": media.get("caption") or processed_name,
-            "chat_id": media.get("chat_id"),
-            "msg_id": media.get("msg_id"),
-            "updated_at": datetime.datetime.now(pytz.utc)
-        }
-
-        await self.col.update_one(
-            {"unique_id": media["unique_id"]},
-            {"$set": document},
+async def save_bot_state(chat_id, last_msg_id):
+    """Saves the last processed message ID for a given chat to resume later."""
+    def sync_save():
+        state_collection.update_one(
+            {"_id": chat_id},
+            {"$set": {"last_indexed_id": last_msg_id}},
             upsert=True
         )
+    await asyncio.to_thread(sync_save)
 
-    # --------------------------------------------------------
-    # FILE FETCH / COUNT
-    # --------------------------------------------------------
+async def get_bot_state(chat_id):
+    """Retrieves the last processed message ID for a given chat."""
+    def sync_get():
+        doc = state_collection.find_one({"_id": chat_id})
+        return doc.get("last_indexed_id") if doc else None
+    return await asyncio.to_thread(sync_get)
 
-    async def get_file_by_unique_id(self, unique_id: str):
-        """Fetches a single file document from Mongo by unique_id."""
-        return await self.col.find_one({"unique_id": unique_id})
 
-    async def get_all_files(self):
-        cursor = self.col.find({})
-        async for doc in cursor:
-            yield doc
+# --- GLOBAL SETTINGS (MongoDB) ---
+# ... (set_global_setting, get_global_setting remain the same)
 
-    async def count_files(self):
-        return await self.col.count_documents({})
-        
-    # ========================================================
-    # USER MANAGEMENT METHODS (New)
-    # ========================================================
-    async def add_user(self, user_id: int, username: str | None = None):
-        """Adds or updates a user in the 'users' collection."""
-        user_data = {
-            "user_id": user_id,
-            "username": username,
-            "join_date": datetime.datetime.now(pytz.utc),
-            "is_blocked": False
-        }
-        await self.user_col.update_one(
-            {"user_id": user_id},
-            {"$set": user_data},
+async def set_global_setting(key: str, value):
+    """Sets a global bot configuration setting."""
+    GLOBAL_DOC_ID = "GLOBAL_CONFIG"
+    def sync_set():
+        state_collection.update_one(
+            {"_id": GLOBAL_DOC_ID},
+            {"$set": {key: value}},
             upsert=True
         )
+    await asyncio.to_thread(sync_set)
+    logger.info(f"💾 Global setting '{key}' set to: {value}")
+
+
+async def get_global_setting(key: str, default_value=None):
+    """Retrieves a global bot configuration setting."""
+    GLOBAL_DOC_ID = "GLOBAL_CONFIG"
+    def sync_get():
+        doc = state_collection.find_one({"_id": GLOBAL_DOC_ID})
+        return doc.get(key, default_value) if doc else default_value
+    return await asyncio.to_thread(sync_get)
+
+async def delete_all_index_states():
+    """Delete all index_<chat_id> states so only latest index is active."""
+    keys = await get_all_bot_state_keys()
+    for k in keys:
+        if k.startswith("index_"):
+            await save_bot_state(k, None)
+
+
+async def get_all_bot_state_keys():
+    """Return list of all state keys stored."""
+    return await asyncio.to_thread(lambda: list(state_collection.distinct("_id")))
+
+# ---------------- INDEX CHANNEL SETTINGS ----------------
+
+async def get_index_channels():
+    """Returns all dynamic index channel IDs stored in DB."""
+    return await get_global_setting("INDEX_CHANNELS", [])
+
+async def set_index_channels(channel_list: list):
+    """Stores all index channel IDs in DB."""
+    await set_global_setting("INDEX_CHANNELS", channel_list)
+
+# --- NEW FUNCTION: Get Series Summary (SQLite Async Wrapper) ---
+
+async def get_series_summary(series_name: str):
+    """Gets all unique languages, seasons, and qualities for a series."""
+    async with sql_db_lock:
+        return await asyncio.to_thread(get_series_summary_sync, series_name)
+
+
+# --- SEARCH AND RETRIEVAL FUNCTIONS (SQLite Async Wrappers) ---
+
+async def search_series(query: str):
+    async with sql_db_lock:
+        return await asyncio.to_thread(search_series_sync, query)
+
+async def get_unique_languages_by_name(series_name: str):
+    async with sql_db_lock:
+        return await asyncio.to_thread(get_unique_languages_by_name_sync, series_name)
+
+async def get_unique_seasons_by_name(series_name: str, language: str):
+    async with sql_db_lock:
+        return await asyncio.to_thread(get_unique_seasons_by_name_sync, series_name, language)
+
+async def get_unique_qualities_by_season(series_name: str, language: str, season: int):
+    async with sql_db_lock:
+        return await asyncio.to_thread(get_unique_qualities_by_season_sync, series_name, language, season)
+
+async def get_all_files_by_season_and_quality(series_name: str, season: int, quality: str, language: str):
+    async with sql_db_lock:
+        return await asyncio.to_thread(get_all_files_by_season_and_quality_sync, series_name, season, quality, language)
+
+async def get_unique_languages_by_season(series_name: str, season: int):
+    async with sql_db_lock:
+        return await asyncio.to_thread(get_unique_languages_by_season_sync, series_name, season)
+
+async def get_unique_qualities_by_lang_season(series_name: str, language: str, season: int):
+    async with sql_db_lock:
+        return await asyncio.to_thread(get_unique_qualities_by_lang_season_sync, series_name, language, season)
+
+
+# --- NEW FUNCTION for Click-to-Download (SQLite Async Wrapper) ---
+async def get_file_by_message_id_and_channel_id(channel_id: int, message_id: int):
+    async with sql_db_lock:
+        return await asyncio.to_thread(get_file_by_message_id_and_channel_id_sync, channel_id, message_id)
         
-    async def get_all_users(self):
-        """Returns a list of all user IDs."""
-        cursor = self.user_col.find({}, {"user_id": 1})
-        return [doc["user_id"] async for doc in cursor]
+async def save_file_to_db(file_doc: dict):
+    """Inserts/updates a single file document into BOTH MongoDB and SQLITE."""
+    def sync_save():
+        # --- 1. Save to MongoDB ---
+        mongo_success = False
+        try:
+            files_collection.update_one(
+                {"channel_id": file_doc["channel_id"], "message_id": file_doc["message_id"]},
+                {"$set": file_doc},
+                upsert=True
+            )
+            mongo_success = True
+        except Exception as e:
+            logger.error(f"Failed to insert/update file doc in MongoDB: {e}")
 
-    async def count_users(self):
-        """Returns the total number of saved users."""
-        return await self.user_col.count_documents({})
+        # --- 2. Save to SQLITE (using its sync function) ---
+        sql_success = save_file_to_sql_sync(file_doc, logger) 
+        
+        # Invalidate the cache after a successful write
+        if sql_success or mongo_success:
+            clear_all_caches() # <--- NEW CALL
 
-    # ========================================================
-    # GROUP MANAGEMENT METHODS (New)
-    # ========================================================
-    async def add_group(self, chat_id: int, title: str):
-        """Adds or updates a group in the 'groups' collection."""
-        group_data = {
-            "chat_id": chat_id,
-            "title": title,
-            "join_date": datetime.datetime.now(pytz.utc),
-            "is_blocked": False
-        }
-        await self.group_col.update_one(
-            {"chat_id": chat_id},
-            {"$set": group_data},
+        return sql_success 
+
+    return await asyncio.to_thread(sync_save)
+
+# --- NEW DELETE AND COUNT FUNCTIONS (SQLite Async Wrappers + MongoDB) ---
+
+async def delete_all_files():
+    """delete all files from mongo + sqlite"""
+    def sync_clear():
+        files_collection.delete_many({})
+        delete_all_files_sync()
+        clear_all_caches() # <--- NEW CALL
+    await asyncio.to_thread(sync_clear)
+
+
+async def delete_one_file(channel_id: int, msg_id: int):
+    """delete single file from both dbs"""
+    def sync_delete():
+        files_collection.delete_one({"channel_id": channel_id, "message_id": msg_id})
+        delete_one_file_sync(channel_id, msg_id)
+        clear_all_caches() # <--- NEW CALL
+    await asyncio.to_thread(sync_delete)
+
+
+async def get_total_files():
+    """returns count from sqlite only"""
+    async with sql_db_lock:
+        return await asyncio.to_thread(get_total_files_sync)
+
+# --- USER FUNCTIONS (MongoDB) ---
+# ... (user functions remain the same)
+async def add_user(user_id: int):
+    def sync_add():
+        users_collection.update_one(
+            {"_id": user_id},
+            {"$set": {"_id": user_id}},
             upsert=True
         )
-
-    async def get_all_groups(self):
-        """Returns a list of all group IDs."""
-        cursor = self.group_col.find({}, {"chat_id": 1})
-        return [doc["chat_id"] async for doc in cursor]
-        
-    async def count_groups(self):
-        """Returns the total number of saved groups."""
-        return await self.group_col.count_documents({})
-
-    # ========================================================
-    # GLOBAL SETTINGS METHODS (New)
-    # ========================================================
-    async def get_setting(self, key: str, default: str | None = None) -> str | None:
-        """Retrieves a global setting value."""
-        doc = await self.settings_col.find_one({"_id": key})
-        return doc["value"] if doc else default
-
-    async def set_setting(self, key: str, value: str):
-        """Sets or updates a global setting value."""
-        await self.settings_col.update_one(
-            {"_id": key},
-            {"$set": {"value": value, "updated_at": datetime.datetime.now(pytz.utc)}},
-            upsert=True
-        )
+    await asyncio.to_thread(sync_add)
 
 
-mongo_db = MongoDB()
+async def get_all_users():
+    def sync_get():
+        return [u["_id"] for u in users_collection.find({})]
+    return await asyncio.to_thread(sync_get)
+
+async def get_total_users() -> int:
+    def sync_total_users():
+        return users_collection.count_documents({}) 
+    return await asyncio.to_thread(sync_total_users)
