@@ -37,6 +37,14 @@ from .menus import (
     about_menu_handler, close_menu_handler, back_to_language_handler, back_to_search_handler, 
 )
 
+# --- Helper function from groupfilter.py for deep-linking ---
+import base64
+from urllib.parse import quote
+def _encode_payload(series, season, lang, quality):
+    raw = f"{series}|{season}|{lang}|{quality}"
+    b64 = base64.urlsafe_b64encode(raw.encode()).decode()
+    return f"send_{quote(b64)}"
+# --- End Helper function ---
 
 def register_conversation_handlers(cyber: Client):
         
@@ -373,7 +381,7 @@ def register_conversation_handlers(cyber: Client):
     
     @cyber.on_callback_query(filters.regex(r"^qs\|"))
     async def quality_select_handler(cyber, query: CallbackQuery):
-        """Handles quality selection and sends all files for the season/quality/language."""
+        """Handles quality selection and redirects to a deep-link for file sending."""
         data = query.data.split("|")
         if len(data) < 5:
             await query.answer("❌ Error: Invalid quality selection data.", show_alert=True)
@@ -388,56 +396,32 @@ def register_conversation_handlers(cyber: Client):
 
         language = data[3]
         quality = data[4]
+        
+        # 1. Encode the payload for the deep link
+        # Fetch bot username dynamically
+        bot = await cyber.get_me()
+        param = _encode_payload(series_name, season, language, quality)
+        link = f"https://t.me/{bot.username}?start={param}"
 
-        await query.answer(f"Sending {quality}/{language} episodes for S{season}...", cache_time=0)
-
-        files = await get_all_files_by_season_and_quality(series_name, season, quality, language)
-        if not files:
-            await query.answer("❌ No files found.", show_alert=True)
-            return
-
-        bot_username = (await cyber.get_me()).username
-        sent_count = 0
-
-        for file_entry in files:
-            channel_id = file_entry["channel_id"]
-            message_id = file_entry["message_id"]
-            file_name = file_entry.get("file_name", f"S{file_entry.get('season', 0)}E{file_entry.get('episode', 99)}")
-
-            custom_caption = CUSTOM_CAPTION_TEXT.format(file_name=file_name, bot_username=bot_username)
-
-            try:
-                file_id = file_entry.get("file_id")
-                if file_id:
-                    # Send as document using file_id
-                    await cyber.send_document(
-                        chat_id=query.from_user.id,
-                        document=file_id,
-                        caption=custom_caption,
-                        parse_mode=enums.ParseMode.MARKDOWN,
-                    )
-                else:
-                    # Fallback to copy_message using channel_id and message_id
-                    await cyber.copy_message(
-                        chat_id=query.from_user.id,
-                        from_chat_id=channel_id,
-                        message_id=message_id,
-                        caption=custom_caption,
-                        parse_mode=enums.ParseMode.MARKDOWN,
-                    )
-                sent_count += 1
-            except Exception as e:
-                logger.error(f"Copy/Send fail for {message_id} in {channel_id}: {e}")
-                continue
-                
-            if sent_count < len(files):
-                await asyncio.sleep(1.5) # Throttle sending
-
-        success_text = (
-            f"✅ Successfully sent {sent_count} files from "
-            f"**{series_name}** — Season {season} ({quality})"
+        # 2. Redirect the user via the callback query answer
+        await query.answer(
+            f"Tap OK/Open to receive files for S{season} ({quality})...", 
+            url=link, 
+            show_alert=False
         )
-        await cyber.send_message(chat_id=query.from_user.id, text=success_text, parse_mode=enums.ParseMode.MARKDOWN)
+
+        # 3. OPTIONAL: Edit the message to indicate a redirect
+        try:
+            await query.message.edit_caption(
+                f"✔ **{series_name} — S{season} ({language}) [{quality}]**\n\n"
+                f"**Redirecting**... Tap the notification to receive the files.",
+                reply_markup=None, # Remove buttons
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+        except MessageNotModified:
+            pass
+        except Exception as e:
+            logger.warning(f"Failed to edit qs message after redirect: {e}")
 
 
     @cyber.on_callback_query(filters.regex(r"^fs\|"))
