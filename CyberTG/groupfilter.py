@@ -254,13 +254,21 @@ def register_groupfilter_handlers(cyber: Client):
             [InlineKeyboardButton(l, callback_data=f"gls|{series}|{season}|{l}")]
             for l in langs
         ]
+        # Back button is changed to point to the main series entry
         kb.append([InlineKeyboardButton("↺ Back", callback_data=f"gback|{series}")])
 
-        await q.message.edit_caption( # Use edit_caption if the message is a photo
-            f"📺 Title **{series}  — Season {season}**\n\nExcellent choice!✨ {series} is a fantastic show. I hope, you will enjoy this TV Series\n\n🌐 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗔𝘂𝗱𝗶𝗼 𝗟𝗮𝗻𝗴𝘂𝗮𝗴𝗲 👇",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
+        try:
+            await q.message.edit_caption( # Use edit_caption if the message is a photo
+                f"📺 Title **{series}  — Season {season}**\n\nExcellent choice!✨ {series} is a fantastic show. I hope, you will enjoy this TV Series\n\n🌐 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗔𝘂𝗱𝗶𝗼 𝗟𝗮𝗻𝗴𝘂𝗮𝗴𝗲 👇",
+                reply_markup=InlineKeyboardMarkup(kb),
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+        except Exception as e:
+             await q.message.edit_text( # Fallback to edit_text if it fails
+                f"📺 Title **{series}  — Season {season}**\n\nExcellent choice!✨ {series} is a fantastic show. I hope, you will enjoy this TV Series\n\n🌐 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗔𝘂𝗱𝗶𝗼 𝗟𝗮𝗻𝗴𝘂𝗮𝗴𝗲 👇",
+                reply_markup=InlineKeyboardMarkup(kb),
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
         await q.answer()
 
 
@@ -277,13 +285,21 @@ def register_groupfilter_handlers(cyber: Client):
             [InlineKeyboardButton(qy, callback_data=f"gqs|{series}|{season}|{lang}|{qy}")]
             for qy in qualities
         ]
+        # Back button is changed to point to the language selection menu (gss)
         kb.append([InlineKeyboardButton("↺ Back", callback_data=f"gss|{series}|{season}")])
 
-        await q.message.edit_caption( # Use edit_caption if the message is a photo
-            f"🎬 {series} – Season {season} ({lang})\n\n📌 Quality Selector\n\nTap a quality below —\n▶️ Bot will instantly auto-send the **WHOLE SEASON** (all episodes) in that same resolution.\n\n>⚡ Lightning Fast\n>📦 Full Season Pack\n>🎥 Download And Watch:",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
+        try:
+            await q.message.edit_caption( # Use edit_caption if the message is a photo
+                f"🎬 {series} – Season {season} ({lang})\n\n📌 Quality Selector\n\nTap a quality below —\n▶️ Bot will instantly auto-send the **WHOLE SEASON** (all episodes) in that same resolution.\n\n>⚡ Lightning Fast\n>📦 Full Season Pack\n>🎥 Download And Watch:",
+                reply_markup=InlineKeyboardMarkup(kb),
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+        except Exception as e:
+             await q.message.edit_text( # Fallback to edit_text if it fails
+                f"🎬 {series} – Season {season} ({lang})\n\n📌 Quality Selector\n\nTap a quality below —\n▶️ Bot will instantly auto-send the **WHOLE SEASON** (all episodes) in that same resolution.\n\n>⚡ Lightning Fast\n>📦 Full Season Pack\n>🎥 Download And Watch:",
+                reply_markup=InlineKeyboardMarkup(kb),
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
         await q.answer()
 
 
@@ -292,19 +308,39 @@ def register_groupfilter_handlers(cyber: Client):
         _, series, season, lang, quality = q.data.split("|")
         season = int(season)
 
+        # Fetch bot username dynamically
         bot = await cyber.get_me()
         param = _encode_payload(series, season, lang, quality)
         link = f"https://t.me/{bot.username}?start={param}"
 
-        kb = [[InlineKeyboardButton("🔐 Open Bot (PM)", url=link)]]
-
-        await q.message.edit_caption( # Use edit_caption if the message is a photo
-            f"✔ **{series} — S{season} ({lang}) [{quality}]**\n\n"
-            f"Tap the button to receive files in private chat.",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode=enums.ParseMode.MARKDOWN
+        # 1. Redirect the user directly via query.answer(url=...)
+        await q.answer(
+            "Tap OK/Open to receive the files in private chat.", 
+            url=link, 
+            show_alert=False
         )
-        await q.answer("Open bot in PM", show_alert=True)
+
+        # 2. Edit the message to let the user know what happened
+        try:
+            # Use edit_caption if the message is a photo
+            await q.message.edit_caption( 
+                f"✔ **{series} — S{season} ({lang}) [{quality}]**\n\n"
+                f"Files are now being delivered in the private chat of the bot. **Check your DMs!**",
+                reply_markup=None, # Remove buttons
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.warning(f"Failed to edit gqs message after redirect: {e}")
+            try:
+                # Fallback to edit_text
+                await q.message.edit_text(
+                    f"✔ **{series} — S{season} ({lang}) [{quality}]**\n\n"
+                    f"Files are now being delivered in the private chat of the bot. **Check your DMs!**",
+                    reply_markup=None, # Remove buttons
+                    parse_mode=enums.ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
 
 
     @cyber.on_callback_query(filters.regex("^gback\\|"))
@@ -317,12 +353,36 @@ def register_groupfilter_handlers(cyber: Client):
             [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series}|{s}")]
             for s in seasons
         ]
-
-        await q.message.edit_caption( # Use edit_caption if the message is a photo
-            f"**{series}**\n\nSelect Season:",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode=enums.ParseMode.MARKDOWN
+        
+        caption = (
+            f"**○ Title:** {series}\n"
+            f"**○ Language:** {', '.join(summary.get('languages', [])) or 'N/A'}\n"
+            f"**○ Seasons Available:** {len(seasons)}\n"
+            f"**○ Quality Available:** {', '.join(summary.get('qualities', [])) or 'N/A'}\n\n"
+            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
         )
+        
+        # Try to edit the media back to the poster view
+        poster = await _build_poster_for_series(series)
+
+        try:
+            await q.message.edit_media(
+                media=InputMediaPhoto(
+                    media=poster,
+                    caption=caption,
+                    parse_mode=enums.ParseMode.MARKDOWN,
+                ),
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+        except Exception as e:
+            # Fallback to edit_text
+            logger.error(f"Failed to edit_media for gback (will use text fallback): {e}")
+            await q.message.edit_text(
+                caption,
+                reply_markup=InlineKeyboardMarkup(kb),
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+            
         await q.answer()
 
 
@@ -338,7 +398,7 @@ async def _send_series_entry(cyber, m: Message, series: str):
     qualities_list = ", ".join(summary.get("qualities", []))
     seasons_count = len(seasons)
 
-    # Collect ALL languages and qualities
+    # Collect ALL languages and qualities (redundant but kept for robust display)
     all_langs = set()
     all_qualities = set()
 
