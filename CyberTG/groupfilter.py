@@ -360,7 +360,7 @@ def register_groupfilter_handlers(cyber: Client):
                 except Exception as e:
                     logger.warning(f"Failed to auto-delete message {message.id}: {e}")
 
-            asyncio.create_task(delete_message_after_delay(edited_message, auto_delete_timer))
+            asyncio.create_task(delete_message_later(edited_message, auto_delete_timer))
 
     @cyber.on_callback_query(filters.regex("^gback\\|"))
     async def gback(_, q: CallbackQuery):
