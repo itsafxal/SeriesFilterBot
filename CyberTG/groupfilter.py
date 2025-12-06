@@ -306,6 +306,10 @@ def register_groupfilter_handlers(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
     async def gqs(_, q: CallbackQuery):
+        # --- NEW/MODIFIED CODE: Fetching the timer ---
+        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0) 
+        # --- END OF NEW/MODIFIED CODE ---
+        
         _, series, season, lang, quality = q.data.split("|")
         season = int(season)
 
@@ -324,7 +328,7 @@ def register_groupfilter_handlers(cyber: Client):
         # 2. Edit the message to let the user know what happened
         try:
             # Use edit_caption if the message is a photo
-            await q.message.edit_caption( 
+            edited_message = await q.message.edit_caption( 
                 f"✔ **{series} — S{season} ({lang}) [{quality}]**\n\n"
                 f"Files are now being delivered in the private chat of the bot. **Check your DMs!**",
                 reply_markup=None, # Remove buttons
@@ -334,15 +338,27 @@ def register_groupfilter_handlers(cyber: Client):
             logger.warning(f"Failed to edit gqs message after redirect: {e}")
             try:
                 # Fallback to edit_text
-                await q.message.edit_text(
+                edited_message = await q.message.edit_text(
                     f"✔ **{series} — S{season} ({lang}) [{quality}]**\n\n"
                     f"Files are now being delivered in the private chat of the bot. **Check your DMs!**",
                     reply_markup=None, # Remove buttons
                     parse_mode=enums.ParseMode.MARKDOWN
                 )
             except Exception:
+                edited_message = q.message 
                 pass
 
+        if auto_delete_timer > 0:
+            async def delete_message_after_delay(message, delay):
+                """Deletes the message after a specified delay."""
+                await asyncio.sleep(delay)
+                try:
+                    await message.delete()
+                    logger.info(f"Deleted message {message.id} after {delay} seconds.")
+                except Exception as e:
+                    logger.warning(f"Failed to auto-delete message {message.id}: {e}")
+
+            asyncio.create_task(delete_message_after_delay(edited_message, auto_delete_timer))
 
     @cyber.on_callback_query(filters.regex("^gback\\|"))
     async def gback(_, q: CallbackQuery):
