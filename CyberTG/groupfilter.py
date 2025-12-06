@@ -24,6 +24,7 @@ from config import (
 
 from utils import clean_series_name, delete_message_later
 from DB.database import (
+    get_global_setting,
     search_series,
     get_series_summary,
     get_unique_languages_by_season,
