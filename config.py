@@ -18,7 +18,7 @@ LOG_FILE_PATH = "bot.log" # Path remains relative, but the handler will create i
 
 # Images
 START_IMG = "https://sanishtech.com/i/690cfef2312bd-1762459378.jpg"
-
+SPELL_IMG = "https://ibb.co/1tSFHQKw"
 # Poster / OMDB Config
 OMDB_API_KEY = "f93ab313"
 OMDB_CACHE_DB = "/tmp/omdb_cache.db"
