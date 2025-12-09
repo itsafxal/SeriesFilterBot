@@ -212,14 +212,16 @@ def register_groupfilter_handlers(cyber: Client):
         kb = [[InlineKeyboardButton(s, callback_data=f"gsugg|{uid}|{s}")]
               for s in suggestions]
         kb.append([InlineKeyboardButton("Close", callback_data=f"close_suggestion|{uid}")])
-
-        await m.reply(
-            f"I couldn't find anything related to `<code>{text}</code>`.\nDid you mean any of these?",
+        await m.reply_photo(
+            photo=photo_url,
+            caption=(
+                f"I couldn't find anything related to <code>{text}</code>.\n"
+                f"Did you mean any of these?"
+            ),
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=enums.ParseMode.HTML
         )
         return
-
 
     # -----------------------------------------------------
     # SUGGESTION SELECT
