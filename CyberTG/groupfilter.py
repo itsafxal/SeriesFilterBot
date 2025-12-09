@@ -20,6 +20,7 @@ from config import (
     DEFAULT_POSTER,
     MAX_CALLBACK_LENGTH,
     OMDB_CACHE_DB,
+    SPELL_IMG,
 )
 
 from utils import clean_series_name, delete_message_later
@@ -213,7 +214,7 @@ def register_groupfilter_handlers(cyber: Client):
               for s in suggestions]
         kb.append([InlineKeyboardButton("Close", callback_data=f"close_suggestion|{uid}")])
         await m.reply_photo(
-            photo=photo_url,
+            photo=SPELL_IMG,
             caption=(
                 f"I couldn't find anything related to <code>{text}</code>.\n"
                 f"Did you mean any of these?"
