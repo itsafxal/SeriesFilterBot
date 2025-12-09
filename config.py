@@ -17,12 +17,12 @@ FORCE_SUB_CHANNEL = None
 LOG_FILE_PATH = "bot.log" # Path remains relative, but the handler will create it
 
 # Images
-START_IMG = "https://sanishtech.com/i/690cfef2312bd-1762459378.jpg"
+START_IMG = "https://ibb.co/1tSFHQKw"
 SPELL_IMG = "https://ibb.co/1tSFHQKw"
 # Poster / OMDB Config
 OMDB_API_KEY = "f93ab313"
 OMDB_CACHE_DB = "/tmp/omdb_cache.db"
-DEFAULT_POSTER = "https://sanishtech.com/i/690ceab460363-1762454196.jpg"
+DEFAULT_POSTER = "https://ibb.co/1tSFHQKw"
 
 # Captions
 CUSTOM_CAPTION_TEXT = """
