@@ -24,7 +24,8 @@ from config import (
     DEFAULT_POSTER,
     ADMIN_USERS,
     OMDB_CACHE_DB,
-    MAX_CALLBACK_LENGTH, # Keep MAX_CALLBACK_LENGTH in config/imported
+    MAX_CALLBACK_LENGTH,
+    SPELL_IMG,
 )
 from utils import (
     clean_series_name,
@@ -117,8 +118,9 @@ def register_conversation_handlers(cyber: Client):
 
                         btn.append([InlineKeyboardButton(text="Close", callback_data=f'close_suggestion|{user_id}')])
 
-                        sent_message = await message.reply(
-                            f"I couldn't find an exact match for `<code>{query}</code>`.\nDid you mean any one of these?",
+                        sent_message = await message.reply_photo(
+                            photo=SPELL_IMG,
+                            caption=f"I couldn't find an exact match for `<code>{query}</code>`.\nDid you mean any one of these?",
                             reply_markup=InlineKeyboardMarkup(btn),
                             parse_mode=enums.ParseMode.HTML
                         )
