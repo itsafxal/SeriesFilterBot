@@ -213,10 +213,10 @@ def register_command_handlers(cyber: Client):
                 is_member, invite_link = True, None
 
             if not is_member:
-                # Ask user to join via button
                 try:
+                    continue_payload = f"/start {start_arg}" 
                     await message.reply_text(
-                        "🛑 You must join the required channel to receive files. Click below to join and then re-open the bot.",
+                        f"🛑 You must join the required channel to receive files. Click below to join and then **click the link to continue:**\n\n`{continue_payload}`",
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📣 Join Channel", url=invite_link)]]),
                         parse_mode=enums.ParseMode.MARKDOWN
                     )
