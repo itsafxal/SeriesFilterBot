@@ -28,9 +28,12 @@ DEFAULT_POSTER = "https://ibb.co/1tSFHQKw"
 CUSTOM_CAPTION_TEXT = """
 `{file_name}`
 
-🔗 **Please Use Our Bot **
-@{bot_username}
-"""
+╔════ ᴊᴏɪɴ ᴡɪᴛʜ ᴜs ═════╗
+◻️ 𝙅𝙊𝙄𝙉 :- @SeriesXSpace
+◻️ 𝙅𝙊𝙄𝙉 :- @SeriesXSpaceChannel
+◻️ 𝙅𝙊𝙄𝙉 :- @TGxSeriesFilterBot
+╚════ ᴊᴏɪɴ ᴡɪᴛʜ ᴜs ═════╝"""
+
 MAX_CALLBACK_LENGTH = 50
 MAX_LOG_SIZE = 10 * 1024 * 1024 
 
