@@ -1,4 +1,3 @@
-
 # groupfilter.py
 import asyncio
 import base64
@@ -65,12 +64,20 @@ async def _build_poster_for_series(series_name: str):
 
     return poster
 
+async def _check_owner(q: CallbackQuery, owner_id: int):
+    if not q.from_user or q.from_user.id != owner_id:
+        await q.answer(
+            "❌ This result is not for you.\nPlease search your own request.",
+            show_alert=True
+        )
+        return False
+    return True
 
 # ---------------------------------------------------------
 # DEEP LINK
 # ---------------------------------------------------------
-def _encode_payload(series, season, lang, quality):
-    raw = f"{series}|{season}|{lang}|{quality}"
+def _encode_payload(series, season, lang, quality, owner_id):
+    raw = f"{owner_id}|{series}|{season}|{lang}|{quality}"
     b64 = base64.urlsafe_b64encode(raw.encode()).decode()
     return f"send_{quote(b64)}"
 
@@ -231,6 +238,9 @@ def register_groupfilter_handlers(cyber: Client):
     @cyber.on_callback_query(filters.regex("^gsugg\\|"))
     async def suggestion_select(_, q: CallbackQuery):
         _, uid, series = q.data.split("|", 2)
+        uid = int(uid)
+        if not await _check_owner(q, uid):
+            return
         # Optional check if user matches uid, omitted for brevity/simplicity
         await q.answer(f"Selected: {series}")
         return await _edit_to_series_entry(cyber, q, series)
@@ -250,19 +260,22 @@ def register_groupfilter_handlers(cyber: Client):
     # -----------------------------------------------------
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q: CallbackQuery):
-        _, series, season = q.data.split("|")
+        _, uid, series, season = q.data.split("|")
+        uid = int(uid)
         season = int(season)
+        if not await _check_owner(q, uid):
+            return
 
         langs = await get_unique_languages_by_season(series, season)
         if not langs:
             return await q.answer("No languages found", show_alert=True)
 
         kb = [
-            [InlineKeyboardButton(l, callback_data=f"gls|{series}|{season}|{l}")]
+            [InlineKeyboardButton(l, callback_data=f"gls|{uid}|{series}|{season}|{l}")]
             for l in langs
         ]
         # Back button is changed to point to the main series entry
-        kb.append([InlineKeyboardButton("↺ Back", callback_data=f"gback|{series}")])
+        kb.append([InlineKeyboardButton("↺ Back", callback_data=f"gback|{uid}|{series}")])
 
         try:
             await q.message.edit_caption( # Use edit_caption if the message is a photo
@@ -281,19 +294,22 @@ def register_groupfilter_handlers(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q: CallbackQuery):
-        _, series, season, lang = q.data.split("|")
+        _, uid, series, season, lang = q.data.split("|")
+        uid = int(uid)
         season = int(season)
+        if not await _check_owner(q, uid):
+            return
 
         qualities = await get_unique_qualities_by_lang_season(series, lang, season)
         if not qualities:
             return await q.answer("No qualities found", show_alert=True)
 
         kb = [
-            [InlineKeyboardButton(qy, callback_data=f"gqs|{series}|{season}|{lang}|{qy}")]
+            [InlineKeyboardButton(qy, callback_data=f"gqs|{uid}|{series}|{season}|{lang}|{qy}")]
             for qy in qualities
         ]
         # Back button is changed to point to the language selection menu (gss)
-        kb.append([InlineKeyboardButton("↺ Back", callback_data=f"gss|{series}|{season}")])
+        kb.append([InlineKeyboardButton("↺ Back", callback_data=f"gss|{uid}|{series}|{season}")])
 
         try:
             await q.message.edit_caption( # Use edit_caption if the message is a photo
@@ -316,12 +332,15 @@ def register_groupfilter_handlers(cyber: Client):
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0) 
         # --- END OF NEW/MODIFIED CODE ---
         
-        _, series, season, lang, quality = q.data.split("|")
+        _, uid, series, season, lang, quality = q.data.split("|")
+        uid = int(uid)
         season = int(season)
+        if not await _check_owner(q, uid):
+            return
 
         # Fetch bot username dynamically
         bot = await cyber.get_me()
-        param = _encode_payload(series, season, lang, quality)
+        param = _encode_payload(series, season, lang, quality, uid)
         link = f"https://t.me/{bot.username}?start={param}"
 
         # 1. Redirect the user directly via query.answer(url=...)
@@ -333,7 +352,7 @@ def register_groupfilter_handlers(cyber: Client):
         kb = [
             [InlineKeyboardButton("📥 Get Your Files", url=link)],
             [
-            InlineKeyboardButton("↺ Back to Quality", callback_data=f"gls|{series}|{season}|{lang}")
+            InlineKeyboardButton("↺ Back to Quality", callback_data=f"gls|{uid}|{series}|{season}|{lang}")
             ]
         ]
         # 2. Edit the message to let the user know what happened
@@ -373,12 +392,15 @@ def register_groupfilter_handlers(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^gback\\|"))
     async def gback(_, q: CallbackQuery):
-        _, series = q.data.split("|")
+        _, uid, series = q.data.split("|")
 
         summary = await get_series_summary(series)
         seasons = summary.get("seasons", [])
+        uid = int(uid)
+        if not await _check_owner(q, uid):
+            return
         kb = [
-            [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series}|{s}")]
+            [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{uid}|{series}|{s}")]
             for s in seasons
         ]
         
@@ -447,10 +469,10 @@ async def _send_series_entry(cyber, m: Message, series: str):
         f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
         f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
     )
-
+    uid = m.from_user.id
     # season buttons
     kb = [
-        [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series}|{s}")]
+        [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{uid}|{series}|{s}")]
         for s in seasons
     ]
 
@@ -503,10 +525,11 @@ async def _edit_to_series_entry(cyber, q: CallbackQuery, series: str):
         f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
         f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
     )
+    uid = q.from_user.id
 
     # Build season buttons
     kb = [
-        [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{series}|{s}")]
+        [InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{uid}|{series}|{s}")]
         for s in seasons
     ]
 
