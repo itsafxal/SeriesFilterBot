@@ -18,7 +18,7 @@ from pyrogram.types import (
 from config import (
     logger,
     DEFAULT_POSTER,
-    MAX_CALLBACK_LENGTH,
+    # MAX_CALLBACK_LENGTH, # Not used in this file
     OMDB_CACHE_DB,
     SPELL_IMG,
 )
@@ -139,6 +139,45 @@ def _strict_match_only(query: str, names: list):
 
     return matches
 
+
+# ---------------------------------------------------------
+# SUGGESTION COUNTDOWN LOGIC (NEW FEATURE)
+# ---------------------------------------------------------
+async def _countdown_suggestion_button(cyber: Client, chat_id: int, message_id: int, owner_id: int, suggestions: list, delete_time: int):
+    """Counts down the time remaining before deleting the suggestion message."""
+    
+    for remaining in range(delete_time - 1, 0, -1): # Start from (N-1) since the initial message displays N
+        # Create the keyboard with the updated countdown text
+        kb = [[InlineKeyboardButton(s, callback_data=f"gsugg|{owner_id}|{s}")]
+              for s in suggestions]
+        
+        # Update the 'Close' button text
+        kb.append([InlineKeyboardButton(f"Close | Delete in {remaining}s", callback_data=f"close_suggestion|{owner_id}")])
+        
+        try:
+            # Edit only the reply markup of the message
+            await cyber.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+        except Exception:
+            # Stop the countdown if editing fails (message was deleted/edited externally)
+            break
+            
+        await asyncio.sleep(1) # Wait 1 second before the next update
+    
+    # Final cleanup of the keyboard right before deletion (optional but clean)
+    try:
+        await cyber.edit_message_reply_markup(
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_markup=None # Remove buttons when time runs out
+        )
+    except:
+        pass
+
+
 # ---------------------------------------------------------
 # MAIN REGISTRATION
 # ---------------------------------------------------------
@@ -216,20 +255,40 @@ def register_groupfilter_handlers(cyber: Client):
             if len(suggestions) >= 3:
                 break
 
-        # suggestion UI
+        # --- SUGGESTION UI with 30 SECOND COUNTDOWN AND DELETION ---
         uid = m.from_user.id if m.from_user else 0
-        kb = [[InlineKeyboardButton(s, callback_data=f"gsugg|{uid}|{s}")]
-              for s in suggestions]
-        kb.append([InlineKeyboardButton("Close", callback_data=f"close_suggestion|{uid}")])
-        await m.reply_photo(
+        
+        # Enforce 30 seconds for suggestion display/deletion
+        auto_delete_timer = 30 
+
+        # Build the initial keyboard with the time display
+        suggestions_kb = [[InlineKeyboardButton(s, callback_data=f"gsugg|{uid}|{s}")]
+                      for s in suggestions]
+        
+        suggestions_kb.append([InlineKeyboardButton(f"Close | Delete in {auto_delete_timer}s", callback_data=f"close_suggestion|{uid}")])
+
+        # Send the message
+        sent_message = await m.reply_photo(
             photo=SPELL_IMG,
             caption=(
                 f"I couldn't find anything related to <code>{text}</code>.\n"
                 f"Did you mean any of these?"
             ),
-            reply_markup=InlineKeyboardMarkup(kb),
+            reply_markup=InlineKeyboardMarkup(suggestions_kb),
             parse_mode=enums.ParseMode.HTML
         )
+        
+        # Start the auto-delete and countdown tasks
+        if sent_message:
+            # Task 1: Delete the message after 30 seconds
+            asyncio.create_task(
+                delete_message_later(cyber, sent_message.chat.id, sent_message.id, auto_delete_timer)
+            )
+            # Task 2: Handle the visual countdown on the button
+            asyncio.create_task(
+                _countdown_suggestion_button(cyber, sent_message.chat.id, sent_message.id, uid, suggestions, auto_delete_timer)
+            )
+        # --- END SUGGESTION UI MODIFIED ---
         return
 
     # -----------------------------------------------------
@@ -247,12 +306,13 @@ def register_groupfilter_handlers(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^close_suggestion\\|"))
     async def suggestion_close(c, q: CallbackQuery):
+        # User manually closes, so we delete it immediately
         try:
             await q.message.delete()
         except Exception as e:
             logger.warning(f"Failed to delete suggestion message: {e}")
             pass
-        await q.answer()
+        await q.answer("Suggestion closed and message deleted.")
 
 
     # -----------------------------------------------------
@@ -279,13 +339,13 @@ def register_groupfilter_handlers(cyber: Client):
 
         try:
             await q.message.edit_caption( # Use edit_caption if the message is a photo
-                f"📺 Title **{series}  — Season {season}**\n\nExcellent choice!✨ {series} is a fantastic show. I hope, you will enjoy this TV Series\n\n🌐 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗔𝘂𝗱𝗶𝗼 𝗟𝗮𝗻𝗴𝘂𝗮𝗴𝗲 👇",
+                f"📺 Title **{series}  — Season {season}**\n\nExcellent choice!✨ {series} is a fantastic show. I hope, you will enjoy this TV Series\n\n🌐 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲d 𝗔𝘂𝗱𝗶𝗼 𝗟𝗮𝗻𝗴𝘂𝗮𝗴𝗲 👇",
                 reply_markup=InlineKeyboardMarkup(kb),
                 parse_mode=enums.ParseMode.MARKDOWN
             )
         except Exception as e:
              await q.message.edit_text( # Fallback to edit_text if it fails
-                f"📺 Title **{series}  — Season {season}**\n\nExcellent choice!✨ {series} is a fantastic show. I hope, you will enjoy this TV Series\n\n🌐 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗔𝘂𝗱𝗶𝗼 𝗟𝗮𝗻𝗴𝘂𝗮𝗴𝗲 👇",
+                f"📺 Title **{series}  — Season {season}**\n\nExcellent choice!✨ {series} is a fantastic show. I hope, you will enjoy this TV Series\n\n🌐 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲d 𝗔𝘂𝗱𝗶𝗼 𝗟𝗮𝗻𝗴𝘂𝗮𝗴𝗲 👇",
                 reply_markup=InlineKeyboardMarkup(kb),
                 parse_mode=enums.ParseMode.MARKDOWN
             )
@@ -328,9 +388,8 @@ def register_groupfilter_handlers(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
     async def gqs(_, q: CallbackQuery):
-        # --- NEW/MODIFIED CODE: Fetching the timer ---
+        # Fetching the timer
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0) 
-        # --- END OF NEW/MODIFIED CODE ---
          
         _, uid, series, season, lang, quality = q.data.split("|")
         uid = int(uid)
@@ -409,7 +468,7 @@ def register_groupfilter_handlers(cyber: Client):
             f"**○ Language:** {', '.join(summary.get('languages', [])) or 'N/A'}\n"
             f"**○ Seasons Available:** {len(seasons)}\n"
             f"**○ Quality Available:** {', '.join(summary.get('qualities', [])) or 'N/A'}\n\n"
-            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
+            f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲d 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
         )
         
         # Try to edit the media back to the poster view
@@ -467,7 +526,7 @@ async def _send_series_entry(cyber, m: Message, series: str):
         f"**○ Language:** {languages_list or 'N/A'}\n"
         f"**○ Seasons Available:** {seasons_count}\n"
         f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
-        f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
+        f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲d 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
     )
     uid = m.from_user.id
     # season buttons
@@ -532,7 +591,7 @@ async def _edit_to_series_entry(cyber, q: CallbackQuery, series: str):
         f"**○ Language:** {languages_list or 'N/A'}\n"
         f"**○ Seasons Available:** {seasons_count}\n"
         f"**○ Quality Available:** {qualities_list or 'N/A'}\n\n"
-        f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲𝗱 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
+        f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗿𝗲d 𝗦𝗲𝗮𝘀𝗼𝗻 👇"
     )
     uid = q.from_user.id
 
@@ -563,7 +622,7 @@ async def _edit_to_series_entry(cyber, q: CallbackQuery, series: str):
         )
         
     auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
-    # The fix for IndentationError starts here:
+    # The fixed block for auto-delete
     if auto_delete_timer > 0 and sent:
         asyncio.create_task(
             delete_message_later(cyber, sent.chat.id, sent.id, auto_delete_timer)
