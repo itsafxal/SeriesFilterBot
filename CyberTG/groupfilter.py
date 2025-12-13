@@ -331,7 +331,7 @@ def register_groupfilter_handlers(cyber: Client):
         # --- NEW/MODIFIED CODE: Fetching the timer ---
         auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0) 
         # --- END OF NEW/MODIFIED CODE ---
-        
+         
         _, uid, series, season, lang, quality = q.data.split("|")
         uid = int(uid)
         season = int(season)
@@ -356,6 +356,7 @@ def register_groupfilter_handlers(cyber: Client):
             ]
         ]
         # 2. Edit the message to let the user know what happened
+        edited_message = q.message # Default fallback
         try:
             # Use edit_caption if the message is a photo
             edited_message = await q.message.edit_caption( 
@@ -375,20 +376,19 @@ def register_groupfilter_handlers(cyber: Client):
                     parse_mode=enums.ParseMode.MARKDOWN
                 )
             except Exception:
-                edited_message = q.message 
+                edited_message = q.message # Ensure edited_message is set if both fail
                 pass
-
-        if auto_delete_timer > 0:
-            async def delete_message_after_delay(message, delay):
-                """Deletes the message after a specified delay."""
-                await asyncio.sleep(delay)
-                try:
-                    await message.delete()
-                    logger.info(f"Deleted message {message.id} after {delay} seconds.")
-                except Exception as e:
-                    logger.warning(f"Failed to auto-delete message {message.id}: {e}")
-
-            asyncio.create_task(delete_message_later(edited_message, auto_delete_timer))
+        
+        # Correctly indented block for auto-delete
+        if auto_delete_timer > 0 and edited_message:
+            asyncio.create_task(
+                delete_message_later(
+                    cyber,
+                    edited_message.chat.id,
+                    edited_message.id,
+                    auto_delete_timer
+                )
+            )
 
     @cyber.on_callback_query(filters.regex("^gback\\|"))
     async def gback(_, q: CallbackQuery):
@@ -476,8 +476,9 @@ async def _send_series_entry(cyber, m: Message, series: str):
         for s in seasons
     ]
 
+    sent = None # Initialize sent message variable
     try:
-        return await m.reply_photo(
+        sent = await m.reply_photo(
             poster,
             caption=caption,
             reply_markup=InlineKeyboardMarkup(kb),
@@ -485,11 +486,19 @@ async def _send_series_entry(cyber, m: Message, series: str):
         )
     except Exception as e:
         logger.error(f"Failed to reply_photo for {series}, using text fallback: {e}")
-        return await m.reply_text(
+        sent = await m.reply_text(
             caption,
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=enums.ParseMode.MARKDOWN
         )
+        
+    auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+    if auto_delete_timer > 0 and sent:
+        asyncio.create_task(
+            delete_message_later(cyber, sent.chat.id, sent.id, auto_delete_timer)
+        )
+
+    return sent
 
 # ---------------------------------------------------------
 # EDIT FROM SUGGESTION -> FULL SERIES ENTRY (WITH CAPTION AND POSTER)
@@ -533,9 +542,10 @@ async def _edit_to_series_entry(cyber, q: CallbackQuery, series: str):
         for s in seasons
     ]
 
+    sent = q.message # Set initial message object
     # EDIT MESSAGE → MUST use edit_media + InputMediaPhoto to change from text to photo
     try:
-        await q.message.edit_media(
+        sent = await q.message.edit_media(
             media=InputMediaPhoto(
                 media=poster,
                 caption=caption,
@@ -546,10 +556,17 @@ async def _edit_to_series_entry(cyber, q: CallbackQuery, series: str):
     except Exception as e:
         # Fallback (message was not a photo or media edit failed)
         logger.error(f"Failed to edit_media for {series} (will use text fallback): {e}")
-        await q.message.edit_text(
+        sent = await q.message.edit_text(
             caption,
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=enums.ParseMode.MARKDOWN
+        )
+        
+    auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0)
+    # The fix for IndentationError starts here:
+    if auto_delete_timer > 0 and sent:
+        asyncio.create_task(
+            delete_message_later(cyber, sent.chat.id, sent.id, auto_delete_timer)
         )
 
     await q.answer()
