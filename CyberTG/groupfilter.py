@@ -329,14 +329,19 @@ def register_groupfilter_handlers(cyber: Client):
             url=link, 
             show_alert=False
         )
-
+        kb = [
+            [InlineKeyboardButton("📥 Get Your Files", url=link)],
+            [
+            InlineKeyboardButton("↺ Back to Quality", callback_data=f"gls|{series}|{season}|{lang}")
+            ]
+        ]
         # 2. Edit the message to let the user know what happened
         try:
             # Use edit_caption if the message is a photo
             edited_message = await q.message.edit_caption( 
                 f"✔ **{series} — S{season} ({lang}) [{quality}]**\n\n"
                 f"Files are now being delivered in the private chat of the bot. **Check your DMs!**",
-                reply_markup=None, # Remove buttons
+                reply_markup=InlineKeyboardMarkup(kb), # Remove buttons
                 parse_mode=enums.ParseMode.MARKDOWN
             )
         except Exception as e:
@@ -346,7 +351,7 @@ def register_groupfilter_handlers(cyber: Client):
                 edited_message = await q.message.edit_text(
                     f"✔ **{series} — S{season} ({lang}) [{quality}]**\n\n"
                     f"Files are now being delivered in the private chat of the bot. **Check your DMs!**",
-                    reply_markup=None, # Remove buttons
+                    reply_markup=InlineKeyboardMarkup(kb), # Remove buttons
                     parse_mode=enums.ParseMode.MARKDOWN
                 )
             except Exception:
