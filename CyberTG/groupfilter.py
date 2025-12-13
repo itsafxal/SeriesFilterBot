@@ -18,7 +18,6 @@ from pyrogram.types import (
 from config import (
     logger,
     DEFAULT_POSTER,
-    # MAX_CALLBACK_LENGTH, # Not used in this file
     OMDB_CACHE_DB,
     SPELL_IMG,
 )
@@ -141,44 +140,6 @@ def _strict_match_only(query: str, names: list):
 
 
 # ---------------------------------------------------------
-# SUGGESTION COUNTDOWN LOGIC (NEW FEATURE)
-# ---------------------------------------------------------
-async def _countdown_suggestion_button(cyber: Client, chat_id: int, message_id: int, owner_id: int, suggestions: list, delete_time: int):
-    """Counts down the time remaining before deleting the suggestion message."""
-    
-    for remaining in range(delete_time - 1, 0, -1): # Start from (N-1) since the initial message displays N
-        # Create the keyboard with the updated countdown text
-        kb = [[InlineKeyboardButton(s, callback_data=f"gsugg|{owner_id}|{s}")]
-              for s in suggestions]
-        
-        # Update the 'Close' button text
-        kb.append([InlineKeyboardButton(f"Close | Delete in {remaining}s", callback_data=f"close_suggestion|{owner_id}")])
-        
-        try:
-            # Edit only the reply markup of the message
-            await cyber.edit_message_reply_markup(
-                chat_id=chat_id,
-                message_id=message_id,
-                reply_markup=InlineKeyboardMarkup(kb)
-            )
-        except Exception:
-            # Stop the countdown if editing fails (message was deleted/edited externally)
-            break
-            
-        await asyncio.sleep(1) # Wait 1 second before the next update
-    
-    # Final cleanup of the keyboard right before deletion (optional but clean)
-    try:
-        await cyber.edit_message_reply_markup(
-            chat_id=chat_id,
-            message_id=message_id,
-            reply_markup=None # Remove buttons when time runs out
-        )
-    except:
-        pass
-
-
-# ---------------------------------------------------------
 # MAIN REGISTRATION
 # ---------------------------------------------------------
 def register_groupfilter_handlers(cyber: Client):
@@ -255,17 +216,18 @@ def register_groupfilter_handlers(cyber: Client):
             if len(suggestions) >= 3:
                 break
 
-        # --- SUGGESTION UI with 30 SECOND COUNTDOWN AND DELETION ---
+        # --- SUGGESTION UI with AUTO-DELETION (MODIFIED) ---
         uid = m.from_user.id if m.from_user else 0
         
-        # Enforce 30 seconds for suggestion display/deletion
+        # Enforce 30 seconds for suggestion deletion
         auto_delete_timer = 30 
 
-        # Build the initial keyboard with the time display
+        # Build the keyboard without the delete countdown
         suggestions_kb = [[InlineKeyboardButton(s, callback_data=f"gsugg|{uid}|{s}")]
                       for s in suggestions]
         
-        suggestions_kb.append([InlineKeyboardButton(f"Close | Delete in {auto_delete_timer}s", callback_data=f"close_suggestion|{uid}")])
+        # Simple 'Close' button
+        suggestions_kb.append([InlineKeyboardButton("Close", callback_data=f"close_suggestion|{uid}")])
 
         # Send the message
         sent_message = await m.reply_photo(
@@ -278,15 +240,10 @@ def register_groupfilter_handlers(cyber: Client):
             parse_mode=enums.ParseMode.HTML
         )
         
-        # Start the auto-delete and countdown tasks
+        # Start the auto-delete task (keeps the 30-second deletion active)
         if sent_message:
-            # Task 1: Delete the message after 30 seconds
             asyncio.create_task(
                 delete_message_later(cyber, sent_message.chat.id, sent_message.id, auto_delete_timer)
-            )
-            # Task 2: Handle the visual countdown on the button
-            asyncio.create_task(
-                _countdown_suggestion_button(cyber, sent_message.chat.id, sent_message.id, uid, suggestions, auto_delete_timer)
             )
         # --- END SUGGESTION UI MODIFIED ---
         return
