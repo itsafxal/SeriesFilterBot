@@ -194,12 +194,17 @@ def register_command_handlers(cyber: Client):
                 raw = base64.urlsafe_b64decode(b64 + padding).decode("utf-8")
                 # raw is series|season|language|quality
                 parts = raw.split("|")
-                if len(parts) < 4:
+                if len(parts) < 5:
                     raise ValueError("Invalid payload")
-                series_name = parts[0]
-                season = int(parts[1])
-                language = parts[2]
-                quality = parts[3]
+                owner_id = int(parts[0])
+                series_name = parts[1]
+                season = int(parts[2])
+                language = parts[3]
+                quality = parts[4]
+                if message.from_user.id != owner_id:
+                    return await message.reply_text(
+                        "❌ This link is not for you.\nPlease search again in the group."
+                    )
             except Exception as e:
                 logger.error(f"[START_DEEPLINK] Failed to decode start payload: {e}")
                 return await message.reply_text("❌ Invalid or corrupted start payload.")
@@ -481,14 +486,6 @@ def register_command_handlers(cyber: Client):
         deleteall_cmd,
         deletefile_cmd,
         total_cmd,
-        # The new index channel commands (add_index_channel, delete_index_channel, list_index_channels)
-        # are now automatically registered by their @cyber.on_message decorators,
-        # but since they are defined inside the function, they must be included in the return list.
-        # However, to be consistent with the other commands defined outside the function in the first step,
-        # I've included them here. Wait, since they are defined with @cyber.on_message inside
-        # this function, they don't need to be in the final return list as they are not
-        # being used as a simple function reference, but as decorators on the client object (cyber).
-        # Let's keep them in the list for full clarity and consistency with the previous structure.
         add_index_channel,
         delete_index_channel,
         list_index_channels,
