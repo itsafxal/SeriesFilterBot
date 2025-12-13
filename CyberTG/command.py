@@ -221,10 +221,14 @@ def register_command_handlers(cyber: Client):
                 try:
                     continue_payload = f"/start {start_arg}" 
                     await message.reply_text(
-                        f"🛑 You must join the required channel to receive files. Click below to join and then **click the link to continue:**\n\n`{continue_payload}`",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📣 Join Channel", url=invite_link)]]),
+                        f"🛑 You must join the required channel to receive files. Click below to join and then **click the link to continue:**",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📣 Join Channel", url=invite_link)],
+                            [InlineKeyboardButton("▶️ Continue", url=f"https://t.me/{(await cyber.get_me()).username}?start={start_arg}")]
+                        ]),
                         parse_mode=enums.ParseMode.MARKDOWN
                     )
+                    return
                 except Exception:
                     await message.reply_text("🛑 You must join the required channel to receive files.")
                 return
