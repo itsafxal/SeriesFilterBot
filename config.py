@@ -5,8 +5,8 @@ from pymongo import TEXT
 # --- Bot Configuration ---
 API_ID = 28643132
 API_HASH = "510c3009ea589830a89e045bf8aae656"
-BOT_TOKEN = "7887669088:AAES-gPD9vRFT-WOvzWSM__eBZrhLnaD7r8"
-MONGO_URI = "mongodb+srv://ss:ss@seriesfilterbot.p88od4y.mongodb.net/?appName=SeriesFilterBOT"
+BOT_TOKEN = "7574531944:AAEmtGa5DsO-wi4suITuDFDm_h2O3Fo9u7U"
+MONGO_URI = "mongodb+srv://Tessa2:Tessa2@cluster0.r3zwefc.mongodb.net/?appName=Cluster0"
 
 # --- Indexing Configuration ---
 # default fallback only. Actual list is stored in MongoDB and updated via bot commands.
@@ -23,6 +23,7 @@ SPELL_IMG = "https://ibb.co/1tSFHQKw"
 OMDB_API_KEY = "f93ab313"
 OMDB_CACHE_DB = "/tmp/omdb_cache.db"
 DEFAULT_POSTER = "https://ibb.co/1tSFHQKw"
+MAX_CALLBACK_LENGTH = 50
 
 # Captions
 CUSTOM_CAPTION_TEXT = """
@@ -34,23 +35,28 @@ CUSTOM_CAPTION_TEXT = """
 ◻️ 𝙅𝙊𝙄𝙉 :- @TGxSeriesFilterBot
 ╚════ ᴊᴏɪɴ ᴡɪᴛʜ ᴜs ═════╝"""
 
-MAX_CALLBACK_LENGTH = 50
-MAX_LOG_SIZE = 10 * 1024 * 1024 
+LOG_FILE_PATH = "bot.log"
+MAX_LOG_SIZE = 10 * 1024 * 1024
+
+formatter = logging.Formatter(
+    "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+)
 
 file_handler = RotatingFileHandler(
-    LOG_FILE_PATH, 
-    maxBytes=MAX_LOG_SIZE, 
-    backupCount=5, 
-    encoding='utf-8'
+    LOG_FILE_PATH,
+    maxBytes=MAX_LOG_SIZE,
+    backupCount=5,
+    encoding="utf-8"
 )
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(formatter)
 
-# Configure the root logger
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
-root_logger.addHandler(file_handler) # <-- Explicitly attach to root
+root_logger.addHandler(file_handler)
+root_logger.addHandler(console_handler)
 
-# Configure the 'config' logger 
-logger = logging.getLogger("config")
-logger.info("Starting bot process...")
+logger = logging.getLogger("BOT")
+logger.info("Logger initialized")
