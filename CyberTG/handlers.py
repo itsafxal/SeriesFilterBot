@@ -41,8 +41,8 @@ from .menus import (
 # --- Helper function from groupfilter.py for deep-linking ---
 import base64
 from urllib.parse import quote
-def _encode_payload(series, season, lang, quality):
-    raw = f"{series}|{season}|{lang}|{quality}"
+def _encode_payload(series, season, lang, quality, owner_id):
+    raw = f"{owner_id}|{series}|{season}|{lang}|{quality}"
     b64 = base64.urlsafe_b64encode(raw.encode()).decode()
     return f"send_{quote(b64)}"
 # --- End Helper function ---
@@ -402,7 +402,8 @@ def register_conversation_handlers(cyber: Client):
         # 1. Encode the payload for the deep link
         # Fetch bot username dynamically
         bot = await cyber.get_me()
-        param = _encode_payload(series_name, season, language, quality)
+        uid = query.from_user.id
+        param = _encode_payload(series_name, season, language, quality, uid)
         link = f"https://t.me/{bot.username}?start={param}"
 
         # 2. Redirect the user via the callback query answer
