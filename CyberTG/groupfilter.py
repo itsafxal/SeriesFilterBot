@@ -196,20 +196,22 @@ def register_groupfilter_handlers(cyber: Client):
         # 5) fuzzy suggestions
         candidates = list({*results, *cleaned_results})
         if not candidates:
-            return await m.reply_text(
+            sent = await m.reply_text(
                 f"❌ No series found `<code>{text}</code>`",
                 parse_mode=enums.ParseMode.HTML
             )
             await asyncio.sleep(15)
+            await sent.delete()
             return
 
         fuzzy = _fuzzy_match(text, candidates, limit=10)
         if not fuzzy:
-            return await m.reply_text(
+            sent = await m.reply_text(
                 f"❌ No series found `<code>{text}</code>`",
                 parse_mode=enums.ParseMode.HTML
             )
             await asyncio.sleep(15)
+            await sent.delete()
             return
 
         # top 3 suggestions
