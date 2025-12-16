@@ -200,6 +200,8 @@ def register_groupfilter_handlers(cyber: Client):
                 f"❌ No series found `<code>{text}</code>`",
                 parse_mode=enums.ParseMode.HTML
             )
+            await asyncio.sleep(15)
+            return
 
         fuzzy = _fuzzy_match(text, candidates, limit=10)
         if not fuzzy:
@@ -207,6 +209,8 @@ def register_groupfilter_handlers(cyber: Client):
                 f"❌ No series found `<code>{text}</code>`",
                 parse_mode=enums.ParseMode.HTML
             )
+            await asyncio.sleep(15)
+            return
 
         # top 3 suggestions
         suggestions = []
