@@ -14,6 +14,7 @@ INDEX_CHANNELS = []
 
 ADMIN_USERS = [5483128891]
 FORCE_SUB_CHANNEL = None   
+NEW_SERIES_NOTIFY_CHANNEL = -1003571372991
 LOG_FILE_PATH = "bot.log" # Path remains relative, but the handler will create it
 
 # Images
