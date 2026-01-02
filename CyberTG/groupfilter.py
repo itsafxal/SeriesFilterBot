@@ -31,6 +31,7 @@ from DB.database import (
     get_series_summary,
     get_unique_languages_by_season,
     get_unique_qualities_by_lang_season,
+    save_pending_delivery,
 )
 from utils import delete_message_later
 from .poster import get_series_poster_async
