@@ -1,6 +1,7 @@
 # command.py - MODIFIED for interactive, link-based indexing, resumption, AND /setskip command
 import io
 import asyncio
+from utils import check_force_subscribe
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from config import logger, ADMIN_USERS, START_IMG, CUSTOM_CAPTION_TEXT, LOG_FILE_PATH, MAX_LOG_SIZE, MAX_CALLBACK_LENGTH
@@ -16,17 +17,105 @@ from DB.database import (
     get_all_files_by_season_and_quality,
     get_index_channels, # Import for channel indexing
     set_index_channels, # Import for channel indexing
+    get_pending_delivery, 
+    clear_pending_delivery,
 )
 from .index import register_index_handlers # Import index handlers
+from .session_store import set_session
+from .delivery import deliver_files_direct
 
 # --- GLOBALS REMOVED: lock, media_filter, index_task, link_pattern, INDEX_STATUS_KEY, INDEX_SKIP_ID_KEY, extract_links, index_files_task ---
 # The above were moved to index.py
 
 def register_command_handlers(cyber: Client):
-    """Registers all command-based message handlers with the Pyrogram client."""
-
-    # Register indexing handlers from the new file
     index_handlers = register_index_handlers(cyber)
+
+    @cyber.on_message(filters.command("start") & filters.private)
+    async def start_command(_, message: Message):
+        # -----------------------------------------
+        # 1) Save user
+        # -----------------------------------------
+        await add_user(message.from_user.id)
+        user_id = message.from_user.id
+
+        # -----------------------------------------
+        # 2) FORCE-SUBSCRIBE CHECK (REQUIRED)
+        # -----------------------------------------
+        try:
+            is_member, invite_link = await check_force_subscribe(cyber, user_id)
+        except Exception as e:
+            logger.warning(f"[START] force-sub check failed: {e}")
+            is_member, invite_link = True, None
+
+        if not is_member:
+            await message.reply_text(
+                "🛑 **You must join our channel to use this bot.**\n\n"
+                "After joining, click **Start** again.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📣 Join Channel", url=invite_link)]
+                ]),
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+            return
+
+        # -----------------------------------------
+        # 3) 🔄 AUTO-RESUME PENDING DELIVERY
+        # -----------------------------------------
+        pending = await get_pending_delivery(user_id)
+        if pending:
+            set_session(user_id, {
+                "series": pending["series"],
+                "season": pending["season"],
+                "language": pending["language"],
+                "quality": pending["quality"],
+            })
+
+            await clear_pending_delivery(user_id)
+
+            await message.reply_text(
+                "🔄 **Resuming your download automatically…**",
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+
+            await deliver_files_direct(cyber, user_id)
+            return
+
+        # -----------------------------------------
+        # 4) NORMAL START (NO PENDING)
+        # -----------------------------------------
+        user = message.from_user
+        bot = await cyber.get_me()
+        user_mention = user.mention if user else "User"
+
+        START_TEXT = (
+            f"🖤 <b>Hey {user_mention}!</b>\n\n"
+            f"Welcome to <b>{bot.first_name}</b> — your private cinema in chat 🎭\n"
+            "Just type what you’re looking for and I’ll fetch it faster than light ⚡\n\n"
+            "<blockquote>Let’s dive into the world of entertainment 🌙</blockquote>"
+        )
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞",
+                    switch_inline_query_current_chat=""
+                )
+            ],
+            [
+                InlineKeyboardButton("⚡ ʜᴇʟᴘ", callback_data="help|menu"),
+                InlineKeyboardButton("ᴀʙᴏᴜᴛ ✨", callback_data="about|menu")
+            ],
+            [
+                InlineKeyboardButton("🍷 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ 🍷", url="t.me/TomxSupport")
+            ]
+        ])
+
+        await message.reply_photo(
+            photo=START_IMG,
+            caption=START_TEXT,
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=keyboard
+        )
     
     @cyber.on_message(filters.command("logs") & filters.user(ADMIN_USERS))
     async def send_logs_cmd(_, message: Message):
@@ -163,155 +252,6 @@ def register_command_handlers(cyber: Client):
             parse_mode=enums.ParseMode.MARKDOWN,
             disable_web_page_preview=True
         )
-
-
-    @cyber.on_message(filters.command("start") & filters.private)
-    async def start_command(_, message: Message):
-        """Handles the /start command and deep-link /start send_... payloads."""
-        # Ensure user is recorded
-        await add_user(message.from_user.id)
-
-        # If there's a start payload like: /start send_<b64>
-        start_arg = None
-        try:
-            if len(message.command) > 1:
-                start_arg = message.command[1]
-        except Exception:
-            start_arg = None
-
-        # Deep-link handling: send_<b64>
-        if start_arg and start_arg.startswith("send_"):
-            b64 = start_arg[5:]
-            # Add padding if missing
-            import base64
-            try:
-                # URL unquote is not strictly required because Telegram passes already decoded,
-                # but be defensive: replace spaces and safe chars
-                from urllib.parse import unquote
-                b64 = unquote(b64)
-                # restore padding if necessary
-                padding = '=' * (-len(b64) % 4)
-                raw = base64.urlsafe_b64decode(b64 + padding).decode("utf-8")
-                # raw is series|season|language|quality
-                parts = raw.split("|")
-                if len(parts) < 5:
-                    raise ValueError("Invalid payload")
-                owner_id = int(parts[0])
-                series_name = parts[1]
-                season = int(parts[2])
-                language = parts[3]
-                quality = parts[4]
-                if message.from_user.id != owner_id:
-                    return await message.reply_text(
-                        "❌ This link is not for you.\nPlease search again in the group."
-                    )
-            except Exception as e:
-                logger.error(f"[START_DEEPLINK] Failed to decode start payload: {e}")
-                return await message.reply_text("❌ Invalid or corrupted start payload.")
-
-            # Check force-subscribe (if configured)
-            try:
-                from utils import check_force_subscribe
-                is_member, invite_link = await check_force_subscribe(cyber, message.from_user.id)
-            except Exception as e:
-                logger.warning(f"[START_DEEPLINK] force-subscribe check failed: {e}")
-                is_member, invite_link = True, None
-
-            if not is_member:
-                try:
-                    continue_payload = f"/start {start_arg}" 
-                    await message.reply_text(
-                        f"🛑 You must join the required channel to receive files. Click below to join and then **click the link to continue:**",
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("📣 Join Channel", url=invite_link)],
-                            [InlineKeyboardButton("▶️ Continue", url=f"https://t.me/{(await cyber.get_me()).username}?start={start_arg}")]
-                        ]),
-                        parse_mode=enums.ParseMode.MARKDOWN
-                    )
-                    return
-                except Exception:
-                    await message.reply_text("🛑 You must join the required channel to receive files.")
-                return
-
-            # If subscribed — fetch files and send them
-            await message.reply_text(f"✅ Preparing files for **{series_name}** — Season {season} ({language}) [{quality}]",
-                                      parse_mode=enums.ParseMode.MARKDOWN)
-
-            try:
-                files = await get_all_files_by_season_and_quality(series_name, season, quality, language)
-            except Exception as e:
-                logger.error(f"[START_DEEPLINK] DB fetch fail for {series_name} S{season} {language} {quality}: {e}")
-                files = []
-
-            if not files:
-                return await message.reply_text("❌ No files found for the requested selection.")
-
-            bot_username = (await cyber.get_me()).username
-            sent_count = 0
-            for file_entry in files:
-                channel_id = file_entry["channel_id"]
-                message_id = file_entry["message_id"]
-                file_name = file_entry.get("file_name", f"S{file_entry.get('season',0)}E{file_entry.get('episode',99)}")
-                custom_caption = CUSTOM_CAPTION_TEXT.format(file_name=file_name, bot_username=bot_username)
-                try:
-                    file_id = file_entry.get("file_id")
-                    if file_id:
-                        await cyber.send_document(
-                            chat_id=message.from_user.id,
-                            document=file_id,
-                            caption=custom_caption,
-                            parse_mode=enums.ParseMode.MARKDOWN,
-                        )
-                    else:
-                        await cyber.copy_message(
-                            chat_id=message.from_user.id,
-                            from_chat_id=channel_id,
-                            message_id=message_id,
-                            caption=custom_caption,
-                            parse_mode=enums.ParseMode.MARKDOWN,
-                        )
-                    sent_count += 1
-                except Exception as e:
-                    logger.error(f"[START_DEEPLINK] Fail sending {message_id} from {channel_id}: {e}")
-                    continue
-
-                # throttle
-                if sent_count < len(files):
-                    await asyncio.sleep(1.5)
-
-            await message.reply_text(f"✅ Delivered {sent_count} files for **{series_name}** — Season {season} ({quality})",
-                                     parse_mode=enums.ParseMode.MARKDOWN)
-            return
-
-        # --- Default welcome / normal start (unchanged behaviour) ---
-        user = message.from_user
-        bot = await cyber.get_me()
-        user_mention = user.mention if user else "User"
-        START_TEXT = (
-            f"🖤 <b>Hey {user_mention}!</b>\n\n"
-            f"Welcome to <b>{bot.first_name}</b> — your private cinema in chat 🎭\n"
-            "Just type what you’re looking for and I’ll fetch it faster than light ⚡\n\n"
-            "<blockquote>Let’s dive into the world of entertainment 🌙</blockquote>"
-        )
-
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞", switch_inline_query_current_chat="")
-            ],[
-                InlineKeyboardButton("⚡ ʜᴇʟᴘ", callback_data="help|menu"),
-                InlineKeyboardButton("ᴀʙᴏᴜᴛ ✨", callback_data="about|menu")
-            ],[
-                InlineKeyboardButton("🍷 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ 🍷", url="t.me/TomxSupport")
-            ]
-        ])
-
-        await message.reply_photo(
-            photo=START_IMG,
-            caption=START_TEXT,
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=keyboard
-        )
-
 
     @cyber.on_message(filters.command("broadcast") & filters.user(ADMIN_USERS))
     async def broadcast_cmd(bot, msg):
