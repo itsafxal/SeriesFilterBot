@@ -1,8 +1,8 @@
 from pyrogram import enums
 from config import CUSTOM_CAPTION_TEXT
 from DB.database import get_all_files_by_season_and_quality
-from session_store import get_session, clear_session
-from send_queue import (
+from .session_store import get_session, clear_session
+from .send_queue import (
     get_user_queue,
     is_sender_running,
     USER_SEND_TASKS,
