@@ -359,8 +359,6 @@ def register_groupfilter_handlers(cyber: Client):
         await q.answer()
 
 
-def register_groupfilter_handlers(cyber: Client):
-
     # ---------------------------------------------------------
     # QUALITY SELECT (GROUP) — FINAL VERSION
     # ---------------------------------------------------------
