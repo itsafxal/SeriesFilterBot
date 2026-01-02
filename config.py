@@ -5,7 +5,7 @@ from pymongo import TEXT
 # --- Bot Configuration ---
 API_ID = 28643132
 API_HASH = "510c3009ea589830a89e045bf8aae656"
-BOT_TOKEN = "7574531944:AAGwfD5uDdk-gRSZnZTBjc9H69yJqRII2Rk"
+BOT_TOKEN = "8446252010:AAGzP5psKi6j-r2DjDbdS4L3z4B9pa46WWA"
 MONGO_URI = "mongodb+srv://Tessa1:Tessa1@cluster0.0icuc4y.mongodb.net/?appName=Cluster0"
 
 # --- Indexing Configuration ---
