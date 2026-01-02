@@ -406,7 +406,7 @@ def register_groupfilter_handlers(cyber: Client):
 
             start_link = f"{bot_link}?start=resume"
 
-            await q.message.reply(
+            msg = await q.message.reply(
                 "🚫 **I can’t send files to you yet.**\n\n"
                 "👉 Please click **Start Bot** once.\n"
                 "Files will resume automatically.",
@@ -415,7 +415,9 @@ def register_groupfilter_handlers(cyber: Client):
                 ]),
                 parse_mode=enums.ParseMode.MARKDOWN
             )
-
+            asyncio.create_task(
+                delete_message_later(cyber, msg.chat.id, msg.id, 120)
+            )
             return await q.answer()
 
         # -----------------------------------------
