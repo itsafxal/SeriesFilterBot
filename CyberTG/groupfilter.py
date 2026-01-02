@@ -5,6 +5,8 @@ import re
 import asyncio
 import shelve
 from urllib.parse import quote
+from session_store import set_session
+from .delivery import deliver_files_direct
 
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
@@ -351,66 +353,20 @@ def register_groupfilter_handlers(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
     async def gqs(_, q: CallbackQuery):
-        # Fetching the timer
-        auto_delete_timer = await get_global_setting("AUTO_DELETE_TIMER", 0) 
-         
         _, uid, series, season, lang, quality = q.data.split("|")
         uid = int(uid)
-        season = int(season)
-        if not await _check_owner(q, uid):
-            return
-
-        # Fetch bot username dynamically
-        bot = await cyber.get_me()
-        param = _encode_payload(series, season, lang, quality, uid)
-        link = f"https://t.me/{bot.username}?start={param}"
-
-        # 1. Redirect the user directly via query.answer(url=...)
-        await q.answer(
-            "Tap OK/Open to receive the files in private chat.", 
-            url=link, 
-            show_alert=False
-        )
-        kb = [
-            [InlineKeyboardButton("📥 Get Your Files", url=link)],
-            [
-            InlineKeyboardButton("↺ Back to Quality", callback_data=f"gls|{uid}|{series}|{season}|{lang}")
-            ]
-        ]
-        # 2. Edit the message to let the user know what happened
-        edited_message = q.message # Default fallback
-        try:
-            # Use edit_caption if the message is a photo
-            edited_message = await q.message.edit_caption( 
-                f"✔ **{series} — S{season} ({lang}) [{quality}]**\n\n"
-                f"Files are now being delivered in the private chat of the bot. **Check your DMs!**",
-                reply_markup=InlineKeyboardMarkup(kb), # Remove buttons
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
-        except Exception as e:
-            logger.warning(f"Failed to edit gqs message after redirect: {e}")
-            try:
-                # Fallback to edit_text
-                edited_message = await q.message.edit_text(
-                    f"✔ **{series} — S{season} ({lang}) [{quality}]**\n\n"
-                    f"Files are now being delivered in the private chat of the bot. **Check your DMs!**",
-                    reply_markup=InlineKeyboardMarkup(kb), # Remove buttons
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-            except Exception:
-                edited_message = q.message # Ensure edited_message is set if both fail
-                pass
         
-        # Correctly indented block for auto-delete
-        if auto_delete_timer > 0 and edited_message:
-            asyncio.create_task(
-                delete_message_later(
-                    cyber,
-                    edited_message.chat.id,
-                    edited_message.id,
-                    auto_delete_timer
-                )
-            )
+        if q.from_user.id != uid:
+            return await q.answer("❌ Not your request", show_alert=True)
+            
+        set_session(uid, {
+            "series": series,
+            "season": int(season),
+            "language": lang,
+            "quality": quality
+        })
+        await q.answer("📥 Sending to your DM…", show_alert=False)
+        await deliver_files_direct(cyber, uid)
 
     @cyber.on_callback_query(filters.regex("^gback\\|"))
     async def gback(_, q: CallbackQuery):
