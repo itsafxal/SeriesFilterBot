@@ -13,6 +13,7 @@ db = mongo_client["SeriesBotDB"]
 files_collection = db["files"] 
 state_collection = db["bot_state"] 
 users_collection = db["users"]
+pending_collection = db["pending_delivery"]
 
 # Ensure MongoDB Indexes (for search/backup if needed)
 try:
@@ -252,3 +253,22 @@ async def get_total_users() -> int:
     def sync_total_users():
         return users_collection.count_documents({}) 
     return await asyncio.to_thread(sync_total_users)
+
+async def save_pending_delivery(user_id: int, data: dict):
+    def sync():
+        pending_collection.update_one(
+            {"user_id": user_id},
+            {"$set": data},
+            upsert=True
+        )
+    await asyncio.to_thread(sync)
+
+async def get_pending_delivery(user_id: int):
+    def sync():
+        return pending_collection.find_one({"user_id": user_id})
+    return await asyncio.to_thread(sync)
+
+async def clear_pending_delivery(user_id: int):
+    def sync():
+        pending_collection.delete_one({"user_id": user_id})
+    await asyncio.to_thread(sync)
