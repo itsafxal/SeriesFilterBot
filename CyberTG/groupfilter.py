@@ -360,11 +360,13 @@ def register_groupfilter_handlers(cyber: Client):
         if q.from_user.id != uid:
             return await q.answer("❌ Not your request", show_alert=True)
             
-        set_session(uid, {
+        await save_pending_delivery(uid, {
+            "user_id": uid,
             "series": series,
             "season": int(season),
             "language": lang,
-            "quality": quality
+            "quality": quality,
+            "status": "waiting_for_start"
         })
         bot = await cyber.get_me()
         start_link = f"https://t.me/{bot.username}?start=resume"
