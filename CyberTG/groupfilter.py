@@ -423,7 +423,7 @@ def register_groupfilter_handlers(cyber: Client):
         # -----------------------------------------
         await q.answer(
             "📥 Files sent to bot PM",
-            show_alert=False
+            show_alert=True
         )
 
         # Start sending immediately (queue + progress)
