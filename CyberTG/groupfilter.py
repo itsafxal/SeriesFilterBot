@@ -5,7 +5,7 @@ import re
 import asyncio
 import shelve
 from urllib.parse import quote
-from session_store import set_session
+from .session_store import set_session
 from .delivery import deliver_files_direct
 
 from pyrogram import Client, filters, enums
