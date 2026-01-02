@@ -365,8 +365,19 @@ def register_groupfilter_handlers(cyber: Client):
             "language": lang,
             "quality": quality
         })
-        await q.answer("📥 Sending to your DM…", show_alert=False)
-        await deliver_files_direct(cyber, uid)
+        bot = await cyber.get_me()
+        start_link = f"https://t.me/{bot.username}?start=resume"
+        await q.message.reply(
+            "🚫 **I can’t send files to you yet.**\n\n"
+            "👉 Please click **Start Bot** once.\n"
+            "Files will resume automatically.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("▶️ Start Bot", url=start_link)]
+            ]),
+            parse_mode=enums.ParseMode.MARKDOWN
+         )
+
+        await q.answer()
 
     @cyber.on_callback_query(filters.regex("^gback\\|"))
     async def gback(_, q: CallbackQuery):
