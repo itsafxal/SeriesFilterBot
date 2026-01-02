@@ -37,7 +37,8 @@ from .menus import (
     show_language_menu, show_quality_menu, help_menu_handler, cyber_menu_handler, admin_menu_handler, 
     about_menu_handler, close_menu_handler, back_to_language_handler, back_to_search_handler, 
 )
-
+from session_store import set_session
+from .delivery import deliver_files_direct
 # --- Helper function from groupfilter.py for deep-linking ---
 import base64
 from urllib.parse import quote
@@ -382,50 +383,17 @@ def register_conversation_handlers(cyber: Client):
 
     
     @cyber.on_callback_query(filters.regex(r"^qs\|"))
-    async def quality_select_handler(cyber, query: CallbackQuery):
-        """Handles quality selection and redirects to a deep-link for file sending."""
-        data = query.data.split("|")
-        if len(data) < 5:
-            await query.answer("❌ Error: Invalid quality selection data.", show_alert=True)
-            return
-
-        series_name = data[1]
-        try:
-            season = int(data[2])
-        except ValueError:
-            await query.answer("❌ Error: Invalid season number.", show_alert=True)
-            return
-
-        language = data[3]
-        quality = data[4]
-        
-        # 1. Encode the payload for the deep link
-        # Fetch bot username dynamically
-        bot = await cyber.get_me()
-        uid = query.from_user.id
-        param = _encode_payload(series_name, season, language, quality, uid)
-        link = f"https://t.me/{bot.username}?start={param}"
-
-        # 2. Redirect the user via the callback query answer
-        await query.answer(
-            f"Tap OK/Open to receive files for S{season} ({quality})...", 
-            url=link, 
-            show_alert=False
-        )
-
-        # 3. OPTIONAL: Edit the message to indicate a redirect
-        try:
-            await query.message.edit_caption(
-                f"✔ **{series_name} — S{season} ({language}) [{quality}]**\n\n"
-                f"**Redirecting**... Tap the notification to receive the files.",
-                reply_markup=None, # Remove buttons
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
-        except MessageNotModified:
-            pass
-        except Exception as e:
-            logger.warning(f"Failed to edit qs message after redirect: {e}")
-
+    async def quality_select_handler(cyber, query):
+        _, series, season, language, quality = query.data.split("|")
+        user_id = query.from_user.id
+        set_session(user_id, {
+            "series": series,
+            "season": int(season),
+            "language": language,
+            "quality": quality
+        })
+        await query.answer("📥 Sending files…", show_alert=False)
+        await deliver_files_direct(cyber, user_id)
 
     @cyber.on_callback_query(filters.regex(r"^fs\|"))
     async def file_select_handler(cyber, query: CallbackQuery):
