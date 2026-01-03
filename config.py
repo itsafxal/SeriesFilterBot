@@ -5,8 +5,8 @@ from pymongo import TEXT
 # --- Bot Configuration ---
 API_ID = 28643132
 API_HASH = "510c3009ea589830a89e045bf8aae656"
-BOT_TOKEN = "8446252010:AAGzP5psKi6j-r2DjDbdS4L3z4B9pa46WWA"
-MONGO_URI = "mongodb+srv://Tessa1:Tessa1@cluster0.0icuc4y.mongodb.net/?appName=Cluster0"
+BOT_TOKEN = "7887669088:AAES-gPD9vRFT-WOvzWSM__eBZrhLnaD7r8"
+MONGO_URI = "mongodb+srv://ss:ss@seriesfilterbot.p88od4y.mongodb.net/?appName=SeriesFilterBOT"
 
 # --- Indexing Configuration ---
 # default fallback only. Actual list is stored in MongoDB and updated via bot commands.
