@@ -2,6 +2,7 @@ import asyncio
 from pyrogram import enums
 from config import CUSTOM_CAPTION_TEXT
 from DB.database import get_all_files_by_season_and_quality
+
 from .session_store import get_session, clear_session
 from .send_queue import (
     get_user_queue,
@@ -11,7 +12,9 @@ from .send_queue import (
     init_progress
 )
 
-async def deliver_files_direct(cyber, user_id: int):
+
+async def deliver_files_direct(cyber, user_id):
+
     session = get_session(user_id)
     if not session:
         return
@@ -35,6 +38,7 @@ async def deliver_files_direct(cyber, user_id: int):
     queue = get_user_queue(user_id)
 
     for f in files:
+
         async def send_job(f=f):
             caption = CUSTOM_CAPTION_TEXT.format(
                 file_name=f.get("file_name", "Episode")
