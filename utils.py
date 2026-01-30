@@ -1,38 +1,31 @@
-# utils.py
 import requests
 import logging
 import asyncio
 import re
+import shelve
 from pyrogram import types, Client, enums
 from config import logger, DEFAULT_POSTER, OMDB_CACHE_DB
 from DB.database import save_file_to_db, get_all_files_by_season_and_quality, get_global_setting
 from CyberTG.poster import get_series_poster_async
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
 logging.basicConfig(level=logging.INFO)
 
-LANGUAGE_CODES = {
-    "HIN": "Hindi",
-    "ENG": "English",
-    "TAM": "Tamil",
-    "TEL": "Telugu",
-    "MALA": "Malayalam",
-    "DUB": "Hindi"  # Often used alone to indicate Hindi dub
-}
-# Create a pattern string for the regex to match any of the known codes
-LANG_CODE_PATTERN = "|".join(LANGUAGE_CODES.keys())
-
-# Regex patterns for detecting various Telegram link types
-PRIVATE_LINK_PATTERN = r"https://t\.me/c/(\d+)/(\d+)"
-PUBLIC_LINK_PATTERN = r"https://t\.me/([A-Za-z0-9_]+)/(\d+)"
-JOINCHAT_PATTERN = r"https://t\.me/\+([A-Za-z0-9_-]+)"
-
-# ================= SEARCH HELPERS =================
+# ================= FUZZY + SPELL =================
 
 try:
     from rapidfuzz import process as rf_process, fuzz as rf_fuzz
     HAVE_RAPIDFUZZ = True
 except ImportError:
     HAVE_RAPIDFUZZ = False
+
+try:
+    from spellchecker import SpellChecker
+    SPELL = SpellChecker()
+    HAVE_SPELLCHECK = True
+except Exception:
+    SPELL = None
+    HAVE_SPELLCHECK = False
 
 
 def clean_query(q: str):
@@ -42,6 +35,17 @@ def clean_query(q: str):
     q = re.sub(r"[^a-z0-9\s]", " ", q)
     q = re.sub(r"\s+", " ", q).strip()
     return q
+
+
+def spell_correct(text: str):
+    if not HAVE_SPELLCHECK or not text:
+        return text
+    words = text.split()
+    fixed = []
+    for w in words:
+        cw = SPELL.correction(w)
+        fixed.append(cw if cw else w)
+    return " ".join(fixed)
 
 
 def fuzzy_match(query, choices, cutoff=70):
@@ -54,11 +58,7 @@ def fuzzy_match(query, choices, cutoff=70):
         scorer=rf_fuzz.partial_ratio,
         score_cutoff=cutoff
     )
-
-    if match:
-        return match[0]
-
-    return None
+    return match[0] if match else None
 
 
 def strict_match_only(query, choices):
@@ -67,6 +67,21 @@ def strict_match_only(query, choices):
         if q in c.lower():
             return c
     return None
+
+
+LANGUAGE_CODES = {
+    "HIN": "Hindi",
+    "ENG": "English",
+    "TAM": "Tamil",
+    "TEL": "Telugu",
+    "MALA": "Malayalam",
+    "DUB": "Hindi"
+}
+
+PRIVATE_LINK_PATTERN = r"https://t\.me/c/(\d+)/(\d+)"
+PUBLIC_LINK_PATTERN = r"https://t\.me/([A-Za-z0-9_]+)/(\d+)"
+JOINCHAT_PATTERN = r"https://t\.me/\+([A-Za-z0-9_-]+)"
+
 
 def _resolve_public_channel_id(client, username: str):
     """Helper to resolve public channel username → chat_id."""
