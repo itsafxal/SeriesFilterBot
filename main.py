@@ -4,7 +4,7 @@ import asyncio
 from pyrogram import Client, enums
 from CyberTG.command import register_command_handlers
 from CyberTG.index import index_files_task, lock, INDEX_STATUS_KEY, register_index_handlers
-from plugins.filters import register_filters
+from CyberTG.filters import register_filters
 from DB.database import initialize_sql_db, get_global_setting, set_global_setting
 from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
