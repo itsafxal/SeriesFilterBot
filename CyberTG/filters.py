@@ -1,15 +1,16 @@
 import base64
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+
 from config import DEFAULT_POSTER
-from .poster import get_series_poster_async
-from .files import set_session, deliver_files_direct
+
 from DB.database import (
     search_series,
     get_series_summary,
     get_unique_languages_by_season,
     get_unique_qualities_by_lang_season,
 )
+
 from utils import (
     clean_series_name,
     clean_query,
@@ -18,6 +19,25 @@ from utils import (
     spell_correct,
 )
 
+from .poster import get_series_poster_async
+from .session_store import set_session
+from .delivery import deliver_files_direct
+
+
+# ======================================================
+# HELPERS
+# ======================================================
+
+async def resolve_series(query: str):
+    query = spell_correct(clean_query(query))
+
+    rows = await search_series(query)
+    if not rows:
+        return None
+
+    titles = [clean_series_name(x) for x in rows]
+    return fuzzy_match(query, titles) or strict_match_only(query, titles)
+
 
 def _encode_payload(series, season, lang, quality, uid):
     raw = f"{uid}|{series}|{season}|{lang}|{quality}"
@@ -25,28 +45,55 @@ def _encode_payload(series, season, lang, quality, uid):
     return f"send_{b64}"
 
 
-# ---------- register everything ----------
+def _decode_payload(payload):
+    b64 = payload.replace("send_", "")
+    pad = "=" * (-len(b64) % 4)
+    return base64.urlsafe_b64decode(b64 + pad).decode().split("|")
+
+
+# ======================================================
+# REGISTER
+# ======================================================
 
 def register_filters(cyber: Client):
+
+    # ================= START HANDLER (DEEP LINK) =================
+
+    @cyber.on_message(filters.command("start") & filters.private)
+    async def start_handler(_, m: Message):
+
+        if len(m.command) < 2:
+            return await m.reply("Send a series name or use buttons from group.")
+
+        payload = m.command[1]
+        if not payload.startswith("send_"):
+            return
+
+        uid, series, season, lang, quality = _decode_payload(payload)
+
+        if m.from_user.id != int(uid):
+            return await m.reply("❌ This link is not for you.")
+
+        set_session(m.from_user.id, {
+            "series": series,
+            "season": int(season),
+            "language": lang,
+            "quality": quality
+        })
+
+        await m.reply("📤 Sending your files…")
+        await deliver_files_direct(cyber, m.from_user.id)
+
 
     # ================= PRIVATE SEARCH =================
 
     @cyber.on_message(filters.text & filters.private)
     async def pm_search(_, m: Message):
 
-        query = spell_correct(clean_query(m.text))
-
-        rows = await search_series(query)
-        if not rows:
+        series = await resolve_series(m.text)
+        if not series:
             return await m.reply("No result")
 
-        titles = [clean_series_name(x) for x in rows]
-        match = fuzzy_match(query, titles) or strict_match_only(query, titles)
-
-        if not match:
-            return await m.reply("No close match")
-
-        series = match
         summary = await get_series_summary(series)
 
         kb = [[InlineKeyboardButton(f"Season {s}", callback_data=f"ss|{series}|{s}")]
@@ -63,19 +110,9 @@ def register_filters(cyber: Client):
         if not m.text or m.text.startswith("/"):
             return
 
-        query = spell_correct(clean_query(m.text))
-
-        rows = await search_series(query)
-        if not rows:
+        series = await resolve_series(m.text)
+        if not series:
             return
-
-        titles = [clean_series_name(x) for x in rows]
-        match = fuzzy_match(query, titles) or strict_match_only(query, titles)
-
-        if not match:
-            return
-
-        series = match
 
         poster = DEFAULT_POSTER
         try:
