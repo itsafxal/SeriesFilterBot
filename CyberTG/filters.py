@@ -8,8 +8,8 @@ from DB.database import (
     get_unique_qualities_by_lang_season,
 )
 
-from helpers.series.helper import resolve_series
-from helpers.filter.helper import encode_payload, decode_payload
+from .helpers.series.helper import resolve_series
+from .helpers.filter.helper import encode_payload, decode_payload
 from .poster import get_series_poster_async
 from .files import set_session, deliver_files_direct
 
