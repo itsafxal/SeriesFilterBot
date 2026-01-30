@@ -80,7 +80,10 @@ def register_groupfilter_handlers(cyber: Client):
 
         qs = await get_unique_qualities_by_lang_season(series, lang, int(season))
         kb = [[InlineKeyboardButton(x, callback_data=f"gqs|{uid}|{series}|{season}|{lang}|{x}")] for x in qs]
-        await q.message.edit_caption("Select Quality", reply_markup=InlineKeyboardMarkup(kb))
+        try:
+            await q.message.edit_caption("Select Quality", reply_markup=InlineKeyboardMarkup(kb))
+        except:
+            pass
         await q.answer()
 
     # FINAL STEP → MANUAL BUTTON
