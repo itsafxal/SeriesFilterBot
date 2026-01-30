@@ -1,6 +1,6 @@
 from pyrogram import enums, types
 from DB.database import save_file_to_db, get_all_files_by_season_and_quality
-from utils.series.helper import parse_series_info
+from utils.series_helper import parse_series_info
 from CyberTG.poster import get_series_poster_async
 from config import DEFAULT_POSTER, logger
 
