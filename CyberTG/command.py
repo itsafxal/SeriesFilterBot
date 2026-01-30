@@ -63,15 +63,24 @@ def register_command_handlers(cyber: Client):
             if payload.startswith("send_"):
                 try:
                     data = payload.replace("send_", "")
+                    # restore base64 padding
                     data += "=" * (-len(data) % 4)
+
                     raw = base64.urlsafe_b64decode(data).decode()
+
                     owner, series, season, lang, quality = raw.split("|")
+
+                    # lock to original user
                     if int(owner) != uid:
                         return await message.reply("⚠️ This link is not for you.")
+
                     season = int(season)
-                except:
+
+                except Exception as e:
+                    logger.error(f"PAYLOAD ERROR: {e}")
                     return await message.reply("Invalid link")
 
+                # store session
                 set_session(uid, {
                     "series": series,
                     "season": season,
@@ -79,10 +88,7 @@ def register_command_handlers(cyber: Client):
                     "quality": quality
                 })
 
-                await message.reply(
-                    f"📥 Sending Files\n\n{series}\nSeason {season}\n{lang} | {quality}"
-                )
-
+                # start delivery (progress handled by send_queue)
                 await deliver_files_direct(cyber, uid)
                 return
 
@@ -97,6 +103,7 @@ def register_command_handlers(cyber: Client):
             ])
         )
 
+    
     # =================================================
     @cyber.on_message(filters.command("broadcast") & filters.user(ADMIN_USERS))
     async def broadcast(_, msg):
