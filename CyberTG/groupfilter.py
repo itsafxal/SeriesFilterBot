@@ -378,102 +378,28 @@ def register_groupfilter_handlers(cyber: Client):
     # ---------------------------------------------------------
     # QUALITY SELECT (GROUP) — FINAL VERSION
     # ---------------------------------------------------------
-    @cyber.on_callback_query(filters.regex("^gqs\\|"))
-    async def gqs(_, q: CallbackQuery):
-        _, uid, series, season, lang, quality = q.data.split("|")
+    @cyber.on_callback_query(filters.regex("^gss\\|"))
+    async def gss(_, q: CallbackQuery):
+
+        _, uid, series, season = q.data.split("|")
+
         uid = int(uid)
         season = int(season)
 
-        # -----------------------------------------
-        # OWNER CHECK
-        # -----------------------------------------
         if q.from_user.id != uid:
-            return await q.answer(
-                "❌ This result is not for you.",
-                show_alert=True
-            )
+            return await q.answer("❌ Not your request.", show_alert=True)
 
-        # -----------------------------------------
-        # SAVE SESSION (ALWAYS)
-        # -----------------------------------------
-        set_session(uid, {
-            "series": series,
-            "season": season,
-            "language": lang,
-            "quality": quality
-        })
+        langs = await get_unique_languages_by_season(series, season)
 
-        bot = await cyber.get_me()
-        bot_link = f"https://t.me/{bot.username}"
+        kb = [
+            [InlineKeyboardButton(l, callback_data=f"gls|{uid}|{series}|{season}|{l}")]
+            for l in langs
+        ]
 
-        # -----------------------------------------
-        # CHECK IF BOT CAN DM USER
-        # -----------------------------------------
-        if not await can_dm_user(cyber, uid):
-            # User has NOT started bot
-            await save_pending_delivery(uid, {
-                "user_id": uid,
-                "series": series,
-                "season": season,
-                "language": lang,
-                "quality": quality,
-                "status": "waiting_for_start"
-            })
-
-            start_link = f"{bot_link}?start=resume"
-
-            msg = await q.message.reply(
-                "🚫 **I can’t send files to you yet.**\n\n"
-                "👉 Please click **Start Bot** once.\n"
-                "Files will resume automatically.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("▶️ Start Bot", url=start_link)]
-                ]),
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
-            asyncio.create_task(
-                delete_message_later(cyber, msg.chat.id, msg.id, 120)
-            )
-            return await q.answer()
-
-        # -----------------------------------------
-        # USER ALREADY STARTED BOT ✅
-        # -----------------------------------------
-        await q.answer(
-            "📥 Files sent to bot PM",
-            show_alert=True
+        await q.message.edit_text(
+            f"{series} — Season {season}\n\nSelect Language:",
+            reply_markup=InlineKeyboardMarkup(kb)
         )
-
-        # Start sending immediately (queue + progress)
-        await deliver_files_direct(cyber, uid)
-
-        # -----------------------------------------
-        # EDIT GROUP MESSAGE UI
-        # -----------------------------------------
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📥 Go to Bot PM", url=bot_link)],
-            [InlineKeyboardButton(
-                "↺ Back to Quality",
-                callback_data=f"gls|{uid}|{series}|{season}|{lang}"
-            )]
-        ])
-
-        try:
-            await q.message.edit_caption(
-                f"✅ **Files sent to bot PM**\n\n"
-                f"📺 **{series}** — Season {season}\n"
-                f"🌐 {lang} | 🎞 {quality}",
-                reply_markup=keyboard,
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
-        except Exception:
-            await q.message.edit_text(
-                f"✅ **Files sent to bot PM**\n\n"
-                f"📺 **{series}** — Season {season}\n"
-                f"🌐 {lang} | 🎞 {quality}",
-                reply_markup=keyboard,
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
 
     @cyber.on_callback_query(filters.regex("^gback\\|"))
     async def gback(_, q: CallbackQuery):
