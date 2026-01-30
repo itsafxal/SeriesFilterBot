@@ -127,8 +127,7 @@ def main():
 
     # Register handlers
     register_command_handlers(cyber)
-    register_conversation_handlers(cyber)
-    register_groupfilter_handlers(cyber)
+    register_filters(cyber)
 
     
     logger.info("Starting bot client main loop...")
