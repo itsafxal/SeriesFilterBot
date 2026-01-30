@@ -22,9 +22,10 @@ from DB.database import (
 from .poster import get_series_poster_async
 
 
-raw = f"{series}|{season}|{lang}|{quality}"
-b64 = base64.urlsafe_b64encode(raw.encode()).decode()
-return f"send_{b64}"
+def _encode_payload(series, season, lang, quality, uid):
+    raw = f"{series}|{season}|{lang}|{quality}"
+    b64 = base64.urlsafe_b64encode(raw.encode()).decode()
+    return f"send_{b64}"
 
 
 
