@@ -153,7 +153,23 @@ def _strict_match_only(query: str, names: list):
 # MAIN REGISTRATION
 # ---------------------------------------------------------
 def register_groupfilter_handlers(cyber: Client):
+    # =====================================
+    # gt:/get: → Redirect to bot PM
+    # =====================================
+    @cyber.on_callback_query()
+    async def gt_redirect(_, query: CallbackQuery):
 
+        data = query.data or ""
+
+        if data.startswith(("gt:", "get:")):
+            link = data.split(":", 1)[1]
+
+            bot = await cyber.get_me()
+
+            await query.answer(
+                url=f"https://t.me/{bot.username}?start={link}"
+            )
+            return
     # -----------------------------------------------------
     # GROUP TEXT SEARCH
     # -----------------------------------------------------
