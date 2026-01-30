@@ -1,5 +1,3 @@
-
-# ======================= index.py (UPDATED FOR MULTI-CHANNEL) ============================
 import asyncio
 import gc
 from typing import Optional
@@ -16,8 +14,8 @@ from DB.database import (
     delete_all_index_states,
     get_index_channels,
 )
-from utils import extract_links, save_series_file_for_bulk_index
-
+from helpers.index.helper import save_series_file_for_bulk_index
+from helpers.filter.helper import extract_links
 
 # ------------------ GLOBAL SETTINGS ------------------
 lock = asyncio.Lock()
