@@ -26,6 +26,47 @@ PRIVATE_LINK_PATTERN = r"https://t\.me/c/(\d+)/(\d+)"
 PUBLIC_LINK_PATTERN = r"https://t\.me/([A-Za-z0-9_]+)/(\d+)"
 JOINCHAT_PATTERN = r"https://t\.me/\+([A-Za-z0-9_-]+)"
 
+# ================= SEARCH HELPERS =================
+
+try:
+    from rapidfuzz import process as rf_process, fuzz as rf_fuzz
+    HAVE_RAPIDFUZZ = True
+except ImportError:
+    HAVE_RAPIDFUZZ = False
+
+
+def clean_query(q: str):
+    if not q:
+        return ""
+    q = q.lower()
+    q = re.sub(r"[^a-z0-9\s]", " ", q)
+    q = re.sub(r"\s+", " ", q).strip()
+    return q
+
+
+def fuzzy_match(query, choices, cutoff=70):
+    if not HAVE_RAPIDFUZZ or not choices:
+        return None
+
+    match = rf_process.extractOne(
+        query,
+        choices,
+        scorer=rf_fuzz.partial_ratio,
+        score_cutoff=cutoff
+    )
+
+    if match:
+        return match[0]
+
+    return None
+
+
+def strict_match_only(query, choices):
+    q = query.lower()
+    for c in choices:
+        if q in c.lower():
+            return c
+    return None
 
 def _resolve_public_channel_id(client, username: str):
     """Helper to resolve public channel username → chat_id."""
