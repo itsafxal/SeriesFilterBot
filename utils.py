@@ -8,9 +8,6 @@ from config import logger, DEFAULT_POSTER, OMDB_CACHE_DB
 from DB.database import save_file_to_db, get_all_files_by_season_and_quality, get_global_setting
 from CyberTG.poster import get_series_poster_async
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-import base64
-from DB.database import search_series
-from utils import clean_series_name, clean_query, fuzzy_match, strict_match_only, spell_correct
 
 logging.basicConfig(level=logging.INFO)
 
@@ -29,29 +26,6 @@ try:
 except Exception:
     SPELL = None
     HAVE_SPELLCHECK = False
-
-
-async def resolve_series(query: str):
-    query = spell_correct(clean_query(query))
-
-    rows = await search_series(query)
-    if not rows:
-        return None
-
-    titles = [clean_series_name(x) for x in rows]
-    return fuzzy_match(query, titles) or strict_match_only(query, titles)
-
-
-def encode_payload(series, season, lang, quality, uid):
-    raw = f"{uid}|{series}|{season}|{lang}|{quality}"
-    b64 = base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
-    return f"send_{b64}"
-
-
-def decode_payload(payload):
-    b64 = payload.replace("send_", "")
-    pad = "=" * (-len(b64) % 4)
-    return base64.urlsafe_b64decode(b64 + pad).decode().split("|")
 
 
 def clean_query(q: str):
