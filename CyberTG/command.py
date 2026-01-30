@@ -62,7 +62,9 @@ def register_command_handlers(cyber: Client):
 
             if payload.startswith("send_"):
                 try:
-                    raw = base64.urlsafe_b64decode(payload.replace("send_", "")).decode()
+                    data = payload.replace("send_", "")
+                    data += "=" * (-len(data) % 4)
+                    raw = base64.urlsafe_b64decode(data).decode()
                     owner, series, season, lang, quality = raw.split("|")
                     if int(owner) != uid:
                         return await message.reply("⚠️ This link is not for you.")
