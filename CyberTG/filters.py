@@ -1,5 +1,3 @@
-# CyberTG/filters.py
-
 import math
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
@@ -16,11 +14,13 @@ from utils.telegram_helper import delete_message_later
 from utils.filter_helper import encode_payload
 
 from .poster import get_series_info
-from .files import set_session, deliver_files_direct
-
 
 SEASONS_PER_PAGE = 9
 
+
+# -------------------------------------------------
+# CAPTION BUILDER
+# -------------------------------------------------
 
 def build_caption(series, year, genre, rating, seasons=None, languages=None, qualities=None, step="season"):
     lines = [
@@ -55,6 +55,10 @@ def build_caption(series, year, genre, rating, seasons=None, languages=None, qua
     return "\n".join(lines)
 
 
+# -------------------------------------------------
+# GRID + PAGINATION
+# -------------------------------------------------
+
 def build_grid_keyboard(items, cb_builder, per_row=2):
     rows, row = [], []
     for it in items:
@@ -69,6 +73,7 @@ def build_grid_keyboard(items, cb_builder, per_row=2):
 
 def build_season_pages(seasons, uid, series, page=0):
     total_pages = math.ceil(len(seasons) / SEASONS_PER_PAGE)
+
     start = page * SEASONS_PER_PAGE
     end = start + SEASONS_PER_PAGE
     chunk = seasons[start:end]
@@ -82,18 +87,22 @@ def build_season_pages(seasons, uid, series, page=0):
     if row:
         rows.append(row)
 
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"spg|{uid}|{series}|{page-1}"))
-    nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
-    if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("Next ▶", callback_data=f"spg|{uid}|{series}|{page+1}"))
-
-    if nav:
+    # show navigation ONLY if multiple pages
+    if total_pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"spg|{uid}|{series}|{page-1}"))
+        nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton("Next ▶", callback_data=f"spg|{uid}|{series}|{page+1}"))
         rows.append(nav)
 
     return InlineKeyboardMarkup(rows)
 
+
+# -------------------------------------------------
+# MAIN
+# -------------------------------------------------
 
 def register_filters(cyber: Client):
 
@@ -112,7 +121,7 @@ def register_filters(cyber: Client):
         await delete_message_later(cyber, sent.chat.id, sent.id, 40)
 
 
-    # ---------------- PRIVATE SEARCH ----------------
+    # ---------- PRIVATE SEARCH ----------
 
     @cyber.on_message(filters.text & filters.private)
     async def pm_search(_, m):
@@ -133,7 +142,7 @@ def register_filters(cyber: Client):
         await m.reply_photo(poster or DEFAULT_POSTER, caption=caption, reply_markup=kb)
 
 
-    # ---------------- GROUP SEARCH ----------------
+    # ---------- GROUP SEARCH ----------
 
     @cyber.on_message(filters.text & filters.group)
     async def group_search(_, m):
@@ -155,15 +164,10 @@ def register_filters(cyber: Client):
         caption = build_caption(series, year, genre, rating, seasons=seasons, step="season")
         kb = build_season_pages(seasons, uid, series, 0)
 
-        await m.reply_photo(
-            poster or DEFAULT_POSTER,
-            caption=caption,
-            reply_markup=kb,
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
+        await m.reply_photo(poster or DEFAULT_POSTER, caption=caption, reply_markup=kb)
 
 
-    # ---------------- SUGGESTION CLICK ----------------
+    # ---------- SUGGESTION CLICK ----------
 
     @cyber.on_callback_query(filters.regex("^sug\\|"))
     async def sug(_, q):
@@ -186,7 +190,7 @@ def register_filters(cyber: Client):
         await q.answer()
 
 
-    # ---------------- SEASON PAGINATION ----------------
+    # ---------- PAGINATION ----------
 
     @cyber.on_callback_query(filters.regex("^spg\\|"))
     async def season_page(_, q):
@@ -207,7 +211,7 @@ def register_filters(cyber: Client):
         await q.answer()
 
 
-    # ---------------- SEASON -> LANGUAGE ----------------
+    # ---------- SEASON -> LANGUAGE ----------
 
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q):
@@ -227,7 +231,7 @@ def register_filters(cyber: Client):
         await q.answer()
 
 
-    # ---------------- LANGUAGE -> QUALITY ----------------
+    # ---------- LANGUAGE -> QUALITY ----------
 
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q):
@@ -247,7 +251,7 @@ def register_filters(cyber: Client):
         await q.answer()
 
 
-    # ---------------- BACK BUTTONS ----------------
+    # ---------- BACK BUTTONS ----------
 
     @cyber.on_callback_query(filters.regex("^back_season\\|"))
     async def back_season(_, q):
@@ -278,7 +282,7 @@ def register_filters(cyber: Client):
         await q.answer()
 
 
-    # ---------------- QUALITY -> PM DELIVERY ----------------
+    # ---------- QUALITY -> PM REDIRECT ----------
 
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
     async def gqs(_, q):
@@ -287,30 +291,23 @@ def register_filters(cyber: Client):
         if q.from_user.id != int(uid):
             return await q.answer("Not your menu", show_alert=True)
 
-        set_session(uid, {
-            "series": series,
-            "season": int(season),
-            "language": lang,
-            "quality": quality
-        })
+        payload = encode_payload(series, season, lang, quality, uid)
+        bot = await cyber.get_me()
+        link = f"https://t.me/{bot.username}?start={payload}"
 
         try:
-            await deliver_files_direct(cyber, uid)
-            try:
-                await q.message.edit_reply_markup(None)
-            except:
-                pass
-            await q.answer("📥 Sending files in PM…")
+            await q.message.edit_caption(
+                "📥 Redirecting to PM…",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("▶ Get Files", url=link)]
+                ])
+            )
+        except:
+            await q.message.edit_text(
+                "📥 Redirecting to PM…",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("▶ Get Files", url=link)]
+                ])
+            )
 
-        except Exception:
-            payload = encode_payload(series, season, lang, quality, uid)
-            bot = await cyber.get_me()
-            link = f"https://t.me/{bot.username}?start={payload}"
-
-            try:
-                await q.message.edit_caption(
-                    "👉 Start bot in PM first to receive files.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶ Start Bot", url=link)]])
-                )
-            except:
-                pass
+        await q.answer()
