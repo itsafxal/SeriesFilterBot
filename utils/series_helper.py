@@ -1,22 +1,20 @@
 import re
+from typing import List, Optional
+
 from DB.database import search_series
 
 try:
     from rapidfuzz import process as rf_process, fuzz as rf_fuzz
     HAVE_RAPIDFUZZ = True
-except:
+except ImportError:
     HAVE_RAPIDFUZZ = False
 
-try:
-    from spellchecker import SpellChecker
-    SPELL = SpellChecker()
-    HAVE_SPELLCHECK = True
-except:
-    SPELL = None
-    HAVE_SPELLCHECK = False
 
+# -------------------------------------------------
+# BASIC QUERY CLEAN
+# -------------------------------------------------
 
-def clean_query(q: str):
+def clean_query(q: str) -> str:
     if not q:
         return ""
     q = q.lower()
@@ -25,109 +23,76 @@ def clean_query(q: str):
     return q
 
 
-def spell_correct(text: str):
-    if not HAVE_SPELLCHECK or not text:
-        return text
-    words = text.split()
-    fixed = []
-    for w in words:
-        cw = SPELL.correction(w)
-        fixed.append(cw if cw else w)
-    return " ".join(fixed)
+# -------------------------------------------------
+# MAIN RESOLVER
+# -------------------------------------------------
 
-
-def fuzzy_match(query, choices, cutoff=70):
-    if not HAVE_RAPIDFUZZ or not choices:
+async def resolve_series(query: str) -> Optional[str]:
+    """
+    Try to resolve user input into a known normalized series name.
+    Returns best match or None.
+    """
+    query = clean_query(query)
+    if not query:
         return None
 
-    match = rf_process.extractOne(
-        query,
-        choices,
-        scorer=rf_fuzz.partial_ratio,
-        score_cutoff=cutoff
-    )
-    return match[0] if match else None
-
-
-def strict_match_only(query, choices):
-    q = query.lower()
-    for c in choices:
-        if q in c.lower():
-            return c
-    return None
-
-
-def clean_series_name(name: str) -> str:
-    name = re.sub(r"[. _]+", " ", name).strip()
-    name = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', name)
-    name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", name)
-    name = re.sub(r"\s+", " ", name).strip()
-    return name.title()
-
-
-def extract_quality(file_name: str) -> str:
-    name = (file_name or "").upper()
-    if "2160P" in name or "4K" in name:
-        return "4K"
-    if "1080P" in name:
-        return "1080P"
-    if "720P" in name:
-        return "720P"
-    return "480P"
-
-
-def extract_language(file_name: str) -> str:
-    name = (file_name or "").upper()
-
-    langs = {
-        "HINDI": "Hindi",
-        "ENGLISH": "English",
-        "TAMIL": "Tamil",
-        "TELUGU": "Telugu",
-        "MALAYALAM": "Malayalam"
-    }
-
-    found = []
-    for k, v in langs.items():
-        if k in name:
-            found.append(v)
-
-    if not found:
-        return "English"
-
-    if len(found) == 1:
-        return found[0]
-
-    return "-".join(sorted(found))
-
-
-def parse_series_info(file_name: str):
-    if not file_name:
-        return "", 0, 0, "", ""
-
-    match = re.search(r"[sS](\d+)[^\d]*[eE](\d+)", file_name)
-
-    quality = extract_quality(file_name)
-    language = extract_language(file_name)
-
-    if not match:
-        return clean_series_name(file_name), 0, 0, quality, language
-
-    season = int(match.group(1))
-    episode = int(match.group(2))
-
-    left = file_name[:match.start()]
-    series = clean_series_name(left)
-
-    return series, season, episode, quality, language
-
-
-async def resolve_series(query: str):
-    query = spell_correct(clean_query(query))
-
+    # SQLite search already gives reasonable candidates
     rows = await search_series(query)
     if not rows:
         return None
 
-    titles = [clean_series_name(x) for x in rows]
-    return fuzzy_match(query, titles) or strict_match_only(query, titles)
+    titles = list(set(rows))
+
+    # Exact or startswith preference
+    ql = query.lower()
+    for t in titles:
+        if t.lower().startswith(ql):
+            return t
+
+    # RapidFuzz ranking
+    if HAVE_RAPIDFUZZ:
+        match = rf_process.extractOne(
+            query,
+            titles,
+            scorer=rf_fuzz.partial_ratio,
+            score_cutoff=60
+        )
+        if match:
+            return match[0]
+
+    # Fallback partial contain
+    for t in titles:
+        if ql in t.lower():
+            return t
+
+    return titles[0]
+
+
+# -------------------------------------------------
+# SUGGESTIONS (when resolve fails)
+# -------------------------------------------------
+
+async def suggest_series(query: str, limit: int = 5) -> List[str]:
+    """
+    Return close series name suggestions when no direct match found.
+    Example: 'wed' -> ['Wednesday', 'Wedland', ...]
+    """
+    query = clean_query(query)
+    if not query or not HAVE_RAPIDFUZZ:
+        return []
+
+    # pull broad candidate set from sqlite
+    rows = await search_series("")  # empty query returns all names
+    if not rows:
+        return []
+
+    choices = list(set(rows))
+
+    matches = rf_process.extract(
+        query,
+        choices,
+        limit=limit,
+        score_cutoff=40
+    )
+
+    return [m[0] for m in matches]
