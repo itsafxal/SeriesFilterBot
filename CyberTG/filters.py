@@ -80,7 +80,7 @@ def build_season_pages(seasons, uid, series, page=0):
 
     rows, row = [], []
     for s in chunk:
-        row.append(InlineKeyboardButton(f"S{s}", callback_data=f"gss|{uid}|{series}|{s}"))
+        row.append(InlineKeyboardButton(f"Season {s}", callback_data=f"gss|{uid}|{series}|{s}"))
         if len(row) == 3:
             rows.append(row)
             row = []
