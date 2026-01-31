@@ -1,3 +1,5 @@
+# utils/series_helper.py
+
 import re
 from typing import List, Optional
 
@@ -24,32 +26,31 @@ def clean_query(q: str) -> str:
 
 
 # -------------------------------------------------
-# MAIN RESOLVER
+# MAIN RESOLVER (USED BY FILTERS)
 # -------------------------------------------------
 
 async def resolve_series(query: str) -> Optional[str]:
     """
-    Try to resolve user input into a known normalized series name.
-    Returns best match or None.
+    Resolve user text to best normalized series name from SQLITE.
     """
     query = clean_query(query)
     if not query:
         return None
 
-    # SQLite search already gives reasonable candidates
     rows = await search_series(query)
     if not rows:
         return None
 
     titles = list(set(rows))
 
-    # Exact or startswith preference
     ql = query.lower()
+
+    # prefer startswith
     for t in titles:
         if t.lower().startswith(ql):
             return t
 
-    # RapidFuzz ranking
+    # fuzzy
     if HAVE_RAPIDFUZZ:
         match = rf_process.extractOne(
             query,
@@ -60,7 +61,7 @@ async def resolve_series(query: str) -> Optional[str]:
         if match:
             return match[0]
 
-    # Fallback partial contain
+    # fallback contains
     for t in titles:
         if ql in t.lower():
             return t
@@ -69,20 +70,15 @@ async def resolve_series(query: str) -> Optional[str]:
 
 
 # -------------------------------------------------
-# SUGGESTIONS (when resolve fails)
+# SUGGESTIONS FOR WRONG INPUT
 # -------------------------------------------------
 
 async def suggest_series(query: str, limit: int = 5) -> List[str]:
-    """
-    Return close series name suggestions when no direct match found.
-    Example: 'wed' -> ['Wednesday', 'Wedland', ...]
-    """
     query = clean_query(query)
     if not query or not HAVE_RAPIDFUZZ:
         return []
 
-    # pull broad candidate set from sqlite
-    rows = await search_series("")  # empty query returns all names
+    rows = await search_series("")
     if not rows:
         return []
 
@@ -96,3 +92,60 @@ async def suggest_series(query: str, limit: int = 5) -> List[str]:
     )
 
     return [m[0] for m in matches]
+
+
+# -------------------------------------------------
+# PARSER FOR INDEXING (USED BY index_helper.py)
+# -------------------------------------------------
+
+def parse_series_info(file_name: str):
+    """
+    Parser used during bulk index.
+    Returns: normalized_name, season, episode, quality, language
+    """
+
+    if not file_name:
+        return "", 0, 0, "UNKNOWN", "English"
+
+    name = file_name
+
+    # Season / Episode
+    season = 0
+    episode = 0
+
+    m = re.search(r"[sS](\d+)[^\d]?[eE](\d+)", name)
+    if m:
+        season = int(m.group(1))
+        episode = int(m.group(2))
+
+    # Quality
+    quality = "UNKNOWN"
+    for q in ["4K", "1080P", "720P", "480P", "360P"]:
+        if q.lower() in name.lower():
+            quality = q
+            break
+
+    # Language detection
+    langs = []
+    upper = name.upper()
+
+    if "HINDI" in upper:
+        langs.append("Hindi")
+    if "ENGLISH" in upper:
+        langs.append("English")
+    if "TAMIL" in upper:
+        langs.append("Tamil")
+    if "TELUGU" in upper:
+        langs.append("Telugu")
+    if "MALAYALAM" in upper:
+        langs.append("Malayalam")
+
+    language = "-".join(langs) if langs else "English"
+
+    # Normalize series title
+    clean = re.sub(r"[._]", " ", name)
+    clean = re.sub(r"\[.*?\]|\(.*?\)", "", clean)
+    clean = re.sub(r"[sS]\d+[^\d]?[eE]\d+.*", "", clean)
+    clean = re.sub(r"\s+", " ", clean).strip().title()
+
+    return clean, season, episode, quality, language
