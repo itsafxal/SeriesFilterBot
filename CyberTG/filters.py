@@ -150,20 +150,37 @@ def register_filters(cyber: Client):
 
 
     # ==============================
-    # GROUP QUALITY → DEEP LINK
+    # GROUP QUALITY → AUTO PM SEND
     # ==============================
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
     async def gqs(_, q):
         _, uid, series, season, lang, quality = q.data.split("|")
 
-        payload = encode_payload(series, season, lang, quality, uid)
-        bot = await cyber.get_me()
+        if q.from_user.id != int(uid):
+            return await q.answer("Not your menu", show_alert=True)
 
-        link = f"https://t.me/{bot.username}?start={payload}"
+        # store session
+        set_session(uid, {
+            "series": series,
+            "season": int(season),
+            "language": lang,
+            "quality": quality
+        })
 
-        await q.message.reply(
-            "📥 Tap to receive files in PM",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("▶ Send Files", url=link)]
-            ])
-        )
+        try:
+            # try direct PM delivery
+            await deliver_files_direct(cyber, uid)
+            await q.answer("📥 Sending files in PM…")
+
+        except Exception:
+            # fallback if user never started bot
+            payload = encode_payload(series, season, lang, quality, uid)
+            bot = await cyber.get_me()
+            link = f"https://t.me/{bot.username}?start={payload}"
+
+            await q.message.reply(
+                "👉 Start bot in PM first:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("▶ Start Bot", url=link)]
+                ])
+            )
