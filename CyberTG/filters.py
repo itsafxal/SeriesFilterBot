@@ -8,16 +8,15 @@ from DB.database import (
     get_series_summary,
     get_unique_languages_by_season,
     get_unique_qualities_by_lang_season,
-    search_series
 )
 
-from utils.series_helper import resolve_series, suggest_series, clean_query
+from DB.groupsetting import get_group
+from utils.series_helper import resolve_series, suggest_series
 from utils.telegram_helper import delete_message_later
 from utils.filter_helper import encode_payload
 from .poster import get_series_info
 
 SEASONS_PER_PAGE = 9
-SEASON_REGEX = re.compile(r"(s\d+|season\s*\d+)", re.I)
 
 
 # -------------------------------------------------
@@ -107,7 +106,7 @@ def build_season_pages(seasons, uid, series, page=0):
 
 def register_filters(cyber: Client):
 
-    async def show_suggestions(message, suggestions):
+    async def show_suggestions(message, suggestions, timer=40):
         try:
             await message.delete()
         except:
@@ -119,9 +118,10 @@ def register_filters(cyber: Client):
             "❓ Did you mean:",
             reply_markup=InlineKeyboardMarkup(kb)
         )
-        await delete_message_later(cyber, sent.chat.id, sent.id, 40)
+        await delete_message_later(cyber, sent.chat.id, sent.id, timer)
 
-    # ---------------- PRIVATE SEARCH (SMART) ----------------
+
+    # ================= PRIVATE SEARCH =================
 
     @cyber.on_message(filters.text & filters.private)
     async def pm_search(_, m):
@@ -141,62 +141,55 @@ def register_filters(cyber: Client):
 
         await m.reply_photo(poster or DEFAULT_POSTER, caption=caption, reply_markup=kb)
 
-    # ---------------- GROUP SEARCH (STRICT) ----------------
+
+    # ================= GROUP SEARCH =================
 
     @cyber.on_message(filters.text & filters.group)
     async def group_search(_, m):
-        if not m.text or m.text.startswith("/"):
+        cfg = await get_group(m.chat.id)
+
+        if not cfg["connected"] or not cfg["series_search"]:
             return
 
         text = m.text.strip()
-        query = clean_query(text)
 
-        if not query:
+        has_season = bool(re.search(r"(s\d+|season\s*\d+)", text.lower()))
+        series = await resolve_series(text)
+
+        # strict mode
+        if not series or (cfg["strict"] and not has_season):
+            if cfg["delete_suggestions"]:
+                sugg = await suggest_series(text)
+                if sugg:
+                    await show_suggestions(m, sugg, cfg["suggestion_timer"])
             return
-
-        has_season = bool(SEASON_REGEX.search(text))
-
-        rows = await search_series(query)
-
-        if not rows:
-            sugg = await suggest_series(query)
-            if sugg:
-                return await show_suggestions(m, sugg)
-            return
-
-        ql = query.lower()
-        strong = None
-
-        # strict match
-        for r in rows:
-            rl = r.lower()
-            if rl == ql or rl.startswith(ql):
-                strong = r
-                break
-
-        # season override allows fuzzy
-        if not strong and has_season:
-            strong = await resolve_series(query)
-
-        if not strong:
-            sugg = await suggest_series(query)
-            if sugg:
-                return await show_suggestions(m, sugg)
-            return
-
-        series = strong
 
         poster, year, genre, rating = await get_series_info(series)
+
+        if not cfg["poster"]:
+            poster = DEFAULT_POSTER
+
         summary = await get_series_summary(series)
-        seasons = list(summary["seasons"])
+        seasons = list(summary["seasons"])[:cfg["max_results"]]
         uid = m.from_user.id
 
-        caption = build_caption(series, year, genre, rating, seasons=seasons, step="season")
+        caption = build_caption(
+            series,
+            year if cfg["imdb"] else None,
+            genre if cfg["imdb"] else None,
+            rating if cfg["imdb"] else None,
+            seasons=seasons,
+            step="season"
+        )
+
         kb = build_season_pages(seasons, uid, series, 0)
 
-        await m.reply_photo(poster or DEFAULT_POSTER, caption=caption, reply_markup=kb)
+        sent = await m.reply_photo(poster or DEFAULT_POSTER, caption=caption, reply_markup=kb)
 
-    # ---------------- SUGGESTION CLICK ----------------
+        await delete_message_later(cyber, sent.chat.id, sent.id, cfg["result_timer"])
+
+
+    # ================= CALLBACKS =================
 
     @cyber.on_callback_query(filters.regex("^sug\\|"))
     async def sug(_, q):
@@ -218,7 +211,6 @@ def register_filters(cyber: Client):
         await delete_message_later(cyber, q.message.chat.id, q.message.id, 10)
         await q.answer()
 
-    # ---------------- PAGINATION ----------------
 
     @cyber.on_callback_query(filters.regex("^spg\\|"))
     async def season_page(_, q):
@@ -233,11 +225,11 @@ def register_filters(cyber: Client):
         await q.message.edit_reply_markup(kb)
         await q.answer()
 
+
     @cyber.on_callback_query(filters.regex("^noop$"))
     async def noop(_, q):
         await q.answer()
 
-    # ---------------- SEASON → LANGUAGE ----------------
 
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q):
@@ -256,7 +248,6 @@ def register_filters(cyber: Client):
         await q.message.edit_caption(caption, reply_markup=kb)
         await q.answer()
 
-    # ---------------- LANGUAGE → QUALITY ----------------
 
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q):
@@ -275,7 +266,35 @@ def register_filters(cyber: Client):
         await q.message.edit_caption(caption, reply_markup=kb)
         await q.answer()
 
-    # ---------------- QUALITY → PM REDIRECT ----------------
+
+    @cyber.on_callback_query(filters.regex("^back_season\\|"))
+    async def back_season(_, q):
+        _, uid, series = q.data.split("|")
+        if q.from_user.id != int(uid):
+            return await q.answer("Not your menu", show_alert=True)
+
+        summary = await get_series_summary(series)
+        seasons = list(summary["seasons"])
+        kb = build_season_pages(seasons, uid, series, 0)
+
+        await q.message.edit_reply_markup(kb)
+        await q.answer()
+
+
+    @cyber.on_callback_query(filters.regex("^back_lang\\|"))
+    async def back_lang(_, q):
+        _, uid, series, season = q.data.split("|")
+        if q.from_user.id != int(uid):
+            return await q.answer("Not your menu", show_alert=True)
+
+        langs = await get_unique_languages_by_season(series, int(season))
+
+        kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", per_row=2)
+        kb.inline_keyboard.append([InlineKeyboardButton("⬅ Back", callback_data=f"back_season|{uid}|{series}")])
+
+        await q.message.edit_reply_markup(kb)
+        await q.answer()
+
 
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
     async def gqs(_, q):
