@@ -2,6 +2,8 @@ import io
 import asyncio
 import base64
 from utils.fsub_helper import check_force_subscribe
+from DB.groupsetting import authorise, unauthorise, reset_group, get_group
+from utils.group_menu import build_group_menu
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from .index import register_index_handlers
@@ -139,11 +141,55 @@ def register_command_handlers(cyber: Client):
 
         await m.reply(f"Files: {f}\nUsers: {u}")
 
+    @cyber.on_message(filters.command("authorise") & filters.group)
+    async def auth(_, m):
+        member = await cyber.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ("administrator", "creator"):
+            return
+
+        await authorise(m.chat.id)
+        await m.reply("✅ Group connected")
+
+    @cyber.on_message(filters.command("unauthorise") & filters.group)
+    async def unauth(_, m):
+        member = await cyber.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ("administrator", "creator"):
+            return
+
+        await unauthorise(m.chat.id)
+        await m.reply("❌ Group disconnected")
+
+    @cyber.on_message(filters.command("resetsettings") & filters.group)
+    async def reset(_, m):
+        member = await cyber.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ("administrator", "creator"):
+            return
+
+        await reset_group(m.chat.id)
+        await m.reply("♻ Reset to defaults")
+
+    # ---------------- SETTINGS ----------------
+
+    @cyber.on_message(filters.command("settings") & filters.group)
+    async def settings(_, m):
+        member = await cyber.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ("administrator", "creator"):
+            return
+
+        cfg = await get_group(m.chat.id)
+        await m.reply("⚙ Group Settings", reply_markup=build_group_menu(cfg))
+
+    return []
+
     return [
         start_command,
         *index_handlers,
         broadcast,
         deleteall,
         deletefile,
-        total
+        total,
+        settings,
+        resetsettings,
+        unauthorise,
+        authorise
     ]
