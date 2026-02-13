@@ -29,44 +29,56 @@ def clean_query(q: str) -> str:
 # MAIN RESOLVER (USED BY FILTERS)
 # -------------------------------------------------
 
-async def resolve_series(query: str) -> Optional[str]:
+async def resolve_series(query: str):
     """
-    Resolve user text to best normalized series name from SQLITE.
+    STRICT resolver:
+    - exact match
+    - startswith strong match
+    - fuzzy only for strong similarity
     """
+
     query = clean_query(query)
     if not query:
         return None
+
+    # remove season words (S01, season 1, etc)
+    query = re.sub(r"\bseason\s*\d+\b", "", query)
+    query = re.sub(r"\bs\d+\b", "", query)
+    query = query.strip()
 
     rows = await search_series(query)
     if not rows:
         return None
 
     titles = list(set(rows))
-
     ql = query.lower()
 
-    # prefer startswith
+    # ---------- EXACT MATCH ----------
     for t in titles:
-        if t.lower().startswith(ql):
+        if t.lower() == ql:
             return t
 
-    # fuzzy
+    # ---------- STARTSWITH MATCH ----------
+    for t in titles:
+        if t.lower().startswith(ql):
+            # prevent very short accidental matches
+            if len(ql) >= 5:
+                return t
+
+    # ---------- STRICT FUZZY ----------
     if HAVE_RAPIDFUZZ:
         match = rf_process.extractOne(
             query,
             titles,
-            scorer=rf_fuzz.partial_ratio,
-            score_cutoff=60
+            scorer=rf_fuzz.ratio,   # stricter than partial_ratio
+            score_cutoff=80         # HIGH threshold
         )
         if match:
             return match[0]
 
-    # fallback contains
-    for t in titles:
-        if ql in t.lower():
-            return t
+    # ❌ NO CONTAINS FALLBACK
+    return None
 
-    return titles[0]
 
 
 # -------------------------------------------------
