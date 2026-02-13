@@ -5,6 +5,10 @@ from typing import List, Optional
 
 from DB.database import search_series
 
+# -------------------------------------------------
+# RAPIDFUZZ (OPTIONAL)
+# -------------------------------------------------
+
 try:
     from rapidfuzz import process as rf_process, fuzz as rf_fuzz
     HAVE_RAPIDFUZZ = True
@@ -13,98 +17,88 @@ except ImportError:
 
 
 # -------------------------------------------------
-# BASIC QUERY CLEAN
+# QUERY CLEANER
 # -------------------------------------------------
 
 def clean_query(q: str) -> str:
     if not q:
         return ""
+
     q = q.lower()
     q = re.sub(r"[^a-z0-9\s]", " ", q)
+
+    # remove season words
+    q = re.sub(r"\bseason\s*\d+\b", "", q)
+    q = re.sub(r"\bs\d+\b", "", q)
+
     q = re.sub(r"\s+", " ", q).strip()
     return q
 
 
 # -------------------------------------------------
-# MAIN RESOLVER (USED BY FILTERS)
+# STRICT RESOLVER (EXACT ONLY)
 # -------------------------------------------------
 
-async def resolve_series(query: str):
-    """
-    STRICT resolver:
-    - exact match
-    - startswith strong match
-    - fuzzy only for strong similarity
-    """
+async def resolve_series(query: str) -> Optional[str]:
 
     query = clean_query(query)
     if not query:
         return None
 
-    # remove season words (S01, season 1, etc)
-    query = re.sub(r"\bseason\s*\d+\b", "", query)
-    query = re.sub(r"\bs\d+\b", "", query)
-    query = query.strip()
-
     rows = await search_series(query)
+
     if not rows:
         return None
 
-    titles = list(set(rows))
-    ql = query.lower()
+    query_lower = query.lower()
 
-    # ---------- EXACT MATCH ----------
-    for t in titles:
-        if t.lower() == ql:
-            return t
+    for r in rows:
+        if r.lower().strip() == query_lower:
+            return r
 
-    # ---------- STARTSWITH MATCH ----------
-    for t in titles:
-        if t.lower().startswith(ql):
-            # prevent very short accidental matches
-            if len(ql) >= 5:
-                return t
-
-    # ---------- STRICT FUZZY ----------
-    if HAVE_RAPIDFUZZ:
-        match = rf_process.extractOne(
-            query,
-            titles,
-            scorer=rf_fuzz.ratio,   # stricter than partial_ratio
-            score_cutoff=80         # HIGH threshold
-        )
-        if match:
-            return match[0]
-
-    # ❌ NO CONTAINS FALLBACK
     return None
 
 
-
 # -------------------------------------------------
-# SUGGESTIONS FOR WRONG INPUT
+# SUGGESTIONS (FUZZY ONLY)
 # -------------------------------------------------
 
 async def suggest_series(query: str, limit: int = 5) -> List[str]:
+
     query = clean_query(query)
-    if not query or not HAVE_RAPIDFUZZ:
+
+    if not query:
         return []
 
-    rows = await search_series("")
+    rows = await search_series(query)
+
     if not rows:
         return []
 
-    choices = list(set(rows))
+    candidates = list(set(rows))
 
-    matches = rf_process.extract(
-        query,
-        choices,
-        limit=limit,
-        score_cutoff=40
-    )
+    if HAVE_RAPIDFUZZ:
+        matches = rf_process.extract(
+            query,
+            candidates,
+            limit=limit,
+            scorer=rf_fuzz.ratio,
+            score_cutoff=40
+        )
+        return [m[0] for m in matches]
 
-    return [m[0] for m in matches]
+    # fallback simple scoring
+    scored = []
 
+    for c in candidates:
+        cl = c.lower()
+        m = sum(ch in cl for ch in query)
+        score = (m / (len(query) + len(cl))) * 200
+        scored.append((c, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    return [x[0] for x in scored[:limit]]
 
 # -------------------------------------------------
 # PARSER FOR INDEXING (USED BY index_helper.py)
