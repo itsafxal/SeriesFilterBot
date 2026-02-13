@@ -9,29 +9,53 @@ async def save_series_file_for_bulk_index(message: types.Message):
 
     file_name = ""
     file_id = None
+    media_type = None
+
+    # ------------------ MEDIA DETECTION ------------------
 
     if message.document:
         file_name = message.document.file_name or ""
         file_id = message.document.file_id
+        media_type = "document"
 
     elif message.video:
         file_name = message.video.file_name or ""
         file_id = message.video.file_id
+        media_type = "video"
+
+    elif message.audio:
+        file_name = message.audio.file_name or ""
+        file_id = message.audio.file_id
+        media_type = "audio"
+
+    else:
+        return False, 0
 
     if not file_name:
         return False, 0
+
+    # ------------------ PARSE SERIES INFO ------------------
 
     series, season, episode, quality, language = parse_series_info(file_name)
 
     if season == 0:
         return False, 0
 
-    existing = await get_all_files_by_season_and_quality(series, season, quality, language)
+    # ------------------ DUPLICATE CHECK ------------------
+
+    existing = await get_all_files_by_season_and_quality(
+        series, season, quality, language
+    )
+
     for r in existing:
         if r["episode"] == episode:
             return False, 0
 
+    # ------------------ POSTER ------------------
+
     poster = await get_series_poster_async(series) or DEFAULT_POSTER
+
+    # ------------------ SAVE DOC ------------------
 
     doc = {
         "channel_id": message.chat.id,
@@ -43,6 +67,7 @@ async def save_series_file_for_bulk_index(message: types.Message):
         "quality": quality,
         "language": language,
         "file_id": file_id,
+        "media_type": media_type,  # 🔥 NEW FIELD
         "poster": poster,
         "timestamp": message.date
     }
