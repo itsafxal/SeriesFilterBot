@@ -3,7 +3,6 @@
 import asyncio
 from pyrogram import Client, enums
 from CyberTG.command import register_command_handlers
-from utils.group_helper import register_group_system
 from CyberTG.index import index_files_task, lock, INDEX_STATUS_KEY, register_index_handlers
 from CyberTG.filters import register_filters
 from DB.database import initialize_sql_db, get_global_setting, set_global_setting
@@ -129,7 +128,6 @@ def main():
     # Register handlers
     register_command_handlers(cyber)
     register_filters(cyber)
-    register_group_system(cyber)
 
     
     logger.info("Starting bot client main loop...")
