@@ -90,13 +90,38 @@ def register_command_handlers(cyber: Client):
 
         # NORMAL START
         bot = await cyber.get_me()
+        user = message.from_user
+        user_mention = user.mention
+        START_TEXT = (
+            f"🖤 <b>Hey {user_mention}!</b>\n\n"
+            f"Welcome to <b>{bot.first_name}</b> — your private cinema in chat 🎭\n"
+            "Just type what you’re looking for and I’ll fetch it faster than light ⚡\n\n"
+            "<blockquote>Let’s dive into the world of entertainment 🌙</blockquote>"
+        )
+        CYBER_KEYBOARD = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞",
+                    switch_inline_query_current_chat=""
+                )
+            ],
+            [
+                InlineKeyboardButton("⚡ ʜᴇʟᴘ", callback_data="help|menu"),
+                InlineKeyboardButton("ᴀʙᴏᴜᴛ ✨", callback_data="about|menu")
+            ],
+            [
+                InlineKeyboardButton(
+                    "🍷 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ 🍷",
+                    url="https://t.me/TomxSupport"
+                )
+            ]
+        ])
 
         await message.reply_photo(
             START_IMG,
-            caption=f"Welcome to {bot.first_name}\n\nSend movie name.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Support", url="t.me/TomxSupport")]
-            ])
+            caption=START_TEXT,
+            reply_markup=CYBER_KEYBOARD,
+            parse_mode=enums.ParseMode.HTML
         )
 
     
