@@ -174,25 +174,63 @@ async def deliver_files_direct(cyber, user_id):
     for f in files:
 
         async def send_job(f=f):
+
             caption = CUSTOM_CAPTION_TEXT.format(
                 file_name=f.get("file_name", "Episode")
             )
 
-            if f.get("file_id"):
-                await cyber.send_document(
-                    user_id,
-                    f["file_id"],
-                    caption=caption,
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-            else:
-                await cyber.copy_message(
-                    user_id,
-                    f["channel_id"],
-                    f["message_id"],
-                    caption=caption,
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
+            # skip if no file_id
+            if not f.get("file_id"):
+                return
+
+            media_type = f.get("media_type")
+
+            try:
+
+                # ---------- VIDEO ----------
+                if media_type == "video":
+                    await cyber.send_video(
+                        user_id,
+                        f["file_id"],
+                        caption=caption,
+                        parse_mode=enums.ParseMode.MARKDOWN
+                    )
+
+                # ---------- AUDIO ----------
+                elif media_type == "audio":
+                    await cyber.send_audio(
+                        user_id,
+                        f["file_id"],
+                        caption=caption,
+                        parse_mode=enums.ParseMode.MARKDOWN
+                    )
+
+                # ---------- DOCUMENT ----------
+                else:
+                    await cyber.send_document(
+                        user_id,
+                        f["file_id"],
+                        caption=caption,
+                        parse_mode=enums.ParseMode.MARKDOWN
+                    )
+
+            except Exception:
+
+                # 🔥 fallback for old DB entries
+                try:
+                    await cyber.send_video(
+                        user_id,
+                        f["file_id"],
+                        caption=caption,
+                        parse_mode=enums.ParseMode.MARKDOWN
+                    )
+                except:
+                    await cyber.send_document(
+                        user_id,
+                        f["file_id"],
+                        caption=caption,
+                        parse_mode=enums.ParseMode.MARKDOWN
+                    )
 
         await queue.put(send_job)
 
