@@ -155,3 +155,26 @@ def parse_series_info(file_name: str):
     clean = re.sub(r"\s+", " ", clean).strip().title()
 
     return clean, season, episode, quality, language
+
+# -------------------------------------------------
+# BUTTON OWNER CHECK
+# -------------------------------------------------
+
+async def check_owner(q, uid: int):
+    """
+    Allow only the original requester
+    to use inline buttons.
+    """
+
+    if q.from_user.id != int(uid):
+
+        name = q.from_user.first_name or "User"
+
+        await q.answer(
+            f"Hey {name}, this is not for you 🙂",
+            show_alert=True
+        )
+        return False
+
+    return True
+
