@@ -2,22 +2,18 @@ import sqlite3
 from config import TMDB_CACHE_DB
 
 
-# -------------------------------------------------
-# INIT DB
-# -------------------------------------------------
-
-def init_tmdb_cache():
-
+def init_cache():
     conn = sqlite3.connect(TMDB_CACHE_DB)
     c = conn.cursor()
 
     c.execute("""
-        CREATE TABLE IF NOT EXISTS tmdb_cache (
+        CREATE TABLE IF NOT EXISTS poster_cache (
             title TEXT PRIMARY KEY,
             poster TEXT,
             year TEXT,
             genre TEXT,
-            rating TEXT
+            rating TEXT,
+            source TEXT
         )
     """)
 
@@ -25,23 +21,23 @@ def init_tmdb_cache():
     conn.close()
 
 
-# run once on import
-init_tmdb_cache()
+init_cache()
 
 
 # -------------------------------------------------
 # GET CACHE
 # -------------------------------------------------
 
-def get_cached_tmdb(title):
+def get_cached(title):
 
     conn = sqlite3.connect(TMDB_CACHE_DB)
     c = conn.cursor()
 
-    c.execute(
-        "SELECT poster, year, genre, rating FROM tmdb_cache WHERE title=?",
-        (title.lower(),)
-    )
+    c.execute("""
+        SELECT poster, year, genre, rating, source
+        FROM poster_cache
+        WHERE title=?
+    """, (title.lower(),))
 
     row = c.fetchone()
     conn.close()
@@ -50,24 +46,25 @@ def get_cached_tmdb(title):
 
 
 # -------------------------------------------------
-# SAVE CACHE
+# SAVE CACHE (TMDB OR OMDB)
 # -------------------------------------------------
 
-def save_cached_tmdb(title, poster, year, genre, rating):
+def save_cache(title, poster, year, genre, rating, source):
 
     conn = sqlite3.connect(TMDB_CACHE_DB)
     c = conn.cursor()
 
     c.execute("""
-        INSERT OR REPLACE INTO tmdb_cache
-        (title, poster, year, genre, rating)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO poster_cache
+        (title, poster, year, genre, rating, source)
+        VALUES (?, ?, ?, ?, ?, ?)
     """, (
         title.lower(),
         poster,
         year,
         genre,
-        rating
+        rating,
+        source
     ))
 
     conn.commit()
