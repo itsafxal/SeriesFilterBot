@@ -1,50 +1,50 @@
-# CyberTG/poster.py
-
 import aiohttp
-import re
 
-from config import OMDB_API_KEY, DEFAULT_POSTER
-
-def _normalize_title_for_omdb(title: str) -> str:
-    title = re.sub(r"\s+", " ", title).strip()
-    return title
+from config import TMDB_API_KEY
 
 
-async def get_series_info(title: str):
-    """
-    Returns: poster_url, year, genre, rating
-    """
-    if not OMDB_API_KEY:
-        return DEFAULT_POSTER, None, None, None
+TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 
-    norm = _normalize_title_for_omdb(title)
 
-    url = "http://www.omdbapi.com/"
+# -------------------------------------------------
+# GET SERIES INFO FROM TMDB
+# -------------------------------------------------
+
+async def get_series_info(series_name: str):
+
+    url = "https://api.themoviedb.org/3/search/tv"
+
     params = {
-        "apikey": OMDB_API_KEY,
-        "t": norm,
-        "type": "series"
+        "api_key": TMDB_API_KEY,
+        "query": series_name
     }
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=7) as resp:
-                data = await resp.json()
-    except:
-        return DEFAULT_POSTER, None, None, None
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params=params) as r:
+            data = await r.json()
 
-    if data.get("Response") != "True":
-        return DEFAULT_POSTER, None, None, None
+    results = data.get("results", [])
 
-    poster = data.get("Poster") or DEFAULT_POSTER
-    year = data.get("Year")
-    genre = data.get("Genre")
-    rating = data.get("imdbRating")
+    if not results:
+        return None, None, None, None
+
+    item = results[0]
+
+    poster_path = item.get("poster_path")
+    poster = (
+        f"{TMDB_IMAGE_BASE}{poster_path}"
+        if poster_path else None
+    )
+
+    year = (
+        item.get("first_air_date", "")[:4]
+        if item.get("first_air_date")
+        else "N/A"
+    )
+
+    rating = item.get("vote_average", "N/A")
+
+    # genre ids only → optional
+    genre = "Unknown"
 
     return poster, year, genre, rating
-
-
-# backward compatibility if used elsewhere
-async def get_series_poster_async(title: str):
-    poster, _, _, _ = await get_series_info(title)
-    return poster
