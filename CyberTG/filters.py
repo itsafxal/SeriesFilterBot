@@ -83,8 +83,9 @@ def build_caption(series, year, genre, rating,
 def build_grid_keyboard(items, cb_builder, per_row=2):
     rows, row = [], []
     for it in items:
-        row.append(InlineKeyboardButton(str(it),
-                                        callback_data=cb_builder(it)))
+        row.append(
+            InlineKeyboardButton(str(it), callback_data=cb_builder(it))
+        )
         if len(row) == per_row:
             rows.append(row)
             row = []
@@ -149,12 +150,12 @@ def build_season_pages(seasons, uid, series, page=0):
 
 
 # -------------------------------------------------
-# MAIN
+# MAIN REGISTER
 # -------------------------------------------------
 
 def register_filters(cyber: Client):
 
-    # ---------------- SPELL CHECK UI ----------------
+    # ---------- SPELL SUGGESTIONS ----------
 
     async def show_suggestions(message, suggestions):
 
@@ -276,7 +277,7 @@ def register_filters(cyber: Client):
         )
 
     # -------------------------------------------------
-    # SUGGESTION SELECT
+    # SPELL SELECT
     # -------------------------------------------------
 
     @cyber.on_callback_query(filters.regex("^sug\\|"))
@@ -393,7 +394,7 @@ def register_filters(cyber: Client):
         await q.answer()
 
     # -------------------------------------------------
-    # QUALITY → PM REDIRECT
+    # QUALITY → AUTO START PM
     # -------------------------------------------------
 
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
@@ -405,15 +406,19 @@ def register_filters(cyber: Client):
             return await q.answer("Not your menu", show_alert=True)
 
         payload = encode_payload(series, season, lang, quality, uid)
-        bot = await cyber.get_me()
 
+        bot = await cyber.get_me()
         link = f"https://t.me/{bot.username}?start={payload}"
 
-        await q.message.edit_caption(
-            "📥 Redirecting to PM…",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("▶ Get Files", url=link)]
-            ])
+        try:
+            await q.message.edit_caption("📥 Sending files in PM...")
+        except:
+            await q.message.edit_text("📥 Sending files in PM...")
+
+        # AUTO START DELIVERY (NO BUTTON)
+        await cyber.send_message(
+            q.from_user.id,
+            f"Starting delivery...\n\n{link}"
         )
 
-        await q.answer()
+        await q.answer("Starting delivery...")
