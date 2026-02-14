@@ -394,7 +394,7 @@ def register_filters(cyber: Client):
         await q.answer()
 
     # -------------------------------------------------
-    # QUALITY → AUTO START PM
+    # QUALITY HANDLER
     # -------------------------------------------------
 
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
@@ -410,15 +410,35 @@ def register_filters(cyber: Client):
         bot = await cyber.get_me()
         link = f"https://t.me/{bot.username}?start={payload}"
 
+        # PRIVATE → auto send
+        if q.message.chat.type in ["private", enums.ChatType.PRIVATE]:
+
+            try:
+                await q.message.edit_caption("📥 Sending files...")
+            except:
+                await q.message.edit_text("📥 Sending files...")
+
+            await cyber.send_message(
+                q.from_user.id,
+                f"/start {payload}"
+            )
+
+            return await q.answer("Sending files...")
+
+        # GROUP → button
         try:
-            await q.message.edit_caption("📥 Sending files in PM...")
+            await q.message.edit_caption(
+                "📥 Redirecting to PM…",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("☘️ DOWNLOAD FILES ☘️", url=link)]
+                ])
+            )
         except:
-            await q.message.edit_text("📥 Sending files in PM...")
+            await q.message.edit_text(
+                "📥 Redirecting to PM…",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("☘️ DOWNLOAD FILES ☘️", url=link)]
+                ])
+            )
 
-        # AUTO START DELIVERY (NO BUTTON)
-        await cyber.send_message(
-            q.from_user.id,
-            f"Starting delivery...\n\n{link}"
-        )
-
-        await q.answer("Starting delivery...")
+        await q.answer()
