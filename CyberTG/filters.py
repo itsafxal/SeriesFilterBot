@@ -19,8 +19,9 @@ from DB.database import (
 
 from utils.series_helper import suggest_series
 from utils.telegram_helper import delete_message_later
-from utils.filter_helper import encode_payload
+from utils.filter_helper import encode_payload, decode_payload
 
+from files import set_session, deliver_files_direct
 from .poster import get_series_info
 
 
@@ -60,16 +61,13 @@ def build_caption(series, year, genre, rating,
         lines.append("Select an available season...!")
 
     elif step == "language":
-        lang_txt = ", ".join(languages) if languages else "Unknown"
-        lines.append(f"○ Available Languages: {lang_txt}")
+        lines.append(f"○ Available Languages: {', '.join(languages)}")
         lines.append("")
         lines.append("Select an available language...!")
 
     elif step == "quality":
-        lang_txt = ", ".join(languages) if languages else "Unknown"
-        qual_txt = ", ".join(qualities) if qualities else ""
-        lines.append(f"○ Available Languages: {lang_txt}")
-        lines.append(f"○ Available Quality: {qual_txt}")
+        lines.append(f"○ Available Languages: {', '.join(languages)}")
+        lines.append(f"○ Available Quality: {', '.join(qualities)}")
         lines.append("")
         lines.append("Select an available quality...!")
 
@@ -83,9 +81,7 @@ def build_caption(series, year, genre, rating,
 def build_grid_keyboard(items, cb_builder, per_row=2):
     rows, row = [], []
     for it in items:
-        row.append(
-            InlineKeyboardButton(str(it), callback_data=cb_builder(it))
-        )
+        row.append(InlineKeyboardButton(str(it), callback_data=cb_builder(it)))
         if len(row) == per_row:
             rows.append(row)
             row = []
@@ -120,13 +116,10 @@ def build_season_pages(seasons, uid, series, page=0):
 
     if total_pages > 1:
         nav = []
-
         if page > 0:
             nav.append(
-                InlineKeyboardButton(
-                    "◀ Prev",
-                    callback_data=f"spg|{uid}|{series}|{page-1}"
-                )
+                InlineKeyboardButton("◀ Prev",
+                                     callback_data=f"spg|{uid}|{series}|{page-1}")
             )
 
         nav.append(
@@ -138,10 +131,8 @@ def build_season_pages(seasons, uid, series, page=0):
 
         if page < total_pages - 1:
             nav.append(
-                InlineKeyboardButton(
-                    "Next ▶",
-                    callback_data=f"spg|{uid}|{series}|{page+1}"
-                )
+                InlineKeyboardButton("Next ▶",
+                                     callback_data=f"spg|{uid}|{series}|{page+1}")
             )
 
         rows.append(nav)
@@ -155,8 +146,6 @@ def build_season_pages(seasons, uid, series, page=0):
 
 def register_filters(cyber: Client):
 
-    # ---------- SPELL SUGGESTIONS ----------
-
     async def show_suggestions(message, suggestions):
 
         try:
@@ -169,18 +158,12 @@ def register_filters(cyber: Client):
             for x in suggestions
         ]
 
-        kb.append([
-            InlineKeyboardButton("Close", callback_data="close_spell")
-        ])
+        kb.append([InlineKeyboardButton("Close", callback_data="close_spell")])
 
         sent = await cyber.send_photo(
             message.chat.id,
-            photo=SPELL_IMG,
-            caption=(
-                "❓ <b>Spell Check</b>\n\n"
-                "I couldn't find an exact result.\n"
-                "Did you mean one of these?"
-            ),
+            SPELL_IMG,
+            caption="❓ <b>Spell Check</b>\n\nDid you mean one of these?",
             parse_mode=enums.ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(kb)
         )
@@ -204,17 +187,10 @@ def register_filters(cyber: Client):
         if strict:
             series = strict[0]
         else:
-            cleaned = text.lower().replace("season", "").strip()
-            results2 = await search_series(cleaned)
-            strict2 = strict_match(cleaned, results2)
-
-            if strict2:
-                series = strict2[0]
-            else:
-                sugg = await suggest_series(text)
-                if sugg:
-                    return await show_suggestions(m, sugg)
-                return await m.reply("❌ No result")
+            sugg = await suggest_series(text)
+            if sugg:
+                return await show_suggestions(m, sugg)
+            return await m.reply("❌ No result")
 
         poster, year, genre, rating = await get_series_info(series)
         summary = await get_series_summary(series)
@@ -225,11 +201,9 @@ def register_filters(cyber: Client):
 
         kb = build_season_pages(seasons, m.from_user.id, series)
 
-        await m.reply_photo(
-            poster or DEFAULT_POSTER,
-            caption=caption,
-            reply_markup=kb
-        )
+        await m.reply_photo(poster or DEFAULT_POSTER,
+                            caption=caption,
+                            reply_markup=kb)
 
     # -------------------------------------------------
     # GROUP SEARCH
@@ -241,25 +215,16 @@ def register_filters(cyber: Client):
         if not m.text or m.text.startswith("/"):
             return
 
-        text = m.text.strip()
-
-        results = await search_series(text)
-        strict = strict_match(text, results)
+        results = await search_series(m.text)
+        strict = strict_match(m.text, results)
 
         if strict:
             series = strict[0]
         else:
-            cleaned = text.lower().replace("season", "").strip()
-            results2 = await search_series(cleaned)
-            strict2 = strict_match(cleaned, results2)
-
-            if strict2:
-                series = strict2[0]
-            else:
-                sugg = await suggest_series(text)
-                if sugg:
-                    return await show_suggestions(m, sugg)
-                return
+            sugg = await suggest_series(m.text)
+            if sugg:
+                return await show_suggestions(m, sugg)
+            return
 
         poster, year, genre, rating = await get_series_info(series)
         summary = await get_series_summary(series)
@@ -270,11 +235,9 @@ def register_filters(cyber: Client):
 
         kb = build_season_pages(seasons, m.from_user.id, series)
 
-        await m.reply_photo(
-            poster or DEFAULT_POSTER,
-            caption=caption,
-            reply_markup=kb
-        )
+        await m.reply_photo(poster or DEFAULT_POSTER,
+                            caption=caption,
+                            reply_markup=kb)
 
     # -------------------------------------------------
     # SPELL SELECT
@@ -284,7 +247,6 @@ def register_filters(cyber: Client):
     async def sug(_, q):
 
         series = q.data.split("|", 1)[1]
-
         poster, year, genre, rating = await get_series_info(series)
         summary = await get_series_summary(series)
         seasons = list(summary["seasons"])
@@ -294,46 +256,16 @@ def register_filters(cyber: Client):
 
         kb = build_season_pages(seasons, q.from_user.id, series)
 
-        try:
-            await q.message.edit_media(
-                InputMediaPhoto(poster, caption=caption),
-                reply_markup=kb
-            )
-        except:
-            await q.message.edit_caption(caption, reply_markup=kb)
+        await q.message.edit_media(
+            InputMediaPhoto(poster or DEFAULT_POSTER, caption=caption),
+            reply_markup=kb
+        )
 
         await q.answer()
 
     @cyber.on_callback_query(filters.regex("^close_spell$"))
-    async def close_spell(_, q: CallbackQuery):
-        try:
-            await q.message.delete()
-        except:
-            pass
-        await q.answer("Closed")
-
-    # -------------------------------------------------
-    # PAGINATION
-    # -------------------------------------------------
-
-    @cyber.on_callback_query(filters.regex("^spg\\|"))
-    async def season_page(_, q):
-
-        _, uid, series, page = q.data.split("|")
-
-        if q.from_user.id != int(uid):
-            return await q.answer("Not your menu", show_alert=True)
-
-        summary = await get_series_summary(series)
-        seasons = list(summary["seasons"])
-
-        kb = build_season_pages(seasons, uid, series, int(page))
-
-        await q.message.edit_reply_markup(kb)
-        await q.answer()
-
-    @cyber.on_callback_query(filters.regex("^noop$"))
-    async def noop(_, q):
+    async def close_spell(_, q):
+        await q.message.delete()
         await q.answer()
 
     # -------------------------------------------------
@@ -344,9 +276,6 @@ def register_filters(cyber: Client):
     async def gss(_, q):
 
         _, uid, series, season = q.data.split("|")
-
-        if q.from_user.id != int(uid):
-            return await q.answer("Not your menu", show_alert=True)
 
         langs = await get_unique_languages_by_season(series, int(season))
         poster, year, genre, rating = await get_series_info(series)
@@ -370,9 +299,6 @@ def register_filters(cyber: Client):
     async def gls(_, q):
 
         _, uid, series, season, lang = q.data.split("|")
-
-        if q.from_user.id != int(uid):
-            return await q.answer("Not your menu", show_alert=True)
 
         qs = await get_unique_qualities_by_lang_season(
             series, lang, int(season)
@@ -402,43 +328,39 @@ def register_filters(cyber: Client):
 
         _, uid, series, season, lang, quality = q.data.split("|")
 
-        if q.from_user.id != int(uid):
-            return await q.answer("Not your menu", show_alert=True)
-
         payload = encode_payload(series, season, lang, quality, uid)
 
         bot = await cyber.get_me()
         link = f"https://t.me/{bot.username}?start={payload}"
 
-        # PRIVATE → auto send
+        # PRIVATE → DIRECT SEND (NO /start MESSAGE)
         if q.message.chat.type in ["private", enums.ChatType.PRIVATE]:
+
+            decoded = decode_payload(payload)
+            uid, series, season, lang, quality = decoded
+
+            set_session(int(uid), {
+                "series": series,
+                "season": int(season),
+                "language": lang,
+                "quality": quality
+            })
+
+            await deliver_files_direct(cyber, int(uid))
 
             try:
                 await q.message.edit_caption("📥 Sending files...")
             except:
                 await q.message.edit_text("📥 Sending files...")
 
-            await cyber.send_message(
-                q.from_user.id,
-                f"/start {payload}"
-            )
-
             return await q.answer("Sending files...")
 
-        # GROUP → button
-        try:
-            await q.message.edit_caption(
-                "📥 Redirecting to PM…",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("☘️ DOWNLOAD FILES ☘️", url=link)]
-                ])
-            )
-        except:
-            await q.message.edit_text(
-                "📥 Redirecting to PM…",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("☘️ DOWNLOAD FILES ☘️", url=link)]
-                ])
-            )
+        # GROUP → BUTTON
+        await q.message.edit_caption(
+            "📥 Redirecting to PM…",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("☘️ DOWNLOAD FILES ☘️", url=link)]
+            ])
+        )
 
         await q.answer()
