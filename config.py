@@ -17,7 +17,8 @@ SPELL_IMG = "https://ibb.co/1tSFHQKw"
 DEFAULT_POSTER = "https://ibb.co/1tSFHQKw"
 
 # POSTER API
-TMDB_API_KEY = "YOUR_TMDB_KEY"
+TMDB_API_KEY = ""
+OMDB_API_KEY = ""
 TMDB_CACHE_DB = "/tmp/TMDB_cache.db"
 
 # Captions
