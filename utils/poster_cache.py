@@ -2,7 +2,12 @@ import sqlite3
 from config import TMDB_CACHE_DB
 
 
+# -------------------------------------------------
+# INIT CACHE DB
+# -------------------------------------------------
+
 def init_cache():
+
     conn = sqlite3.connect(TMDB_CACHE_DB)
     c = conn.cursor()
 
@@ -13,7 +18,8 @@ def init_cache():
             year TEXT,
             genre TEXT,
             rating TEXT,
-            source TEXT
+            source TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -21,6 +27,7 @@ def init_cache():
     conn.close()
 
 
+# initialize once
 init_cache()
 
 
@@ -28,7 +35,7 @@ init_cache()
 # GET CACHE
 # -------------------------------------------------
 
-def get_cached(title):
+def get_cached(title: str):
 
     conn = sqlite3.connect(TMDB_CACHE_DB)
     c = conn.cursor()
@@ -46,7 +53,7 @@ def get_cached(title):
 
 
 # -------------------------------------------------
-# SAVE CACHE (TMDB OR OMDB)
+# SAVE CACHE
 # -------------------------------------------------
 
 def save_cache(title, poster, year, genre, rating, source):
@@ -66,6 +73,21 @@ def save_cache(title, poster, year, genre, rating, source):
         rating,
         source
     ))
+
+    conn.commit()
+    conn.close()
+
+
+# -------------------------------------------------
+# OPTIONAL: CLEAR CACHE
+# -------------------------------------------------
+
+def clear_cache():
+
+    conn = sqlite3.connect(TMDB_CACHE_DB)
+    c = conn.cursor()
+
+    c.execute("DELETE FROM poster_cache")
 
     conn.commit()
     conn.close()
