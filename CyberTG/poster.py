@@ -1,17 +1,28 @@
 import aiohttp
 
 from config import TMDB_API_KEY
-
+from utils.tmdb_cache import (
+    get_cached_tmdb,
+    save_cached_tmdb
+)
 
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 
 
 # -------------------------------------------------
-# GET SERIES INFO FROM TMDB
+# TMDB + SQLITE CACHE
 # -------------------------------------------------
 
 async def get_series_info(series_name: str):
 
+    # ---------- CACHE CHECK ----------
+    cached = get_cached_tmdb(series_name)
+
+    if cached:
+        poster, year, genre, rating = cached
+        return poster, year, genre, rating
+
+    # ---------- TMDB REQUEST ----------
     url = "https://api.themoviedb.org/3/search/tv"
 
     params = {
@@ -42,9 +53,16 @@ async def get_series_info(series_name: str):
         else "N/A"
     )
 
-    rating = item.get("vote_average", "N/A")
-
-    # genre ids only → optional
+    rating = str(item.get("vote_average", "N/A"))
     genre = "Unknown"
+
+    # ---------- SAVE CACHE ----------
+    save_cached_tmdb(
+        series_name,
+        poster,
+        year,
+        genre,
+        rating
+    )
 
     return poster, year, genre, rating
