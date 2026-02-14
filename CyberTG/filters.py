@@ -9,7 +9,7 @@ from pyrogram.types import (
     CallbackQuery
 )
 
-from config import DEFAULT_POSTER, SPELL_IMG
+from config import DEFAULT_POSTER, SPELL_IMG, SEASONS_PER_PAGE
 from DB.database import (
     get_series_summary,
     get_unique_languages_by_season,
@@ -17,15 +17,13 @@ from DB.database import (
     search_series
 )
 
-from utils.series_helper import suggest_series
+from utils.series_helper import suggest_series, check_owner
 from utils.telegram_helper import delete_message_later
 from utils.filter_helper import encode_payload
 from utils.font_helper import small_caps
 
 from .poster import get_series_info
 
-
-SEASONS_PER_PAGE = 9
 
 
 # -------------------------------------------------
@@ -38,7 +36,7 @@ def strict_match(query: str, names: list):
 
 
 # -------------------------------------------------
-# CAPTION BUILDER (SMALL CAPS + BOLD)
+# CAPTION BUILDER
 # -------------------------------------------------
 
 def build_caption(series, year, genre, rating,
@@ -55,22 +53,30 @@ def build_caption(series, year, genre, rating,
 
     if step == "season":
         if seasons:
-            season_txt = ", ".join(f"S{s}" for s in seasons)
-            lines.append(f"<b>○ {small_caps('Available Seasons')}: {season_txt}</b>")
+            lines.append(
+                f"<b>○ {small_caps('Available Seasons')}: "
+                f"{', '.join(f'S{s}' for s in seasons)}</b>"
+            )
         lines.append("")
         lines.append(f"<b>{small_caps('Select an available season')}...!</b>")
 
     elif step == "language":
         lang_txt = ", ".join(languages) if languages else "Unknown"
-        lines.append(f"<b>○ {small_caps('Available Languages')}: {small_caps(lang_txt)}</b>")
+        lines.append(
+            f"<b>○ {small_caps('Available Languages')}: {small_caps(lang_txt)}</b>"
+        )
         lines.append("")
         lines.append(f"<b>{small_caps('Select an available language')}...!</b>")
 
     elif step == "quality":
         lang_txt = ", ".join(languages) if languages else "Unknown"
         qual_txt = ", ".join(qualities) if qualities else ""
-        lines.append(f"<b>○ {small_caps('Available Languages')}: {small_caps(lang_txt)}</b>")
-        lines.append(f"<b>○ {small_caps('Available Quality')}: {small_caps(qual_txt)}</b>")
+        lines.append(
+            f"<b>○ {small_caps('Available Languages')}: {small_caps(lang_txt)}</b>"
+        )
+        lines.append(
+            f"<b>○ {small_caps('Available Quality')}: {small_caps(qual_txt)}</b>"
+        )
         lines.append("")
         lines.append(f"<b>{small_caps('Select an available quality')}...!</b>")
 
@@ -122,19 +128,25 @@ def build_season_pages(seasons, uid, series, page=0):
 
         if page > 0:
             nav.append(
-                InlineKeyboardButton("◀ Prev",
-                callback_data=f"spg|{uid}|{series}|{page-1}")
+                InlineKeyboardButton(
+                    "◀ Prev",
+                    callback_data=f"spg|{uid}|{series}|{page-1}"
+                )
             )
 
         nav.append(
-            InlineKeyboardButton(f"{page+1}/{total_pages}",
-            callback_data="noop")
+            InlineKeyboardButton(
+                f"{page+1}/{total_pages}",
+                callback_data="noop"
+            )
         )
 
         if page < total_pages - 1:
             nav.append(
-                InlineKeyboardButton("Next ▶",
-                callback_data=f"spg|{uid}|{series}|{page+1}")
+                InlineKeyboardButton(
+                    "Next ▶",
+                    callback_data=f"spg|{uid}|{series}|{page+1}"
+                )
             )
 
         rows.append(nav)
@@ -155,15 +167,16 @@ def register_filters(cyber: Client):
         except:
             pass
 
-        kb = [[InlineKeyboardButton(x, callback_data=f"sug|{x}")]
-              for x in suggestions]
+        kb = [
+            [InlineKeyboardButton(x, callback_data=f"sug|{x}")]
+            for x in suggestions
+        ]
 
-        kb.append([InlineKeyboardButton("Close",
-                                        callback_data="close_spell")])
+        kb.append([InlineKeyboardButton("Close", callback_data="close_spell")])
 
         sent = await cyber.send_photo(
             message.chat.id,
-            photo=SPELL_IMG,
+            SPELL_IMG,
             caption=f"<b>{small_caps('Spell Check')}</b>\n\n"
                     f"{small_caps('Did you mean one of these?')}",
             parse_mode=enums.ParseMode.HTML,
@@ -194,6 +207,7 @@ def register_filters(cyber: Client):
 
         poster, year, genre, rating = await get_series_info(series)
         summary = await get_series_summary(series)
+
         seasons = list(summary["seasons"])
 
         caption = build_caption(series, year, genre, rating,
@@ -229,6 +243,7 @@ def register_filters(cyber: Client):
 
         poster, year, genre, rating = await get_series_info(series)
         summary = await get_series_summary(series)
+
         seasons = list(summary["seasons"])
 
         caption = build_caption(series, year, genre, rating,
@@ -243,12 +258,12 @@ def register_filters(cyber: Client):
             reply_markup=kb
         )
 
-    # ---------------- SPELL CLICK ----------------
+    # ---------------- SPELL SELECT ----------------
 
     @cyber.on_callback_query(filters.regex("^sug\\|"))
     async def sug(_, q):
 
-        series = q.data.split("|",1)[1]
+        series = q.data.split("|", 1)[1]
 
         poster, year, genre, rating = await get_series_info(series)
         summary = await get_series_summary(series)
@@ -269,8 +284,29 @@ def register_filters(cyber: Client):
         await q.answer()
 
     @cyber.on_callback_query(filters.regex("^close_spell$"))
-    async def close_spell(_, q: CallbackQuery):
+    async def close_spell(_, q):
         await q.message.delete()
+        await q.answer()
+
+    # ---------------- PAGINATION ----------------
+
+    @cyber.on_callback_query(filters.regex("^spg\\|"))
+    async def season_page(_, q):
+
+        _, uid, series, page = q.data.split("|")
+
+        if not await check_owner(q, uid):
+            return
+
+        summary = await get_series_summary(series)
+        seasons = list(summary["seasons"])
+
+        kb = build_season_pages(seasons, uid, series, int(page))
+        await q.message.edit_reply_markup(kb)
+        await q.answer()
+
+    @cyber.on_callback_query(filters.regex("^noop$"))
+    async def noop(_, q):
         await q.answer()
 
     # ---------------- SEASON → LANGUAGE ----------------
@@ -279,6 +315,9 @@ def register_filters(cyber: Client):
     async def gss(_, q):
 
         _, uid, series, season = q.data.split("|")
+
+        if not await check_owner(q, uid):
+            return
 
         langs = await get_unique_languages_by_season(series, int(season))
         poster, year, genre, rating = await get_series_info(series)
@@ -306,16 +345,14 @@ def register_filters(cyber: Client):
 
         _, uid, series, season, lang = q.data.split("|")
 
-        qs = await get_unique_qualities_by_lang_season(
-            series, lang, int(season)
-        )
+        if not await check_owner(q, uid):
+            return
 
+        qs = await get_unique_qualities_by_lang_season(series, lang, int(season))
         poster, year, genre, rating = await get_series_info(series)
 
         caption = build_caption(series, year, genre, rating,
-                                languages=[lang],
-                                qualities=qs,
-                                step="quality")
+                                languages=[lang], qualities=qs, step="quality")
 
         kb = build_grid_keyboard(
             qs,
@@ -336,6 +373,9 @@ def register_filters(cyber: Client):
     async def gqs(_, q):
 
         _, uid, series, season, lang, quality = q.data.split("|")
+
+        if not await check_owner(q, uid):
+            return
 
         payload = encode_payload(series, season, lang, quality, uid)
 
