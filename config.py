@@ -17,8 +17,8 @@ SPELL_IMG = "https://ibb.co/1tSFHQKw"
 DEFAULT_POSTER = "https://ibb.co/1tSFHQKw"
 
 # POSTER API
-OMDB_API_KEY = "f93ab313"
-OMDB_CACHE_DB = "/tmp/omdb_cache.db"
+TMDB_API_KEY = "YOUR_TMDB_KEY"
+TMDB_CACHE_DB = "/tmp/TMDB_cache.db"
 
 # Captions
 CUSTOM_CAPTION_TEXT = """
