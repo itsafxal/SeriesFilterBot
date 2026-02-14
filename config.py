@@ -30,9 +30,10 @@ CUSTOM_CAPTION_TEXT = """
 ◻️ 𝙅𝙊𝙄𝙉 :- @TGxSeriesFilterBot
 ╚════ ᴊᴏɪɴ ᴡɪᴛʜ ᴜs ═════╝"""
 
-# DONT CHANGE THIS 
+# AS YOUR WISH
 INDEX_CHANNELS = []  
 MAX_CALLBACK_LENGTH = 50
+SEASONS_PER_PAGE = 9
 FORCE_SUB_CHANNEL = None   
 LOG_FILE_PATH = "bot.log"
 MAX_LOG_SIZE = 10 * 1024 * 1024
