@@ -1,15 +1,18 @@
 import math
-import asyncio
 
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
     InlineKeyboardMarkup,
-    InlineKeyboardButton,
     InputMediaPhoto,
     CallbackQuery
 )
 
-from config import DEFAULT_POSTER, SPELL_IMG, SEASONS_PER_PAGE
+from config import (
+    DEFAULT_POSTER,
+    SPELL_IMG,
+    SEASONS_PER_PAGE
+)
+
 from DB.database import (
     get_series_summary,
     get_unique_languages_by_season,
@@ -20,10 +23,9 @@ from DB.database import (
 from utils.series_helper import suggest_series, check_owner
 from utils.telegram_helper import delete_message_later
 from utils.filter_helper import encode_payload
-from utils.font_helper import small_caps
+from utils.font_helper import BTN, UI, small_caps
 
 from .poster import get_series_info
-
 
 
 # -------------------------------------------------
@@ -84,13 +86,13 @@ def build_caption(series, year, genre, rating,
 
 
 # -------------------------------------------------
-# KEYBOARDS
+# KEYBOARD HELPERS
 # -------------------------------------------------
 
 def build_grid_keyboard(items, cb_builder, per_row=2):
     rows, row = [], []
     for it in items:
-        row.append(InlineKeyboardButton(str(it), callback_data=cb_builder(it)))
+        row.append(BTN(str(it), callback_data=cb_builder(it)))
         if len(row) == per_row:
             rows.append(row)
             row = []
@@ -111,7 +113,7 @@ def build_season_pages(seasons, uid, series, page=0):
 
     for s in chunk:
         row.append(
-            InlineKeyboardButton(
+            BTN(
                 f"Season {s}",
                 callback_data=f"gss|{uid}|{series}|{s}"
             )
@@ -128,25 +130,18 @@ def build_season_pages(seasons, uid, series, page=0):
 
         if page > 0:
             nav.append(
-                InlineKeyboardButton(
-                    "◀ Prev",
-                    callback_data=f"spg|{uid}|{series}|{page-1}"
-                )
+                BTN("◀ Prev",
+                    callback_data=f"spg|{uid}|{series}|{page-1}")
             )
 
         nav.append(
-            InlineKeyboardButton(
-                f"{page+1}/{total_pages}",
-                callback_data="noop"
-            )
+            BTN(f"{page+1}/{total_pages}", callback_data="noop")
         )
 
         if page < total_pages - 1:
             nav.append(
-                InlineKeyboardButton(
-                    "Next ▶",
-                    callback_data=f"spg|{uid}|{series}|{page+1}"
-                )
+                BTN("Next ▶",
+                    callback_data=f"spg|{uid}|{series}|{page+1}")
             )
 
         rows.append(nav)
@@ -168,18 +163,16 @@ def register_filters(cyber: Client):
             pass
 
         kb = [
-            [InlineKeyboardButton(x, callback_data=f"sug|{x}")]
+            [BTN(x, callback_data=f"sug|{x}")]
             for x in suggestions
         ]
 
-        kb.append([InlineKeyboardButton("Close", callback_data="close_spell")])
+        kb.append([BTN("Close", callback_data="close_spell")])
 
         sent = await cyber.send_photo(
             message.chat.id,
             SPELL_IMG,
-            caption=f"<b>{small_caps('Spell Check')}</b>\n\n"
-                    f"{small_caps('Did you mean one of these?')}",
-            parse_mode=enums.ParseMode.HTML,
+            caption=UI("Spell Check\n\nDid you mean one of these?"),
             reply_markup=InlineKeyboardMarkup(kb)
         )
 
@@ -210,8 +203,10 @@ def register_filters(cyber: Client):
 
         seasons = list(summary["seasons"])
 
-        caption = build_caption(series, year, genre, rating,
-                                seasons=seasons, step="season")
+        caption = build_caption(
+            series, year, genre, rating,
+            seasons=seasons, step="season"
+        )
 
         kb = build_season_pages(seasons, m.from_user.id, series)
 
@@ -246,8 +241,10 @@ def register_filters(cyber: Client):
 
         seasons = list(summary["seasons"])
 
-        caption = build_caption(series, year, genre, rating,
-                                seasons=seasons, step="season")
+        caption = build_caption(
+            series, year, genre, rating,
+            seasons=seasons, step="season"
+        )
 
         kb = build_season_pages(seasons, m.from_user.id, series)
 
@@ -269,15 +266,19 @@ def register_filters(cyber: Client):
         summary = await get_series_summary(series)
         seasons = list(summary["seasons"])
 
-        caption = build_caption(series, year, genre, rating,
-                                seasons=seasons, step="season")
+        caption = build_caption(
+            series, year, genre, rating,
+            seasons=seasons, step="season"
+        )
 
         kb = build_season_pages(seasons, q.from_user.id, series)
 
         await q.message.edit_media(
-            InputMediaPhoto(poster or DEFAULT_POSTER,
-                            caption=caption,
-                            parse_mode=enums.ParseMode.HTML),
+            InputMediaPhoto(
+                poster or DEFAULT_POSTER,
+                caption=caption,
+                parse_mode=enums.ParseMode.HTML
+            ),
             reply_markup=kb
         )
 
@@ -302,6 +303,7 @@ def register_filters(cyber: Client):
         seasons = list(summary["seasons"])
 
         kb = build_season_pages(seasons, uid, series, int(page))
+
         await q.message.edit_reply_markup(kb)
         await q.answer()
 
@@ -322,8 +324,10 @@ def register_filters(cyber: Client):
         langs = await get_unique_languages_by_season(series, int(season))
         poster, year, genre, rating = await get_series_info(series)
 
-        caption = build_caption(series, year, genre, rating,
-                                languages=langs, step="language")
+        caption = build_caption(
+            series, year, genre, rating,
+            languages=langs, step="language"
+        )
 
         kb = build_grid_keyboard(
             langs,
@@ -349,10 +353,15 @@ def register_filters(cyber: Client):
             return
 
         qs = await get_unique_qualities_by_lang_season(series, lang, int(season))
+
         poster, year, genre, rating = await get_series_info(series)
 
-        caption = build_caption(series, year, genre, rating,
-                                languages=[lang], qualities=qs, step="quality")
+        caption = build_caption(
+            series, year, genre, rating,
+            languages=[lang],
+            qualities=qs,
+            step="quality"
+        )
 
         kb = build_grid_keyboard(
             qs,
@@ -383,9 +392,9 @@ def register_filters(cyber: Client):
         link = f"https://t.me/{bot.username}?start={payload}"
 
         await q.message.edit_caption(
-            "📥 Redirecting to Download…",
+            UI("☘️ Your files are ready!\nTap below to start your download."),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("☘️ DOWNLOAD FILES ☘️", url=link)]
+                [BTN("☘️ DOWNLOAD FILES ☘️", url=link)]
             ])
         )
 
