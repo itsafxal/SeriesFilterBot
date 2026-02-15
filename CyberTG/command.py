@@ -93,7 +93,7 @@ def register_command_handlers(cyber: Client):
         bot = await cyber.get_me()
         user = message.from_user
         user_mention = user.mention
-       START_TEXT = (
+        START_TEXT = (
             f"<b>{UI(f'Hey {user_mention}!')}</b>\n\n"
             f"<b>{UI(f'Welcome to {bot.first_name}')}</b>\n\n"
             f"{UI('Your private cinema inside Telegram 🎬')}\n"
