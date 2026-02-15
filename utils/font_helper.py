@@ -1,3 +1,9 @@
+from pyrogram.types import InlineKeyboardButton
+
+
+# -------------------------------------------------
+# SMALL CAPS MAP
+# -------------------------------------------------
 
 SMALL_CAPS_MAP = {
     "a": "ᴀ", "b": "ʙ", "c": "ᴄ", "d": "ᴅ",
@@ -10,14 +16,43 @@ SMALL_CAPS_MAP = {
 }
 
 
-def small_caps(text: str) -> str:
-    """Convert text to small caps style."""
+# -------------------------------------------------
+# SMALL CAPS TEXT
+# -------------------------------------------------
+
+def small_caps(text: str):
     if not text:
         return ""
 
-    out = ""
-    for ch in text:
-        low = ch.lower()
-        out += SMALL_CAPS_MAP.get(low, ch)
+    return "".join(
+        SMALL_CAPS_MAP.get(ch.lower(), ch)
+        for ch in str(text)
+    )
 
-    return out
+
+# -------------------------------------------------
+# AUTO SMALL CAPS TEXT (UI)
+# -------------------------------------------------
+
+def UI(text: str):
+    """
+    Auto UI text styling.
+    """
+    return small_caps(text)
+
+
+# -------------------------------------------------
+# AUTO SMALL CAPS BUTTON
+# -------------------------------------------------
+
+def BTN(text, **kwargs):
+    """
+    Auto small-caps InlineKeyboardButton
+
+    Example:
+        BTN("Next ▶", callback_data="next")
+    """
+    return InlineKeyboardButton(
+        small_caps(str(text)),
+        **kwargs
+    )
