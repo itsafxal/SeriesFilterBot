@@ -1,10 +1,5 @@
 from pyrogram.types import InlineKeyboardButton
 
-
-# -------------------------------------------------
-# SMALL CAPS MAP
-# -------------------------------------------------
-
 SMALL_CAPS_MAP = {
     "a": "ᴀ", "b": "ʙ", "c": "ᴄ", "d": "ᴅ",
     "e": "ᴇ", "f": "ғ", "g": "ɢ", "h": "ʜ",
@@ -15,11 +10,6 @@ SMALL_CAPS_MAP = {
     "y": "ʏ", "z": "ᴢ"
 }
 
-
-# -------------------------------------------------
-# SMALL CAPS TEXT
-# -------------------------------------------------
-
 def small_caps(text: str):
     if not text:
         return ""
@@ -29,21 +19,11 @@ def small_caps(text: str):
         for ch in str(text)
     )
 
-
-# -------------------------------------------------
-# AUTO SMALL CAPS TEXT (UI)
-# -------------------------------------------------
-
 def UI(text: str):
     """
     Auto UI text styling.
     """
     return small_caps(text)
-
-
-# -------------------------------------------------
-# AUTO SMALL CAPS BUTTON
-# -------------------------------------------------
 
 def BTN(text, **kwargs):
     """
