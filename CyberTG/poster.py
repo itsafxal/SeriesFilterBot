@@ -1,20 +1,14 @@
 import aiohttp
-
 from config import (
     TMDB_API_KEY,
     OMDB_API_KEY,
     TMDB_IMAGE_BASE
 )
-
 from utils.poster_cache import (
     get_cached,
     save_cache
 )
 
-
-# -------------------------------------------------
-# TMDB FETCH (PRIORITY)
-# -------------------------------------------------
 
 async def fetch_tmdb(series_name: str):
 
@@ -54,18 +48,12 @@ async def fetch_tmdb(series_name: str):
 
     rating = str(item.get("vote_average", "N/A"))
 
-    # TMDB gives genre IDs only
     genre = "Unknown"
 
     if not poster:
         return None
 
     return poster, year, genre, rating
-
-
-# -------------------------------------------------
-# OMDB FETCH (FALLBACK)
-# -------------------------------------------------
 
 async def fetch_omdb(series_name: str):
 
@@ -98,27 +86,14 @@ async def fetch_omdb(series_name: str):
 
     return poster, year, genre, rating
 
-
-# -------------------------------------------------
-# MAIN ENTRY
-# -------------------------------------------------
-
 async def get_series_info(series_name: str):
-    """
-    Main poster resolver.
 
-    Priority:
-        CACHE → TMDB → OMDB
-    """
-
-    # ---------- 1. CACHE ----------
     cached = get_cached(series_name)
 
     if cached:
         poster, year, genre, rating, source = cached
         return poster, year, genre, rating
 
-    # ---------- 2. TMDB ----------
     tmdb = await fetch_tmdb(series_name)
 
     if tmdb:
@@ -135,7 +110,6 @@ async def get_series_info(series_name: str):
 
         return poster, year, genre, rating
 
-    # ---------- 3. OMDB FALLBACK ----------
     omdb = await fetch_omdb(series_name)
 
     if omdb:
@@ -151,8 +125,7 @@ async def get_series_info(series_name: str):
         )
 
         return poster, year, genre, rating
-
-    # ---------- NOTHING FOUND ----------
+        
     return None, None, None, None
 
 
