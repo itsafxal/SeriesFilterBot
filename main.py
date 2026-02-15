@@ -3,6 +3,7 @@
 import asyncio
 from pyrogram import Client, enums
 from CyberTG.command import register_command_handlers
+from CyberTG.menus import register_menu_handlers
 from CyberTG.index import index_files_task, lock, INDEX_STATUS_KEY, register_index_handlers
 from CyberTG.filters import register_filters
 from DB.database import initialize_sql_db, get_global_setting, set_global_setting
@@ -127,6 +128,7 @@ def main():
 
     # Register handlers
     register_command_handlers(cyber)
+    register_menu_handlers(cyber)
     register_filters(cyber)
 
     
