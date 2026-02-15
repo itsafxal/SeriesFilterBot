@@ -2,6 +2,7 @@ import io
 import asyncio
 import base64
 from utils.fsub_helper import check_force_subscribe
+from utils.font_helper import BTN, UI
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from .index import register_index_handlers
@@ -92,25 +93,26 @@ def register_command_handlers(cyber: Client):
         bot = await cyber.get_me()
         user = message.from_user
         user_mention = user.mention
-        START_TEXT = (
-            f"🖤 <b>Hey {user_mention}!</b>\n\n"
-            f"Welcome to <b>{bot.first_name}</b> — your private cinema in chat 🎭\n"
-            "Just type what you’re looking for and I’ll fetch it faster than light ⚡\n\n"
-            "<blockquote>Let’s dive into the world of entertainment 🌙</blockquote>"
+       START_TEXT = (
+            f"<b>{UI(f'Hey {user_mention}!')}</b>\n\n"
+            f"<b>{UI(f'Welcome to {bot.first_name}')}</b>\n\n"
+            f"{UI('Your private cinema inside Telegram 🎬')}\n"
+            f"{UI('Send any series name to begin.')}\n\n"
+            f"<blockquote>{UI('Let’s dive into entertainment 🌙')}</blockquote>"
         )
         CYBER_KEYBOARD = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(
+                BTN(
                     "🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞",
                     switch_inline_query_current_chat=""
                 )
             ],
             [
-                InlineKeyboardButton("⚡ ʜᴇʟᴘ", callback_data="help|menu"),
-                InlineKeyboardButton("ᴀʙᴏᴜᴛ ✨", callback_data="about|menu")
+                BTN("⚡ ʜᴇʟᴘ", callback_data="help|menu"),
+                BTN("ᴀʙᴏᴜᴛ ✨", callback_data="about|menu")
             ],
             [
-                InlineKeyboardButton(
+                BTN(
                     "🍷 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ 🍷",
                     url="https://t.me/TomxSupport"
                 )
