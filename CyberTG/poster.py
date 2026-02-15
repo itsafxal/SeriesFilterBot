@@ -154,3 +154,12 @@ async def get_series_info(series_name: str):
 
     # ---------- NOTHING FOUND ----------
     return None, None, None, None
+
+
+async def get_series_poster_async(series_name: str):
+    """
+    Legacy wrapper for old imports.
+    """
+    poster, year, genre, rating = await get_series_info(series_name)
+    return poster
+
