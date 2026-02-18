@@ -1,11 +1,9 @@
 import re
 import base64
 
-
 PRIVATE_LINK_PATTERN = r"https://t\.me/c/(\d+)/(\d+)"
 PUBLIC_LINK_PATTERN = r"https://t\.me/([A-Za-z0-9_]+)/(\d+)"
 JOINCHAT_PATTERN = r"https://t\.me/\+([A-Za-z0-9_-]+)"
-
 
 def extract_links(links, client=None):
 
