@@ -5,7 +5,7 @@ from pyrogram.types import InlineKeyboardMarkup
 from pyrogram.errors import ChatAdminRequired, PeerIdInvalid
 
 from config import ADMIN_USERS as ADMINS
-from utils.font_helper import BTN, UI
+from utils.cyber_font import BTN, UI
 from database import db
 
 
