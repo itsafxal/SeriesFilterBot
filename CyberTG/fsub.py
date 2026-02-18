@@ -1,3 +1,5 @@
+import asyncio
+
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup
 from pyrogram.errors import ChatAdminRequired, PeerIdInvalid
@@ -8,15 +10,18 @@ from database import db
 
 
 # =================================================
-# GLOBAL VALUES
+# GLOBAL VARIABLES
 # =================================================
 
 FSUB_CHANNEL = None
 FSUB_LINK = None
 
+# user_id -> (payload, chat_id, msg_id)
+WAITING_USERS = {}
+
 
 # =================================================
-# LOAD SETTINGS ON START
+# LOAD SETTINGS (CALL ON BOT START)
 # =================================================
 
 async def load_fsub_settings():
@@ -46,10 +51,11 @@ async def save_fsub_settings():
 
 
 # =================================================
-# DELETE SETTINGS
+# CLEAR SETTINGS
 # =================================================
 
 async def clear_fsub_settings():
+
     await db.delete_global_setting("fsub_channel")
 
 
@@ -77,9 +83,9 @@ async def set_sub1(bot, m):
         return await m.reply("❌ Bot must be admin in channel.")
 
     except PeerIdInvalid:
-        return await m.reply("❌ Bot not inside channel.")
+        return await m.reply("❌ Bot not in channel.")
 
-    # NORMAL invite link (NOT request join)
+    # NORMAL INVITE LINK
     link_obj = await bot.create_chat_invite_link(chat.id)
 
     FSUB_CHANNEL = chat.id
@@ -168,14 +174,53 @@ async def check_fsub(bot, user_id):
 def build_fsub_keyboard():
 
     return InlineKeyboardMarkup([
-        [BTN("➕ JOIN CHANNEL", url=FSUB_LINK)],
-        [BTN("✅ REFRESH", callback_data="fsub_refresh")]
+        [BTN("➕ JOIN CHANNEL", url=FSUB_LINK)]
     ])
 
 
 def fsub_text():
 
     return UI(
-        "⚠️ You must join the channel first.\n"
-        "After joining press Refresh."
+        "⚠️ Join the required channel.\n"
+        "Files will start automatically after joining."
     )
+
+
+# =================================================
+# AUTO JOIN DETECT LOOP
+# =================================================
+
+async def wait_for_join(bot, user_id):
+
+    # check every 3 seconds (2 min max)
+    for _ in range(40):
+
+        joined = await check_fsub(bot, user_id)
+
+        if joined:
+
+            data = WAITING_USERS.pop(user_id, None)
+
+            if not data:
+                return
+
+            payload, chat_id, msg_id = data
+
+            # delete fsub message
+            try:
+                await bot.delete_messages(chat_id, msg_id)
+            except:
+                pass
+
+            # start delivery automatically
+            await bot.send_message(
+                user_id,
+                f"/start {payload}"
+            )
+
+            return
+
+        await asyncio.sleep(3)
+
+    # timeout cleanup
+    WAITING_USERS.pop(user_id, None)
