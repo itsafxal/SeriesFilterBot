@@ -141,20 +141,26 @@ def register_command_handlers(cyber: Client):
     # =================================================
     @cyber.on_message(filters.command("logs") & filters.user(ADMIN_USERS))
     async def send_logs_cmd(_, message: Message):
+
         try:
-            with open(LOG_FILE_PATH, "r") as f:
+            with open(LOG_FILE_PATH, "r", encoding="utf-8") as f:
                 log_content = f.read()
 
             if not log_content:
-                return await message.reply_text("🪵 Log file is empty.")
+                return await message.reply_text(
+                    "🪵 Log file is empty."
+                )
 
             if len(log_content.encode("utf-8")) > MAX_LOG_SIZE:
                 log_content = (
-                    f"⚠️ Log truncated.\n\n"
+                    f"⚠️ Log truncated\n\n"
                     + log_content[-(MAX_LOG_SIZE // 2):]
                 )
 
-            log_file = io.StringIO(log_content)
+            # IMPORTANT FIX
+            log_file = io.BytesIO(
+                log_content.encode("utf-8")
+            )
             log_file.name = "bot_logs.txt"
 
             await message.reply_document(
@@ -165,7 +171,7 @@ def register_command_handlers(cyber: Client):
 
         except Exception as e:
             logger.error(f"Error sending logs: {e}")
-            await message.reply("Failed to send logs.")
+            await message.reply("❌ Failed to send logs.")
 
     # =================================================
     # ADD INDEX CHANNEL
