@@ -4,7 +4,7 @@ from config import (
     OMDB_API_KEY,
     TMDB_IMAGE_BASE
 )
-from utils.poster_cache import (
+from utils.cyber_poster import (
     get_cached,
     save_cache
 )
