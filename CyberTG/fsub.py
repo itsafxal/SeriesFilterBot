@@ -76,7 +76,7 @@ def register_fsub_handlers(cyber: Client):
     # ---------------------------------------------
     # SET FSUB CHANNEL
     # ---------------------------------------------
-    @cyber.on_message(filters.command("sub1") & filters.user(ADMIN_USERS))
+    @cyber.on_message(filters.command("fsub") & filters.user(ADMIN_USERS))
     async def set_sub1(_, m):
 
         global FSUB_CHANNEL, FSUB_LINK
