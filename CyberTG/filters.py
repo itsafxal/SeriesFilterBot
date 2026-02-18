@@ -1,4 +1,5 @@
 import math
+import asyncio
 
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
@@ -15,11 +16,20 @@ from DB.database import (
     get_unique_qualities_by_lang_season
 )
 
-from utils.cyber_series import check_owner
-from utils.cyber_filter import encode_payload
-from utils.cyber_font import BTN, UI, small_caps
+from utils.series_helper import check_owner
+from utils.filter_helper import encode_payload
+from utils.font_helper import BTN, UI, small_caps
 
 from .poster import get_series_info
+
+# FSUB IMPORT
+from fsub import (
+    check_fsub,
+    build_fsub_keyboard,
+    fsub_text,
+    WAITING_USERS,
+    wait_for_join
+)
 
 
 # -------------------------------------------------
@@ -35,14 +45,12 @@ async def resolve_series_with_suggestions(text):
         return None, []
 
     unique = list(dict.fromkeys(results))
-
     exact = [r for r in unique if r.lower() == text]
 
-    # exact + more titles → suggestions
+    # exact + similar → suggestions
     if exact and len(unique) > 1:
         return None, unique[:10]
 
-    # only exact
     if exact:
         return exact[0], []
 
@@ -50,7 +58,7 @@ async def resolve_series_with_suggestions(text):
 
 
 # -------------------------------------------------
-# CAPTION BUILDER
+# CAPTION
 # -------------------------------------------------
 
 def build_caption(series, year, genre, rating,
@@ -73,16 +81,16 @@ def build_caption(series, year, genre, rating,
         lines.append(f"<b>{small_caps('Select Season')}</b>")
 
     elif step == "language":
-        lang_txt = ", ".join(languages) if languages else "Unknown"
-        lines.append(f"<b>○ {small_caps('Languages')}: {small_caps(lang_txt)}</b>")
+        txt = ", ".join(languages)
+        lines.append(f"<b>○ {small_caps('Languages')}: {small_caps(txt)}</b>")
         lines.append("")
         lines.append(f"<b>{small_caps('Select Language')}</b>")
 
     elif step == "quality":
-        lang_txt = ", ".join(languages) if languages else "Unknown"
-        qual_txt = ", ".join(qualities) if qualities else ""
-        lines.append(f"<b>○ {small_caps('Language')}: {small_caps(lang_txt)}</b>")
-        lines.append(f"<b>○ {small_caps('Quality')}: {small_caps(qual_txt)}</b>")
+        lt = ", ".join(languages)
+        qt = ", ".join(qualities)
+        lines.append(f"<b>○ {small_caps('Language')}: {small_caps(lt)}</b>")
+        lines.append(f"<b>○ {small_caps('Quality')}: {small_caps(qt)}</b>")
         lines.append("")
         lines.append(f"<b>{small_caps('Select Quality')}</b>")
 
@@ -99,6 +107,7 @@ def build_grid_keyboard(items, cb_builder, per_row=2):
 
     for it in items:
         row.append(BTN(it, callback_data=cb_builder(it)))
+
         if len(row) == per_row:
             rows.append(row)
             row = []
@@ -124,6 +133,7 @@ def build_season_pages(seasons, uid, series, page=0):
             BTN(f"Season {s}",
                 callback_data=f"gss|{uid}|{series}|{s}")
         )
+
         if len(row) == 3:
             rows.append(row)
             row = []
@@ -155,12 +165,12 @@ def build_season_pages(seasons, uid, series, page=0):
 
 
 # -------------------------------------------------
-# REGISTER
+# MAIN REGISTER
 # -------------------------------------------------
 
 def register_filters(cyber: Client):
 
-    # ---------- SEARCH ----------
+    # ---------------- SEARCH ----------------
 
     @cyber.on_message(filters.text & (filters.private | filters.group))
     async def search_handler(_, m):
@@ -179,8 +189,10 @@ def register_filters(cyber: Client):
 
             await m.reply_photo(
                 poster or DEFAULT_POSTER,
-                caption=build_caption(series, year, genre, rating,
-                                      seasons=seasons),
+                caption=build_caption(
+                    series, year, genre, rating,
+                    seasons=seasons
+                ),
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb
             )
@@ -200,7 +212,7 @@ def register_filters(cyber: Client):
                 reply_markup=kb
             )
 
-    # ---------- SPELL SELECT ----------
+    # ---------------- SPELL SELECT ----------------
 
     @cyber.on_callback_query(filters.regex("^sug\\|"))
     async def sug(_, q):
@@ -215,21 +227,20 @@ def register_filters(cyber: Client):
         await q.message.edit_media(
             InputMediaPhoto(
                 poster or DEFAULT_POSTER,
-                caption=build_caption(series, year, genre, rating,
-                                      seasons=seasons),
+                caption=build_caption(
+                    series, year, genre, rating,
+                    seasons=seasons
+                ),
                 parse_mode=enums.ParseMode.HTML
             ),
             reply_markup=kb
         )
 
-        await q.answer()
-
     @cyber.on_callback_query(filters.regex("^close_spell$"))
     async def close_spell(_, q):
         await q.message.delete()
-        await q.answer()
 
-    # ---------- PAGINATION ----------
+    # ---------------- PAGINATION ----------------
 
     @cyber.on_callback_query(filters.regex("^spg\\|"))
     async def spg(_, q):
@@ -243,13 +254,12 @@ def register_filters(cyber: Client):
         kb = build_season_pages(seasons, uid, series, int(page))
 
         await q.message.edit_reply_markup(kb)
-        await q.answer()
 
     @cyber.on_callback_query(filters.regex("^noop$"))
     async def noop(_, q):
         await q.answer()
 
-    # ---------- SEASON → LANGUAGE ----------
+    # ---------------- SEASON → LANGUAGE ----------------
 
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q):
@@ -262,12 +272,6 @@ def register_filters(cyber: Client):
         langs = await get_unique_languages_by_season(series, int(season))
         poster, year, genre, rating = await get_series_info(series)
 
-        caption = build_caption(
-            series, year, genre, rating,
-            languages=langs,
-            step="language"
-        )
-
         kb = build_grid_keyboard(
             langs,
             lambda l: f"gls|{uid}|{series}|{season}|{l}"
@@ -278,14 +282,16 @@ def register_filters(cyber: Client):
         ])
 
         await q.message.edit_caption(
-            caption,
+            build_caption(
+                series, year, genre, rating,
+                languages=langs,
+                step="language"
+            ),
             parse_mode=enums.ParseMode.HTML,
             reply_markup=kb
         )
 
-        await q.answer()
-
-    # ---------- LANGUAGE → QUALITY ----------
+    # ---------------- LANGUAGE → QUALITY ----------------
 
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q):
@@ -301,85 +307,23 @@ def register_filters(cyber: Client):
 
         poster, year, genre, rating = await get_series_info(series)
 
-        caption = build_caption(
-            series, year, genre, rating,
-            languages=[lang],
-            qualities=qs,
-            step="quality"
-        )
-
         kb = build_grid_keyboard(
             qs,
             lambda x: f"gqs|{uid}|{series}|{season}|{lang}|{x}"
         )
 
-        kb.inline_keyboard.append([
-            BTN("⬅ Back", callback_data=f"back_lang|{uid}|{series}|{season}")
-        ])
-
         await q.message.edit_caption(
-            caption,
+            build_caption(
+                series, year, genre, rating,
+                languages=[lang],
+                qualities=qs,
+                step="quality"
+            ),
             parse_mode=enums.ParseMode.HTML,
             reply_markup=kb
         )
 
-        await q.answer()
-
-    # ---------- BACK BUTTONS ----------
-
-    @cyber.on_callback_query(filters.regex("^back_season\\|"))
-    async def back_season(_, q):
-
-        _, uid, series = q.data.split("|")
-
-        if not await check_owner(q, uid):
-            return
-
-        poster, year, genre, rating = await get_series_info(series)
-        seasons = list((await get_series_summary(series))["seasons"])
-
-        kb = build_season_pages(seasons, uid, series)
-
-        await q.message.edit_caption(
-            build_caption(series, year, genre, rating,
-                          seasons=seasons),
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=kb
-        )
-
-        await q.answer()
-
-    @cyber.on_callback_query(filters.regex("^back_lang\\|"))
-    async def back_lang(_, q):
-
-        _, uid, series, season = q.data.split("|")
-
-        if not await check_owner(q, uid):
-            return
-
-        langs = await get_unique_languages_by_season(series, int(season))
-        poster, year, genre, rating = await get_series_info(series)
-
-        kb = build_grid_keyboard(
-            langs,
-            lambda l: f"gls|{uid}|{series}|{season}|{l}"
-        )
-
-        kb.inline_keyboard.append([
-            BTN("⬅ Back", callback_data=f"back_season|{uid}|{series}")
-        ])
-
-        await q.message.edit_caption(
-            build_caption(series, year, genre, rating,
-                          languages=langs,
-                          step="language"),
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=kb
-        )
-
-        await q.answer()
-
-    # ---------- QUALITY → DOWNLOAD ----------
+    # ---------------- QUALITY → DOWNLOAD ----------------
 
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
     async def gqs(_, q):
@@ -391,14 +335,35 @@ def register_filters(cyber: Client):
 
         payload = encode_payload(series, season, lang, quality, uid)
 
+        # FSUB CHECK
+        joined = await check_fsub(cyber, q.from_user.id)
+
+        if not joined:
+
+            await q.message.edit_caption(
+                fsub_text(),
+                reply_markup=build_fsub_keyboard()
+            )
+
+            WAITING_USERS[q.from_user.id] = (
+                payload,
+                q.message.chat.id,
+                q.message.id
+            )
+
+            asyncio.create_task(
+                wait_for_join(cyber, q.from_user.id)
+            )
+
+            return
+
+        # NORMAL DOWNLOAD
         bot = await cyber.get_me()
         link = f"https://t.me/{bot.username}?start={payload}"
 
         await q.message.edit_caption(
-            UI("☘️ Your files are ready!\nTap below to start your download."),
+            UI("☘️ Your files are ready!\nTap below to download."),
             reply_markup=InlineKeyboardMarkup([
                 [BTN("☘️ DOWNLOAD FILES ☘️", url=link)]
             ])
         )
-
-        await q.answer()
