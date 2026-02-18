@@ -1,11 +1,14 @@
 import io
 import asyncio
 import base64
+
 from utils.cyber_font import BTN, UI
 from pyrogram import Client, filters, enums
-from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import Message, InlineKeyboardMarkup
+
 from .index import register_index_handlers
 from .files import deliver_files_direct, set_session
+
 from config import (
     logger,
     ADMIN_USERS,
@@ -49,14 +52,16 @@ def register_command_handlers(cyber: Client):
             if payload.startswith("send_"):
                 try:
                     data = payload.replace("send_", "")
-                    # restore base64 padding
                     data += "=" * (-len(data) % 4)
 
                     raw = base64.urlsafe_b64decode(data).decode()
 
-                    owner, series, season, lang, quality = raw.split("|")
+                    parts = raw.split("|")
+                    if len(parts) != 5:
+                        return await message.reply("Invalid link")
 
-                    # lock to original user
+                    owner, series, season, lang, quality = parts
+
                     if int(owner) != uid:
                         return await message.reply("⚠️ This link is not for you.")
 
@@ -66,7 +71,6 @@ def register_command_handlers(cyber: Client):
                     logger.error(f"PAYLOAD ERROR: {e}")
                     return await message.reply("Invalid link")
 
-                # store session
                 set_session(uid, {
                     "series": series,
                     "season": season,
@@ -74,15 +78,14 @@ def register_command_handlers(cyber: Client):
                     "quality": quality
                 })
 
-                # start delivery (progress handled by send_queue)
                 await deliver_files_direct(cyber, uid)
                 return
 
         # NORMAL START
         bot = await cyber.get_me()
         user = message.from_user
-        user_mention = user.mention
         user_name = user.first_name
+
         START_TEXT = (
             f"<b>{UI(f'Hey {user_name}!')}</b>\n\n"
             f"<b>{UI(f'Welcome to {bot.first_name}')}</b>\n\n"
@@ -90,22 +93,19 @@ def register_command_handlers(cyber: Client):
             f"{UI('Send any series name to begin.')}\n\n"
             f"<blockquote>{UI('Let’s dive into entertainment 🌙')}</blockquote>"
         )
+
         CYBER_KEYBOARD = InlineKeyboardMarkup([
             [
-                BTN(
-                    "🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞",
-                    switch_inline_query_current_chat=""
-                )
+                BTN("🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞",
+                    switch_inline_query_current_chat="")
             ],
             [
                 BTN("⚡ ʜᴇʟᴘ", callback_data="help|menu"),
                 BTN("ᴀʙᴏᴜᴛ ✨", callback_data="about|menu")
             ],
             [
-                BTN(
-                    "🍷 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ 🍷",
-                    url="https://t.me/TomxSupport"
-                )
+                BTN("🍷 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ 🍷",
+                    url="https://t.me/TomxSupport")
             ]
         ])
 
@@ -116,15 +116,17 @@ def register_command_handlers(cyber: Client):
             parse_mode=enums.ParseMode.HTML
         )
 
-    
+    # =================================================
+    # BROADCAST
     # =================================================
     @cyber.on_message(filters.command("broadcast") & filters.user(ADMIN_USERS))
     async def broadcast(_, msg):
 
         if not msg.reply_to_message:
-            return await msg.reply("reply message")
+            return await msg.reply("Reply to a message")
 
         users = await get_all_users()
+
         for u in users:
             try:
                 await msg.reply_to_message.copy(u)
@@ -134,22 +136,24 @@ def register_command_handlers(cyber: Client):
 
         await msg.reply("Broadcast done")
 
+    # =================================================
+    # LOGS
+    # =================================================
     @cyber.on_message(filters.command("logs") & filters.user(ADMIN_USERS))
     async def send_logs_cmd(_, message: Message):
-        """Sends the bot's log file to the admin."""
         try:
-            with open(LOG_FILE_PATH, 'r') as f:
+            with open(LOG_FILE_PATH, "r") as f:
                 log_content = f.read()
 
             if not log_content:
-                return await message.reply_text("🪵 Log file is currently empty.")
+                return await message.reply_text("🪵 Log file is empty.")
 
-            # Check size before sending
-            # MAX_LOG_SIZE is now imported from config
-            if len(log_content.encode('utf-8')) > MAX_LOG_SIZE:
-                log_content = f"⚠️ Log file truncated. Showing last {MAX_LOG_SIZE // 1024} KB.\n\n" + log_content[-(MAX_LOG_SIZE // 2):]
+            if len(log_content.encode("utf-8")) > MAX_LOG_SIZE:
+                log_content = (
+                    f"⚠️ Log truncated.\n\n"
+                    + log_content[-(MAX_LOG_SIZE // 2):]
+                )
 
-            # Use io.StringIO to create a file-like object in memory
             log_file = io.StringIO(log_content)
             log_file.name = "bot_logs.txt"
 
@@ -159,71 +163,68 @@ def register_command_handlers(cyber: Client):
                 parse_mode=enums.ParseMode.MARKDOWN
             )
 
+        except Exception as e:
+            logger.error(f"Error sending logs: {e}")
+            await message.reply("Failed to send logs.")
+
+    # =================================================
+    # ADD INDEX CHANNEL
+    # =================================================
     @cyber.on_message(filters.command("addindex") & filters.user(ADMIN_USERS))
     async def add_index_channel(_, message):
+
         if len(message.command) < 2:
-            return await message.reply(
-                "Usage:\n`/addindex <channel_id>`",
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
+            return await message.reply("Usage: /addindex <channel_id>")
 
         try:
             cid = int(message.command[1])
         except:
-            return await message.reply("❌ Invalid Channel ID. It must be an integer.")
+            return await message.reply("Invalid Channel ID")
 
         channels = await get_index_channels()
+
         if cid in channels:
-            return await message.reply("⚠️ Channel ID already exists.")
+            return await message.reply("Channel already exists.")
 
         channels.append(cid)
         await set_index_channels(channels)
 
-        await message.reply(
-            f"✅ Added index channel: `{cid}`",
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
+        await message.reply(f"Added index channel: `{cid}`")
 
-    # ================================
-    #        DELETE INDEX CHANNEL
-    # ================================
+    # =================================================
+    # DELETE INDEX CHANNEL
+    # =================================================
     @cyber.on_message(filters.command("delindex") & filters.user(ADMIN_USERS))
     async def delete_index_channel(_, message):
 
         if len(message.command) < 2:
-            return await message.reply(
-                "Usage:\n`/delindex <channel_id>`",
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
+            return await message.reply("Usage: /delindex <channel_id>")
 
         try:
             cid = int(message.command[1])
         except:
-            return await message.reply("❌ Invalid Channel ID. It must be an integer.")
+            return await message.reply("Invalid Channel ID")
 
         channels = await get_index_channels()
+
         if cid not in channels:
-            return await message.reply("⚠️ Channel ID not found.")
+            return await message.reply("Channel not found.")
 
         channels.remove(cid)
         await set_index_channels(channels)
 
-        text = f"🗑️ Removed index channel: `{cid}`"
-        await message.reply(
-            text,
-            parse_mode=enums.ParseMode.MARKDOWN,
-            disable_web_page_preview=True
-        )
+        await message.reply(f"Removed index channel: `{cid}`")
 
-    # ================================
-    #        LIST INDEX CHANNELS
-    # ================================
+    # =================================================
+    # LIST INDEX CHANNELS
+    # =================================================
     @cyber.on_message(filters.command("listindex") & filters.user(ADMIN_USERS))
     async def list_index_channels(_, message):
 
         channels = await get_index_channels()
+
         if not channels:
-            return await message.reply("📝 No index channels configured.")
+            return await message.reply("No index channels configured.")
 
         text = "📝 **Current Index Channels:**\n\n"
 
@@ -231,50 +232,50 @@ def register_command_handlers(cyber: Client):
             info = f"• ID: `{cid}`\n"
             try:
                 chat = await cyber.get_chat(cid)
-                info += f"  Title: **{chat.title}**"
-
-                # Export invite link safely
-                invite = None
-                try:
-                    invite = await cyber.export_chat_invite_link(cid)
-                except:
-                    pass
-
-                if invite:
-                    info += f" ([Invite Link]({invite}))"
-                elif chat.username:
-                    info += f" (@{chat.username})"
-                else:
-                    info += " (Private/No Link)"
-
-                info += "\n"
-
-            except Exception as e:
-                logger.error(f"Error fetching channel {cid}: {e}")
+                info += f"  Title: **{chat.title}**\n"
+            except Exception:
                 info += "  Title: `[Access Denied or Not Found]`\n"
 
             text += info
 
         await message.reply(
             text,
-            parse_mode=enums.ParseMode.MARKDOWN,
-            disable_web_page_preview=True
+            parse_mode=enums.ParseMode.MARKDOWN
         )
 
+    # =================================================
+    # DELETE ALL FILES
+    # =================================================
     @cyber.on_message(filters.command("deleteall") & filters.user(ADMIN_USERS))
     async def deleteall(_, m):
+
+        if len(m.command) < 2 or m.command[1] != "CONFIRM":
+            return await m.reply("Use: /deleteall CONFIRM")
+
         await delete_all_files()
         await m.reply("All deleted")
 
+    # =================================================
+    # DELETE FILE
+    # =================================================
     @cyber.on_message(filters.command("deletefile") & filters.user(ADMIN_USERS))
     async def deletefile(_, m):
 
-        cid = int(m.command[1])
-        mid = int(m.command[2])
+        if len(m.command) < 3:
+            return await m.reply("Usage: /deletefile <channel_id> <message_id>")
+
+        try:
+            cid = int(m.command[1])
+            mid = int(m.command[2])
+        except:
+            return await m.reply("Invalid IDs")
 
         await delete_one_file(cid, mid)
         await m.reply("Deleted")
 
+    # =================================================
+    # TOTAL
+    # =================================================
     @cyber.on_message(filters.command("total") & filters.user(ADMIN_USERS))
     async def total(_, m):
 
@@ -283,6 +284,7 @@ def register_command_handlers(cyber: Client):
 
         await m.reply(f"Files: {f}\nUsers: {u}")
 
+    # =================================================
     return [
         start_command,
         *index_handlers,
