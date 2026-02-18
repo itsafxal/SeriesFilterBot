@@ -1,15 +1,11 @@
-# sqlite_db.py
 import asyncio
 import re
 import sqlite3
 from functools import lru_cache
 
-# --- SQLITE CONFIG AND STATE ---
-# Note: logger and files_collection are passed from database.py context where needed
 SQLITE_DB_PATH = "series_index.db"
-sql_db_lock = asyncio.Lock() # Defined here but imported/used in database.py for async wrappers
+sql_db_lock = asyncio.Lock() 
 
-# ---- Helpers to recompute normalized series names (Copied to avoid circular import)
 _CLEAN_TAGS = [
     "4K","1080P","720P","HDRIP","WEB-DL","WEBRIP","BLURAY","HDTV",
     "AMZN","NETFLIX","HULU","DDP5.1","X265","X264","10BIT","HEVC",
@@ -25,7 +21,6 @@ def _clean_series_name_local(name: str) -> str:
         if term != r"(19|20)\d{2}":
             t = rf"\b{re.escape(term)}\b"
         name = re.sub(t, " ", name, flags=re.IGNORECASE).strip()
-    # common channel suffixes
     for tag in ["CK","UB","TG","MOVIE HUB","FILM"]:
         tag_regex = rf"(?:^|[\W_]+){re.escape(tag)}(?:$|[\W_]+)"
         name = re.sub(tag_regex, " ", name, flags=re.IGNORECASE).strip()
@@ -79,9 +74,6 @@ def _extract_language_local(file_name: str) -> str:
 
     return "-".join(sorted(found))
 
-
-# --- SQLITE SCHEMA AND MIGRATION (SYNC) ---
-
 def create_sql_schema(conn):
     """Creates the necessary table in the SQLite database, including 'language'."""
     cursor = conn.cursor()
@@ -117,7 +109,7 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
     mongo_docs = files_collection.find({}, {
         "channel_id": 1, "message_id": 1, "file_name": 1, 
         "normalized_name": 1, "season": 1, "episode": 1, 
-        "quality": 1, "language": 1, "file_id": 1, "_id": 0 # Ensure file_id is retrieved
+        "quality": 1, "language": 1, "file_id": 1, "_id": 0
     })
     
     unique = {}
@@ -144,14 +136,13 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
             episode,
             quality,
             language,
-            doc.get("file_id") # <-- This is the 9th binding
+            doc.get("file_id") 
         )
 
     insert_data = list(unique.values())
 
     if insert_data:
         try:
-            # FIX: Updated statement to explicitly list 9 columns and 9 placeholders
             cursor.executemany("""
                 INSERT OR IGNORE INTO files 
                 (channel_id, message_id, file_name, normalized_name, season, episode, quality, language, file_id)
@@ -183,9 +174,6 @@ def repair_normalized_names_in_sqlite_sync(logger):
         logger.info(f"🛠️ Repaired {len(updates)} normalized_name rows in SQLite.")
     conn.close()
 
-
-# --- SEARCH AND RETRIEVAL FUNCTIONS (SYNC) ---
-
 @lru_cache(maxsize=1024) 
 def get_series_summary_sync(series_name: str):
     """Gets all unique languages, seasons, and qualities for a series, used for the initial summary."""
@@ -193,10 +181,9 @@ def get_series_summary_sync(series_name: str):
     cursor = conn.cursor()
     
     cursor.execute("SELECT DISTINCT language FROM files WHERE normalized_name = ?", (series_name,))
-    languages = tuple([row[0] for row in cursor.fetchall()]) # Must return immutable type for caching
-    
+    languages = tuple([row[0] for row in cursor.fetchall()]) 
     cursor.execute("SELECT DISTINCT season FROM files WHERE normalized_name = ? AND season > 0 ORDER BY season ASC", (series_name,))
-    seasons = tuple([row[0] for row in cursor.fetchall()]) # Must return immutable type for caching
+    seasons = tuple([row[0] for row in cursor.fetchall()]) 
     
     cursor.execute("SELECT DISTINCT quality FROM files WHERE normalized_name = ?", (series_name,))
     qualities = [row[0] for row in cursor.fetchall()]
@@ -205,7 +192,7 @@ def get_series_summary_sync(series_name: str):
 
     # Apply custom sort order to qualities
     sort_order = ["4K", "1080P", "720P", "480P", "360P", "UNKNOWN"]
-    sorted_qualities = tuple(sorted( # Must return immutable type for caching
+    sorted_qualities = tuple(sorted( 
         [q for q in qualities if q in sort_order], 
         key=lambda x: sort_order.index(x)
     ))
@@ -224,21 +211,14 @@ def search_series_sync(query: str):
     q = query.strip()
     unique_results = set()
     
-    # 1) Exact match (Case-Insensitive)
     cursor.execute("""
         SELECT DISTINCT normalized_name FROM files 
         WHERE normalized_name = ? COLLATE NOCASE
     """, (q,))
     for r in cursor.fetchall():
         unique_results.add(r[0])
-    #if unique_results: 
-    #    conn.close()
-    #    return tuple(unique_results)
 
-
-    # 2) Full-Phrase match (Partial, using all words in order) - e.g. "Game of" in "Game of Thrones"
     search_words = q.split()
-    # Create a pattern where all words must appear somewhere in the name (order is loose)
     full_phrase_pattern = "%" + "%".join(search_words) + "%"
 
     cursor.execute("""
@@ -247,11 +227,9 @@ def search_series_sync(query: str):
     """, (full_phrase_pattern,))
     for r in cursor.fetchall():
         unique_results.add(r[0])
-        
-    # 3) Fuzzy / Misspelling match (Word-by-word containment)
-    # This handles cases like "throne" -> "Thrones" or partial words
+
     for word in search_words:
-        if len(word) >= 3: # Only fuzzy search for longer words
+        if len(word) >= 3: 
             cursor.execute("""
                 SELECT DISTINCT normalized_name FROM files 
                 WHERE normalized_name LIKE ? COLLATE NOCASE
@@ -259,32 +237,24 @@ def search_series_sync(query: str):
             for r in cursor.fetchall():
                 unique_results.add(r[0])
 
-
-    # Combine and sort results
     final_results = list(unique_results)
     
-    # Prioritize results that start with the query words for better suggestions
     def sort_key(name):
         name_lower = name.lower()
         query_lower = q.lower()
         
-        # Scoring: 1. Exact starting match (highest)
         starts_with_exact = 1 if name_lower.startswith(query_lower) else 0
         
-        # Scoring: 2. Whole word boundary match (medium)
         contains_whole_word = 1 if re.search(r'\b' + re.escape(query_lower) + r'\b', name_lower) else 0
 
-        # Scoring: 3. Length difference (shorter names are generally better suggestions)
         length_diff = abs(len(name_lower) - len(query_lower))
-        
-        # Return tuple for multi-level sorting (lower is better):
-        # Starts with exact match (True/False), Contains whole word (True/False), Length difference
+
         return (not starts_with_exact, not contains_whole_word, length_diff, len(name_lower))
 
     final_results.sort(key=sort_key)
 
     conn.close()
-    return tuple(final_results) # Must return immutable type for caching
+    return tuple(final_results) 
 
 @lru_cache(maxsize=1024) 
 def get_unique_languages_by_name_sync(series_name: str):
@@ -292,7 +262,7 @@ def get_unique_languages_by_name_sync(series_name: str):
     conn = sqlite3.connect(SQLITE_DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT DISTINCT language FROM files WHERE normalized_name = ? ORDER BY language ASC", (series_name,))
-    languages = tuple([row[0] for row in cursor.fetchall()]) # Must return immutable type for caching
+    languages = tuple([row[0] for row in cursor.fetchall()]) 
     conn.close()
     return languages
 
@@ -306,7 +276,7 @@ def get_unique_seasons_by_name_sync(series_name: str, language: str):
         WHERE normalized_name = ? AND language = ? AND season > 0
         ORDER BY season ASC
     """, (series_name, language))
-    seasons = tuple([row[0] for row in cursor.fetchall()]) # Must return immutable type for caching
+    seasons = tuple([row[0] for row in cursor.fetchall()]) 
     conn.close()
     return seasons
 
@@ -320,7 +290,7 @@ def get_unique_qualities_by_season_sync(series_name: str, language: str, season:
     conn.close()
 
     sort_order = ["4K", "1080P", "720P", "480P", "360P", "UNKNOWN"]
-    sorted_qualities = tuple(sorted( # Must return immutable type for caching
+    sorted_qualities = tuple(sorted( 
         [q for q in qualities if q in sort_order], 
         key=lambda x: sort_order.index(x)
     ))
@@ -350,7 +320,7 @@ def get_unique_languages_by_season_sync(series_name: str, season: int):
         WHERE normalized_name = ? AND season = ?
         ORDER BY language ASC
     """, (series_name, season))
-    languages = tuple([row[0] for row in cursor.fetchall()]) # Must return immutable type for caching
+    languages = tuple([row[0] for row in cursor.fetchall()]) 
     conn.close()
     return languages
 
@@ -366,9 +336,8 @@ def get_unique_qualities_by_lang_season_sync(series_name: str, language: str, se
     qualities = [row[0] for row in cursor.fetchall()]
     conn.close()
 
-    # Apply custom sort order to qualities
     sort_order = ["4K", "1080P", "720P", "480P", "360P", "UNKNOWN"]
-    sorted_qualities = tuple(sorted( # Must return immutable type for caching
+    sorted_qualities = tuple(sorted( 
         [q for q in qualities if q in sort_order], 
         key=lambda x: sort_order.index(x)
     ))
@@ -404,18 +373,14 @@ def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
         ))
         conn.commit()
         conn.close()
-        # Invalidate cache for relevant functions after a write operation
         clear_all_caches() 
         return True
     except Exception as e:
         logger.error(f"Failed to insert/update file doc in SQLite: {e}")
         return False
 
-# --- Cache Management Function ---
-
 def clear_all_caches():
     """Clears all lru_caches in this module."""
-    # List all cached functions explicitly
     get_series_summary_sync.cache_clear()
     search_series_sync.cache_clear()
     get_unique_languages_by_name_sync.cache_clear()
@@ -423,8 +388,6 @@ def clear_all_caches():
     get_unique_qualities_by_season_sync.cache_clear()
     get_unique_languages_by_season_sync.cache_clear()
     get_unique_qualities_by_lang_season_sync.cache_clear()
-
-# --- DELETE AND COUNT FUNCTIONS (SYNC) ---
 
 def delete_all_files_sync():
     """Synchronously deletes all files from sqlite"""
