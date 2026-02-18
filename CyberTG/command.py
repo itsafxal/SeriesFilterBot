@@ -33,8 +33,7 @@ from .files import (
     set_session
 )
 
-# FSUB IMPORT (NOW ONLY HERE)
-from CyberTG.fsub import (
+from .fsub import (
     check_fsub,
     build_fsub_keyboard,
     fsub_text
