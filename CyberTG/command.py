@@ -145,6 +145,133 @@ def register_command_handlers(cyber: Client):
 
         await msg.reply("Broadcast done")
 
+    @cyber.on_message(filters.command("logs") & filters.user(ADMIN_USERS))
+    async def send_logs_cmd(_, message: Message):
+        """Sends the bot's log file to the admin."""
+        try:
+            with open(LOG_FILE_PATH, 'r') as f:
+                log_content = f.read()
+
+            if not log_content:
+                return await message.reply_text("🪵 Log file is currently empty.")
+
+            # Check size before sending
+            # MAX_LOG_SIZE is now imported from config
+            if len(log_content.encode('utf-8')) > MAX_LOG_SIZE:
+                log_content = f"⚠️ Log file truncated. Showing last {MAX_LOG_SIZE // 1024} KB.\n\n" + log_content[-(MAX_LOG_SIZE // 2):]
+
+            # Use io.StringIO to create a file-like object in memory
+            log_file = io.StringIO(log_content)
+            log_file.name = "bot_logs.txt"
+
+            await message.reply_document(
+                document=log_file,
+                caption="🪵 **Current Bot Logs**",
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+
+    @cyber.on_message(filters.command("addindex") & filters.user(ADMIN_USERS))
+    async def add_index_channel(_, message):
+        if len(message.command) < 2:
+            return await message.reply(
+                "Usage:\n`/addindex <channel_id>`",
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+
+        try:
+            cid = int(message.command[1])
+        except:
+            return await message.reply("❌ Invalid Channel ID. It must be an integer.")
+
+        channels = await get_index_channels()
+        if cid in channels:
+            return await message.reply("⚠️ Channel ID already exists.")
+
+        channels.append(cid)
+        await set_index_channels(channels)
+
+        await message.reply(
+            f"✅ Added index channel: `{cid}`",
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+
+    # ================================
+    #        DELETE INDEX CHANNEL
+    # ================================
+    @cyber.on_message(filters.command("delindex") & filters.user(ADMIN_USERS))
+    async def delete_index_channel(_, message):
+
+        if len(message.command) < 2:
+            return await message.reply(
+                "Usage:\n`/delindex <channel_id>`",
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+
+        try:
+            cid = int(message.command[1])
+        except:
+            return await message.reply("❌ Invalid Channel ID. It must be an integer.")
+
+        channels = await get_index_channels()
+        if cid not in channels:
+            return await message.reply("⚠️ Channel ID not found.")
+
+        channels.remove(cid)
+        await set_index_channels(channels)
+
+        text = f"🗑️ Removed index channel: `{cid}`"
+        await message.reply(
+            text,
+            parse_mode=enums.ParseMode.MARKDOWN,
+            disable_web_page_preview=True
+        )
+
+    # ================================
+    #        LIST INDEX CHANNELS
+    # ================================
+    @cyber.on_message(filters.command("listindex") & filters.user(ADMIN_USERS))
+    async def list_index_channels(_, message):
+
+        channels = await get_index_channels()
+        if not channels:
+            return await message.reply("📝 No index channels configured.")
+
+        text = "📝 **Current Index Channels:**\n\n"
+
+        for cid in channels:
+            info = f"• ID: `{cid}`\n"
+            try:
+                chat = await cyber.get_chat(cid)
+                info += f"  Title: **{chat.title}**"
+
+                # Export invite link safely
+                invite = None
+                try:
+                    invite = await cyber.export_chat_invite_link(cid)
+                except:
+                    pass
+
+                if invite:
+                    info += f" ([Invite Link]({invite}))"
+                elif chat.username:
+                    info += f" (@{chat.username})"
+                else:
+                    info += " (Private/No Link)"
+
+                info += "\n"
+
+            except Exception as e:
+                logger.error(f"Error fetching channel {cid}: {e}")
+                info += "  Title: `[Access Denied or Not Found]`\n"
+
+            text += info
+
+        await message.reply(
+            text,
+            parse_mode=enums.ParseMode.MARKDOWN,
+            disable_web_page_preview=True
+        )
+
     @cyber.on_message(filters.command("deleteall") & filters.user(ADMIN_USERS))
     async def deleteall(_, m):
         await delete_all_files()
