@@ -1,5 +1,4 @@
 import math
-import asyncio
 
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
@@ -7,7 +6,11 @@ from pyrogram.types import (
     InputMediaPhoto
 )
 
-from config import DEFAULT_POSTER, SPELL_IMG, SEASONS_PER_PAGE
+from config import (
+    DEFAULT_POSTER,
+    SPELL_IMG,
+    SEASONS_PER_PAGE
+)
 
 from DB.database import (
     search_series,
@@ -16,25 +19,16 @@ from DB.database import (
     get_unique_qualities_by_lang_season
 )
 
-from utils.cyber_series import check_owner
-from utils.cyber_filter import encode_payload
-from utils.cyber_font import BTN, UI, small_caps
+from utils.series_helper import check_owner
+from utils.filter_helper import encode_payload
+from utils.font_helper import BTN, UI, small_caps
 
 from .poster import get_series_info
 
-# FSUB IMPORT
-from .fsub import (
-    check_fsub,
-    build_fsub_keyboard,
-    fsub_text,
-    WAITING_USERS,
-    wait_for_join
-)
 
-
-# -------------------------------------------------
+# =================================================
 # SMART SEARCH
-# -------------------------------------------------
+# =================================================
 
 async def resolve_series_with_suggestions(text):
 
@@ -45,9 +39,9 @@ async def resolve_series_with_suggestions(text):
         return None, []
 
     unique = list(dict.fromkeys(results))
-    exact = [r for r in unique if r.lower() == text]
 
-    # exact + similar → suggestions
+    exact = [x for x in unique if x.lower() == text]
+
     if exact and len(unique) > 1:
         return None, unique[:10]
 
@@ -57,13 +51,15 @@ async def resolve_series_with_suggestions(text):
     return None, unique[:10]
 
 
-# -------------------------------------------------
-# CAPTION
-# -------------------------------------------------
+# =================================================
+# CAPTION BUILDER
+# =================================================
 
 def build_caption(series, year, genre, rating,
-                  seasons=None, languages=None,
-                  qualities=None, step="season"):
+                  seasons=None,
+                  languages=None,
+                  qualities=None,
+                  step="season"):
 
     lines = [
         f"<b>○ {small_caps('Title')}: {small_caps(series)}</b>",
@@ -97,9 +93,9 @@ def build_caption(series, year, genre, rating,
     return "\n".join(lines)
 
 
-# -------------------------------------------------
+# =================================================
 # KEYBOARD HELPERS
-# -------------------------------------------------
+# =================================================
 
 def build_grid_keyboard(items, cb_builder, per_row=2):
 
@@ -130,8 +126,10 @@ def build_season_pages(seasons, uid, series, page=0):
 
     for s in chunk:
         row.append(
-            BTN(f"Season {s}",
-                callback_data=f"gss|{uid}|{series}|{s}")
+            BTN(
+                f"Season {s}",
+                callback_data=f"gss|{uid}|{series}|{s}"
+            )
         )
 
         if len(row) == 3:
@@ -164,14 +162,15 @@ def build_season_pages(seasons, uid, series, page=0):
     return InlineKeyboardMarkup(rows)
 
 
-# -------------------------------------------------
+# =================================================
 # MAIN REGISTER
-# -------------------------------------------------
+# =================================================
 
 def register_filters(cyber: Client):
 
-    # ---------------- SEARCH ----------------
-
+    # -------------------------------------------------
+    # SEARCH
+    # -------------------------------------------------
     @cyber.on_message(filters.text & (filters.private | filters.group))
     async def search_handler(_, m):
 
@@ -212,8 +211,9 @@ def register_filters(cyber: Client):
                 reply_markup=kb
             )
 
-    # ---------------- SPELL SELECT ----------------
-
+    # -------------------------------------------------
+    # SPELL SELECT
+    # -------------------------------------------------
     @cyber.on_callback_query(filters.regex("^sug\\|"))
     async def sug(_, q):
 
@@ -240,8 +240,9 @@ def register_filters(cyber: Client):
     async def close_spell(_, q):
         await q.message.delete()
 
-    # ---------------- PAGINATION ----------------
-
+    # -------------------------------------------------
+    # PAGINATION
+    # -------------------------------------------------
     @cyber.on_callback_query(filters.regex("^spg\\|"))
     async def spg(_, q):
 
@@ -259,8 +260,9 @@ def register_filters(cyber: Client):
     async def noop(_, q):
         await q.answer()
 
-    # ---------------- SEASON → LANGUAGE ----------------
-
+    # -------------------------------------------------
+    # SEASON → LANGUAGE
+    # -------------------------------------------------
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q):
 
@@ -277,10 +279,6 @@ def register_filters(cyber: Client):
             lambda l: f"gls|{uid}|{series}|{season}|{l}"
         )
 
-        kb.inline_keyboard.append([
-            BTN("⬅ Back", callback_data=f"back_season|{uid}|{series}")
-        ])
-
         await q.message.edit_caption(
             build_caption(
                 series, year, genre, rating,
@@ -291,8 +289,9 @@ def register_filters(cyber: Client):
             reply_markup=kb
         )
 
-    # ---------------- LANGUAGE → QUALITY ----------------
-
+    # -------------------------------------------------
+    # LANGUAGE → QUALITY
+    # -------------------------------------------------
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q):
 
@@ -323,8 +322,9 @@ def register_filters(cyber: Client):
             reply_markup=kb
         )
 
-    # ---------------- QUALITY → DOWNLOAD ----------------
-
+    # -------------------------------------------------
+    # QUALITY → GENERATE PAYLOAD
+    # -------------------------------------------------
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
     async def gqs(_, q):
 
@@ -335,30 +335,8 @@ def register_filters(cyber: Client):
 
         payload = encode_payload(series, season, lang, quality, uid)
 
-        # FSUB CHECK
-        joined = await check_fsub(cyber, q.from_user.id)
-
-        if not joined:
-
-            await q.message.edit_caption(
-                fsub_text(),
-                reply_markup=build_fsub_keyboard()
-            )
-
-            WAITING_USERS[q.from_user.id] = (
-                payload,
-                q.message.chat.id,
-                q.message.id
-            )
-
-            asyncio.create_task(
-                wait_for_join(cyber, q.from_user.id)
-            )
-
-            return
-
-        # NORMAL DOWNLOAD
         bot = await cyber.get_me()
+
         link = f"https://t.me/{bot.username}?start={payload}"
 
         await q.message.edit_caption(
