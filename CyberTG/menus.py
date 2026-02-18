@@ -59,9 +59,10 @@ async def cyber_menu_handler(cyber: Client, query: CallbackQuery):
 
     user = query.from_user
     bot = await cyber.get_me()
+    user_name = user.first_name
 
     START_TEXT = (
-        f"🖤 <b>{UI(f'Hey {user.mention}!')}</b>\n\n"
+        f"🖤 <b>{UI(f'Hey {user_name}!')}</b>\n\n"
         f"{UI(f'Welcome to {bot.first_name} — your private cinema 🎬')}\n"
         f"{UI('Send series name to begin searching.')}\n\n"
         f"<blockquote>{UI('Let’s dive into entertainment 🌙')}</blockquote>"
