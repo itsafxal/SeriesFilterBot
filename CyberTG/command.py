@@ -1,7 +1,6 @@
 import io
 import asyncio
 import base64
-from utils.cyber_fsub import check_force_subscribe
 from utils.cyber_font import BTN, UI
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
@@ -42,16 +41,6 @@ def register_command_handlers(cyber: Client):
 
         uid = message.from_user.id
         await add_user(uid)
-
-        # FORCE SUB
-        is_member, invite = await check_force_subscribe(cyber, uid)
-        if not is_member:
-            return await message.reply(
-                "Join channel first",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Join", url=invite)]
-                ])
-            )
 
         # -------- DEEP LINK ----------
         if len(message.command) > 1:
