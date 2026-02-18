@@ -6,11 +6,7 @@ from pyrogram.types import (
     InputMediaPhoto
 )
 
-from config import (
-    DEFAULT_POSTER,
-    SPELL_IMG,
-    SEASONS_PER_PAGE
-)
+from config import DEFAULT_POSTER, SPELL_IMG, SEASONS_PER_PAGE
 
 from DB.database import (
     search_series,
@@ -27,7 +23,7 @@ from .poster import get_series_info
 
 
 # -------------------------------------------------
-# SEARCH LOGIC
+# SMART SEARCH LOGIC
 # -------------------------------------------------
 
 async def resolve_series_with_suggestions(text):
@@ -40,11 +36,17 @@ async def resolve_series_with_suggestions(text):
 
     exact = [r for r in results if r.lower() == text]
 
+    # EXACT exists + other matches → suggestions
+    if exact and len(results) > 1:
+        suggestions = list(dict.fromkeys(results))[:10]
+        return None, suggestions
+
+    # ONLY exact result
     if exact:
         return exact[0], []
 
+    # partial suggestions
     suggestions = list(dict.fromkeys(results))[:10]
-
     return None, suggestions
 
 
@@ -68,16 +70,13 @@ def build_caption(series, year, genre, rating,
         if seasons:
             txt = ", ".join(f"S{s}" for s in seasons)
             lines.append(f"<b>○ {small_caps('Seasons')}: {txt}</b>")
-        lines.append("")
-        lines.append(f"<b>{small_caps('Select Season')}</b>")
+        lines.append(f"\n<b>{small_caps('Select Season')}</b>")
 
     elif step == "language":
-        lines.append("")
-        lines.append(f"<b>{small_caps('Select Language')}</b>")
+        lines.append(f"\n<b>{small_caps('Select Language')}</b>")
 
     elif step == "quality":
-        lines.append("")
-        lines.append(f"<b>{small_caps('Select Quality')}</b>")
+        lines.append(f"\n<b>{small_caps('Select Quality')}</b>")
 
     return "\n".join(lines)
 
@@ -109,11 +108,13 @@ def build_season_pages(seasons, uid, series, page=0):
 
     start = page * SEASONS_PER_PAGE
     end = start + SEASONS_PER_PAGE
+
     chunk = seasons[start:end]
 
     rows, row = [], []
 
     for s in chunk:
+
         row.append(
             BTN(
                 f"Season {s}",
@@ -157,7 +158,7 @@ def build_season_pages(seasons, uid, series, page=0):
 
 def register_filters(cyber: Client):
 
-    # ---------------- SEARCH ----------------
+    # ---------- SEARCH ----------
 
     @cyber.on_message(filters.text & (filters.private | filters.group))
     async def search_handler(_, m):
@@ -167,12 +168,11 @@ def register_filters(cyber: Client):
 
         series, suggestions = await resolve_series_with_suggestions(m.text)
 
-        # EXACT RESULT
+        # DIRECT RESULT
         if series:
 
             poster, year, genre, rating = await get_series_info(series)
             summary = await get_series_summary(series)
-
             seasons = list(summary["seasons"])
 
             kb = build_season_pages(seasons, m.from_user.id, series)
@@ -193,8 +193,8 @@ def register_filters(cyber: Client):
 
             kb = InlineKeyboardMarkup(
                 [[BTN(s, callback_data=f"sug|{s}")]
-                 for s in suggestions[:8]]
-                + [[BTN("Close", callback_data="close_spell")]]
+                 for s in suggestions[:8]] +
+                [[BTN("Close", callback_data="close_spell")]]
             )
 
             await m.reply_photo(
@@ -203,7 +203,7 @@ def register_filters(cyber: Client):
                 reply_markup=kb
             )
 
-    # ---------------- SPELL SELECT ----------------
+    # ---------- SPELL SELECT ----------
 
     @cyber.on_callback_query(filters.regex("^sug\\|"))
     async def sug(_, q):
@@ -211,9 +211,7 @@ def register_filters(cyber: Client):
         series = q.data.split("|", 1)[1]
 
         poster, year, genre, rating = await get_series_info(series)
-        summary = await get_series_summary(series)
-
-        seasons = list(summary["seasons"])
+        seasons = list((await get_series_summary(series))["seasons"])
 
         kb = build_season_pages(seasons, q.from_user.id, series)
 
@@ -236,7 +234,7 @@ def register_filters(cyber: Client):
         await q.message.delete()
         await q.answer()
 
-    # ---------------- PAGINATION ----------------
+    # ---------- PAGINATION ----------
 
     @cyber.on_callback_query(filters.regex("^spg\\|"))
     async def spg(_, q):
@@ -257,7 +255,7 @@ def register_filters(cyber: Client):
     async def noop(_, q):
         await q.answer()
 
-    # ---------------- SEASON → LANGUAGE ----------------
+    # ---------- SEASON → LANGUAGE ----------
 
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q):
@@ -281,7 +279,7 @@ def register_filters(cyber: Client):
         await q.message.edit_reply_markup(kb)
         await q.answer()
 
-    # ---------------- LANGUAGE → QUALITY ----------------
+    # ---------- LANGUAGE → QUALITY ----------
 
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q):
@@ -307,7 +305,7 @@ def register_filters(cyber: Client):
         await q.message.edit_reply_markup(kb)
         await q.answer()
 
-    # ---------------- BACK BUTTONS ----------------
+    # ---------- BACK BUTTONS ----------
 
     @cyber.on_callback_query(filters.regex("^back_season\\|"))
     async def back_season(_, q):
@@ -346,7 +344,7 @@ def register_filters(cyber: Client):
         await q.message.edit_reply_markup(kb)
         await q.answer()
 
-    # ---------------- QUALITY → DOWNLOAD ----------------
+    # ---------- QUALITY → DOWNLOAD ----------
 
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
     async def gqs(_, q):
