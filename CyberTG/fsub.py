@@ -1,29 +1,60 @@
 from pyrogram import Client, filters, enums
+from pyrogram.types import InlineKeyboardMarkup
 from pyrogram.errors import ChatAdminRequired, PeerIdInvalid
-from pyrogram.types import (
-    ChatJoinRequest,
-    InlineKeyboardMarkup
-)
 
 from config import ADMINS
 from utils.font_helper import BTN, UI
+from database import db
 
 
 # =================================================
-# RUNTIME STORAGE (NO temp.py NEEDED)
+# GLOBAL VALUES
 # =================================================
 
-# channel + invite link
 FSUB_CHANNEL = None
 FSUB_LINK = None
 
-# pending users waiting for join
-# user_id -> payload
-PENDING_USERS = {}
+
+# =================================================
+# LOAD SETTINGS ON START
+# =================================================
+
+async def load_fsub_settings():
+
+    global FSUB_CHANNEL, FSUB_LINK
+
+    data = await db.get_global_setting("fsub_channel")
+
+    if data:
+        FSUB_CHANNEL = data.get("chat_id")
+        FSUB_LINK = data.get("invite_link")
 
 
 # =================================================
-# ADMIN COMMAND → SET FSUB
+# SAVE SETTINGS
+# =================================================
+
+async def save_fsub_settings():
+
+    await db.set_global_setting(
+        "fsub_channel",
+        {
+            "chat_id": FSUB_CHANNEL,
+            "invite_link": FSUB_LINK
+        }
+    )
+
+
+# =================================================
+# DELETE SETTINGS
+# =================================================
+
+async def clear_fsub_settings():
+    await db.delete_global_setting("fsub_channel")
+
+
+# =================================================
+# SET FSUB CHANNEL
 # =================================================
 
 @Client.on_message(filters.command("sub1") & filters.user(ADMINS))
@@ -46,21 +77,20 @@ async def set_sub1(bot, m):
         return await m.reply("❌ Bot must be admin in channel.")
 
     except PeerIdInvalid:
-        return await m.reply("❌ Bot not inside this channel.")
+        return await m.reply("❌ Bot not inside channel.")
 
-    # create JOIN REQUEST invite
-    link_obj = await bot.create_chat_invite_link(
-        chat.id,
-        creates_join_request=True
-    )
+    # NORMAL invite link (NOT request join)
+    link_obj = await bot.create_chat_invite_link(chat.id)
 
     FSUB_CHANNEL = chat.id
     FSUB_LINK = link_obj.invite_link
 
+    await save_fsub_settings()
+
     await m.reply(
         f"✅ Force Subscribe Set\n\n"
-        f"🆔 ID: `{chat.id}`\n"
-        f"📝 Name: {chat.title}\n"
+        f"🆔 `{chat.id}`\n"
+        f"📝 {chat.title}\n"
         f"🔗 [Join Link]({FSUB_LINK})",
         parse_mode=enums.ParseMode.MARKDOWN
     )
@@ -82,14 +112,29 @@ async def view_sub(bot, m):
     except:
         title = "Unknown"
 
-    text = (
-        f"📊 Force Subscribe Status\n\n"
+    await m.reply(
+        f"📊 FSUB STATUS\n\n"
         f"ID: `{FSUB_CHANNEL}`\n"
         f"Name: {title}\n"
         f"Link: {FSUB_LINK}"
     )
 
-    await m.reply(text)
+
+# =================================================
+# DELETE FSUB CHANNEL
+# =================================================
+
+@Client.on_message(filters.command("delchat") & filters.user(ADMINS))
+async def delchat(bot, m):
+
+    global FSUB_CHANNEL, FSUB_LINK
+
+    FSUB_CHANNEL = None
+    FSUB_LINK = None
+
+    await clear_fsub_settings()
+
+    await m.reply("✅ Force Subscribe removed.")
 
 
 # =================================================
@@ -117,64 +162,20 @@ async def check_fsub(bot, user_id):
 
 
 # =================================================
-# BUILD FSUB UI
+# FSUB UI
 # =================================================
 
 def build_fsub_keyboard():
 
     return InlineKeyboardMarkup([
-        [BTN("➕ REQUEST TO JOIN", url=FSUB_LINK)]
+        [BTN("➕ JOIN CHANNEL", url=FSUB_LINK)],
+        [BTN("✅ REFRESH", callback_data="fsub_refresh")]
     ])
 
 
 def fsub_text():
 
     return UI(
-        "⚠️ You must join required channel.\n"
-        "After approval files will start automatically."
+        "⚠️ You must join the channel first.\n"
+        "After joining press Refresh."
     )
-
-
-# =================================================
-# SAVE USER WAITING FOR FSUB
-# =================================================
-
-def save_pending(user_id, payload):
-    PENDING_USERS[user_id] = payload
-
-
-def pop_pending(user_id):
-    return PENDING_USERS.pop(user_id, None)
-
-
-# =================================================
-# AUTO APPROVE JOIN REQUEST
-# =================================================
-
-@Client.on_chat_join_request()
-async def join_request(bot, join_req: ChatJoinRequest):
-
-    global FSUB_CHANNEL
-
-    try:
-
-        if join_req.chat.id != FSUB_CHANNEL:
-            return
-
-        user_id = join_req.from_user.id
-
-        # approve instantly
-        await join_req.approve()
-
-        # check pending download
-        payload = pop_pending(user_id)
-
-        if payload:
-            # AUTO START FILE DELIVERY
-            await bot.send_message(
-                user_id,
-                f"/start {payload}"
-            )
-
-    except Exception as e:
-        print("JOIN REQUEST ERROR:", e)
