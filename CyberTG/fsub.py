@@ -4,7 +4,7 @@ from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup
 from pyrogram.errors import ChatAdminRequired, PeerIdInvalid
 
-from config import ADMINS
+from config import ADMINS as ADMIN_USERS
 from utils.font_helper import BTN, UI
 from database import db
 
