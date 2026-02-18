@@ -6,6 +6,7 @@ from CyberTG.command import register_command_handlers
 from CyberTG.menus import register_menu_handlers
 from CyberTG.index import index_files_task, lock, INDEX_STATUS_KEY, register_index_handlers
 from CyberTG.filters import register_filters
+from CyberTG.fsub import load_fsub_settings
 from DB.database import initialize_sql_db, get_global_setting, set_global_setting
 from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -73,8 +74,11 @@ async def run_bot_async(cyber: Client):
     logger.info("Starting bot client connection...")
     await cyber.start()
     logger.info("Bot is running. Waiting for updates...")
-
-    # Register index handlers (so callback_query handlers like cancel work)
+    try:
+        await load_fsub_settings()
+        logger.info("✅ Fsub settings loaded.")
+    except Exception as e:
+        logger.exception("Failed to load fsub settings: %s", e)
     try:
         register_index_handlers(cyber)
     except Exception as e:
