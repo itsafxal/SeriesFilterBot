@@ -300,5 +300,9 @@ def register_command_handlers(cyber: Client):
         broadcast,
         deleteall,
         deletefile,
-        total
+        total,
+        send_logs_cmd,
+        add_index_channel,
+        delete_index_channel,
+        list_index_channels,
     ]
