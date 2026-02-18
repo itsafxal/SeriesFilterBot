@@ -6,7 +6,6 @@ from CyberTG.command import register_command_handlers
 from CyberTG.menus import register_menu_handlers
 from CyberTG.index import index_files_task, lock, INDEX_STATUS_KEY, register_index_handlers
 from CyberTG.filters import register_filters
-from CyberTG.fsub import register_fsub_handlers
 from CyberTG.fsub import load_fsub_settings
 from DB.database import initialize_sql_db, get_global_setting, set_global_setting
 from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS
@@ -133,7 +132,6 @@ def main():
 
     # Register handlers
     register_command_handlers(cyber)
-    register_fsub_handlers(cyber)
     register_menu_handlers(cyber)
     register_filters(cyber)
 
