@@ -231,9 +231,9 @@ def search_series_sync(query: str):
     """, (q,))
     for r in cursor.fetchall():
         unique_results.add(r[0])
-    if unique_results: 
-        conn.close()
-        return tuple(unique_results)
+    #if unique_results: 
+    #    conn.close()
+    #    return tuple(unique_results)
 
 
     # 2) Full-Phrase match (Partial, using all words in order) - e.g. "Game of" in "Game of Thrones"
