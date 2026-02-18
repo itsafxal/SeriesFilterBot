@@ -1,30 +1,36 @@
-from pyrogram import enums
-from DB.database import get_global_setting
-from config import logger
+from pyrogram.errors import UserNotParticipant
+from pyrogram.types import InlineKeyboardMarkup
+from utils.cyber_font import BTN, UI
+
+from config import FORCE_SUB_CHANNELS
 
 
-async def check_force_subscribe(cyber, user_id):
+async def check_fsub(cyber, user_id):
 
-    channel = await get_global_setting("FORCE_SUB_CHANNEL_ID", None)
-    if not channel:
-        return True, None
+    not_joined = []
 
-    channel = int(channel)
+    for ch in FORCE_SUB_CHANNELS:
+        try:
+            await cyber.get_chat_member(ch, user_id)
+        except UserNotParticipant:
+            not_joined.append(ch)
+        except Exception:
+            pass
 
-    try:
-        member = await cyber.get_chat_member(channel, user_id)
+    return not_joined
 
-        if member.status in [
-            enums.ChatMemberStatus.MEMBER,
-            enums.ChatMemberStatus.ADMINISTRATOR,
-            enums.ChatMemberStatus.OWNER
-        ]:
-            return True, None
 
-        chat = await cyber.get_chat(channel)
-        return False, chat.invite_link
+def build_fsub_keyboard(channels, payload):
 
-    except Exception as e:
-        logger.error(e)
-        chat = await cyber.get_chat(channel)
-        return False, chat.invite_link
+    rows = []
+
+    for ch in channels:
+        rows.append([
+            BTN("➕ Join Channel", url=f"https://t.me/{str(ch).replace('@','')}")
+        ])
+
+    rows.append([
+        BTN("✅ Refresh", callback_data=f"fsub_refresh|{payload}")
+    ])
+
+    return InlineKeyboardMarkup(rows)
