@@ -6,7 +6,7 @@ from pyrogram.types import (
     ChatJoinRequest
 )
 
-from utils.font_helper import BTN, UI
+from utils.cyber_font import BTN, UI
 from DB.database import (
     get_global_setting,
     set_global_setting
