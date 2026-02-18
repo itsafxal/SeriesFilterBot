@@ -14,8 +14,8 @@ from DB.database import (
     delete_all_index_states,
     get_index_channels,
 )
-from utils.index_helper import save_series_file_for_bulk_index
-from utils.filter_helper import extract_links
+from utils.cyber_index import save_series_file_for_bulk_index
+from utils.cyber_filter import extract_links
 
 # ------------------ GLOBAL SETTINGS ------------------
 lock = asyncio.Lock()
