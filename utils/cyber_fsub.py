@@ -1,36 +1,52 @@
-from pyrogram.errors import UserNotParticipant
 from pyrogram.types import InlineKeyboardMarkup
-from utils.cyber_font import BTN, UI
-
-from config import FORCE_SUB_CHANNELS
-
-
-async def check_fsub(cyber, user_id):
-
-    not_joined = []
-
-    for ch in FORCE_SUB_CHANNELS:
-        try:
-            await cyber.get_chat_member(ch, user_id)
-        except UserNotParticipant:
-            not_joined.append(ch)
-        except Exception:
-            pass
-
-    return not_joined
+from utils.font_helper import BTN, UI
+import temp
 
 
-def build_fsub_keyboard(channels, payload):
+PENDING_FSUB = {}
 
-    rows = []
+async def check_fsub(bot, user_id):
 
-    for ch in channels:
-        rows.append([
-            BTN("➕ Join Channel", url=f"https://t.me/{str(ch).replace('@','')}")
-        ])
+    if not temp.REQ_CHANNEL1:
+        return True  # no fsub set
 
-    rows.append([
-        BTN("✅ Refresh", callback_data=f"fsub_refresh|{payload}")
+    try:
+        member = await bot.get_chat_member(
+            temp.REQ_CHANNEL1,
+            user_id
+        )
+
+        if member.status in ["left", "kicked"]:
+            return False
+
+    except Exception:
+        return False
+
+    return True
+
+
+def save_pending(user_id, payload):
+    PENDING_FSUB[user_id] = payload
+
+
+def get_pending(user_id):
+    return PENDING_FSUB.get(user_id)
+
+
+def pop_pending(user_id):
+    return PENDING_FSUB.pop(user_id, None)
+
+
+def build_fsub_keyboard(bot):
+
+    return InlineKeyboardMarkup([
+        [BTN("➕ REQUEST TO JOIN", url=bot.req_link1)]
     ])
 
-    return InlineKeyboardMarkup(rows)
+
+def fsub_text():
+
+    return UI(
+        "⚠️ You must join required channel.\n"
+        "After approval files will start automatically."
+    )
