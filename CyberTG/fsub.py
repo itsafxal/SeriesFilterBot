@@ -111,7 +111,7 @@ def register_fsub_handlers(cyber: Client):
     # ---------------------------------------------
     # VIEW FSUB
     # ---------------------------------------------
-    @cyber.on_message(filters.command("view_sub") & filters.user(ADMIN_USERS))
+    @cyber.on_message(filters.command("viewsub") & filters.user(ADMIN_USERS))
     async def view_sub(_, m):
 
         if not FSUB_CHANNEL:
@@ -133,7 +133,7 @@ def register_fsub_handlers(cyber: Client):
     # ---------------------------------------------
     # DELETE FSUB
     # ---------------------------------------------
-    @cyber.on_message(filters.command("delchat") & filters.user(ADMIN_USERS))
+    @cyber.on_message(filters.command("delsub") & filters.user(ADMIN_USERS))
     async def delchat(_, m):
 
         global FSUB_CHANNEL, FSUB_LINK
