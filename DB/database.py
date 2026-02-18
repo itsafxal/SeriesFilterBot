@@ -1,13 +1,8 @@
-
-# database.py
 import asyncio
 import re
 from pymongo import MongoClient, TEXT, DESCENDING
-# Assuming config.py contains MONGO_URI and logger
 from config import MONGO_URI, logger
 
-# --- MONGODB CONFIG & STATE ---
-# ... (MongoDB setup remains the same)
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["SeriesBotDB"]
 files_collection = db["files"] 
@@ -15,7 +10,6 @@ state_collection = db["bot_state"]
 users_collection = db["users"]
 pending_collection = db["pending_delivery"]
 
-# Ensure MongoDB Indexes (for search/backup if needed)
 try:
     files_collection.create_index([("normalized_name", 1), ("season", 1)], background=True)
     files_collection.create_index(
@@ -30,8 +24,6 @@ try:
 except Exception as e:
     logger.error(f"❌ Failed to ensure/create MongoDB Indexes: {e}")
 
-# --- SQLITE CONFIG AND IMPORT HOOK ---
-# Import necessary SQLite functions from the dedicated file
 from .sqlite_db import (
     SQLITE_DB_PATH,
     sql_db_lock,
@@ -50,28 +42,20 @@ from .sqlite_db import (
     delete_all_files_sync,
     delete_one_file_sync,
     get_total_files_sync,
-    _normalized_series_from_filename, # Import helper for MongoDB save/migration context
-    save_file_to_sql_sync, # Import sync function for use in save_file_to_db
-    clear_all_caches # <--- NEW IMPORT for cache invalidation
+    _normalized_series_from_filename, 
+    save_file_to_sql_sync, 
+    clear_all_caches 
 )
-
-# --- MIGRATION / INITIALIZATION ---
-# ... (initialize_sql_db remains the same)
 
 def initialize_sql_db():
     """Synchronously initializes the SQL database and runs the migration + repair."""
     logger.info("Starting migration from MongoDB to SQLite...")
-    # Pass MongoDB collection and logger to the sync function
     migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema, logger)
     try:
         repair_normalized_names_in_sqlite_sync(logger)
     except Exception as e:
         logger.error(f"repair_normalized_names_in_sqlite failed: {e}")
     logger.info("SQLite initialization complete.")
-
-
-# --- BOT STATE FUNCTIONS (MongoDB) ---
-# ... (save_bot_state, get_bot_state remain the same)
 
 async def save_bot_state(chat_id, last_msg_id):
     """Saves the last processed message ID for a given chat to resume later."""
@@ -90,10 +74,6 @@ async def get_bot_state(chat_id):
         return doc.get("last_indexed_id") if doc else None
     return await asyncio.to_thread(sync_get)
 
-
-# --- GLOBAL SETTINGS (MongoDB) ---
-# ... (set_global_setting, get_global_setting remain the same)
-
 async def set_global_setting(key: str, value):
     """Sets a global bot configuration setting."""
     GLOBAL_DOC_ID = "GLOBAL_CONFIG"
@@ -105,7 +85,6 @@ async def set_global_setting(key: str, value):
         )
     await asyncio.to_thread(sync_set)
     logger.info(f"💾 Global setting '{key}' set to: {value}")
-
 
 async def get_global_setting(key: str, default_value=None):
     """Retrieves a global bot configuration setting."""
@@ -127,8 +106,6 @@ async def get_all_bot_state_keys():
     """Return list of all state keys stored."""
     return await asyncio.to_thread(lambda: list(state_collection.distinct("_id")))
 
-# ---------------- INDEX CHANNEL SETTINGS ----------------
-
 async def get_index_channels():
     """Returns all dynamic index channel IDs stored in DB."""
     return await get_global_setting("INDEX_CHANNELS", [])
@@ -137,15 +114,10 @@ async def set_index_channels(channel_list: list):
     """Stores all index channel IDs in DB."""
     await set_global_setting("INDEX_CHANNELS", channel_list)
 
-# --- NEW FUNCTION: Get Series Summary (SQLite Async Wrapper) ---
-
 async def get_series_summary(series_name: str):
     """Gets all unique languages, seasons, and qualities for a series."""
     async with sql_db_lock:
         return await asyncio.to_thread(get_series_summary_sync, series_name)
-
-
-# --- SEARCH AND RETRIEVAL FUNCTIONS (SQLite Async Wrappers) ---
 
 async def search_series(query: str):
     async with sql_db_lock:
@@ -175,8 +147,6 @@ async def get_unique_qualities_by_lang_season(series_name: str, language: str, s
     async with sql_db_lock:
         return await asyncio.to_thread(get_unique_qualities_by_lang_season_sync, series_name, language, season)
 
-
-# --- NEW FUNCTION for Click-to-Download (SQLite Async Wrapper) ---
 async def get_file_by_message_id_and_channel_id(channel_id: int, message_id: int):
     async with sql_db_lock:
         return await asyncio.to_thread(get_file_by_message_id_and_channel_id_sync, channel_id, message_id)
@@ -184,7 +154,6 @@ async def get_file_by_message_id_and_channel_id(channel_id: int, message_id: int
 async def save_file_to_db(file_doc: dict):
     """Inserts/updates a single file document into BOTH MongoDB and SQLITE."""
     def sync_save():
-        # --- 1. Save to MongoDB ---
         mongo_success = False
         try:
             files_collection.update_one(
@@ -196,25 +165,21 @@ async def save_file_to_db(file_doc: dict):
         except Exception as e:
             logger.error(f"Failed to insert/update file doc in MongoDB: {e}")
 
-        # --- 2. Save to SQLITE (using its sync function) ---
         sql_success = save_file_to_sql_sync(file_doc, logger) 
         
-        # Invalidate the cache after a successful write
         if sql_success or mongo_success:
-            clear_all_caches() # <--- NEW CALL
+            clear_all_caches() 
 
         return sql_success 
 
     return await asyncio.to_thread(sync_save)
-
-# --- NEW DELETE AND COUNT FUNCTIONS (SQLite Async Wrappers + MongoDB) ---
 
 async def delete_all_files():
     """delete all files from mongo + sqlite"""
     def sync_clear():
         files_collection.delete_many({})
         delete_all_files_sync()
-        clear_all_caches() # <--- NEW CALL
+        clear_all_caches() 
     await asyncio.to_thread(sync_clear)
 
 
@@ -223,7 +188,7 @@ async def delete_one_file(channel_id: int, msg_id: int):
     def sync_delete():
         files_collection.delete_one({"channel_id": channel_id, "message_id": msg_id})
         delete_one_file_sync(channel_id, msg_id)
-        clear_all_caches() # <--- NEW CALL
+        clear_all_caches() 
     await asyncio.to_thread(sync_delete)
 
 
@@ -232,8 +197,6 @@ async def get_total_files():
     async with sql_db_lock:
         return await asyncio.to_thread(get_total_files_sync)
 
-# --- USER FUNCTIONS (MongoDB) ---
-# ... (user functions remain the same)
 async def add_user(user_id: int):
     def sync_add():
         users_collection.update_one(
