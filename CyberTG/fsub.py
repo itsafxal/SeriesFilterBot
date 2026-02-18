@@ -6,7 +6,7 @@ from pyrogram.errors import ChatAdminRequired, PeerIdInvalid
 
 from config import ADMIN_USERS as ADMINS
 from utils.cyber_font import BTN, UI
-from database import db
+from DB.database import db
 
 
 # =================================================
