@@ -5,8 +5,6 @@ import base64
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
     Message,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton
 )
 
 from config import (
@@ -35,8 +33,9 @@ from .files import (
 
 from .fsub import (
     check_fsub,
+    fsub_text,
     build_fsub_keyboard,
-    fsub_text
+    save_pending
 )
 
 
@@ -62,20 +61,34 @@ def register_command_handlers(cyber: Client):
 
             payload = message.command[1]
 
-            # ===============================
-            # SEND FILE PAYLOAD
-            # ===============================
+            # =========================================
+            # SEND PAYLOAD
+            # =========================================
             if payload.startswith("send_"):
 
+                # ------------------------------
                 # FSUB CHECK FIRST
+                # ------------------------------
                 joined = await check_fsub(cyber, uid)
 
                 if not joined:
+
+                    bot = await cyber.get_me()
+
+                    # save pending payload
+                    save_pending(uid, payload)
+
                     return await message.reply(
                         fsub_text(),
-                        reply_markup=build_fsub_keyboard()
+                        reply_markup=build_fsub_keyboard(
+                            bot.username,
+                            payload
+                        )
                     )
 
+                # ------------------------------
+                # PAYLOAD DECODE
+                # ------------------------------
                 try:
                     data = payload.replace("send_", "")
                     data += "=" * (-len(data) % 4)
@@ -83,6 +96,7 @@ def register_command_handlers(cyber: Client):
                     raw = base64.urlsafe_b64decode(data).decode()
 
                     parts = raw.split("|")
+
                     if len(parts) != 5:
                         return await message.reply("Invalid link.")
 
@@ -99,7 +113,9 @@ def register_command_handlers(cyber: Client):
                     logger.error(f"PAYLOAD ERROR: {e}")
                     return await message.reply("Invalid link.")
 
-                # SAVE SESSION
+                # ------------------------------
+                # START FILE DELIVERY
+                # ------------------------------
                 set_session(uid, {
                     "series": series,
                     "season": season,
@@ -107,18 +123,45 @@ def register_command_handlers(cyber: Client):
                     "quality": quality
                 })
 
-                # START DELIVERY
                 await deliver_files_direct(cyber, uid)
                 return
 
         # ---------------------------------------------
         # NORMAL START MESSAGE
         # ---------------------------------------------
+        # NORMAL START
         bot = await cyber.get_me()
+        user = message.from_user
+        user_name = user.first_name
+
+        START_TEXT = (
+            f"<b>{UI(f'Hey {user_name}!')}</b>\n\n"
+            f"<b>{UI(f'Welcome to {bot.first_name}')}</b>\n\n"
+            f"{UI('Your private cinema inside Telegram 🎬')}\n"
+            f"{UI('Send any series name to begin.')}\n\n"
+            f"<blockquote>{UI('Let’s dive into entertainment 🌙')}</blockquote>"
+        )
+
+        CYBER_KEYBOARD = InlineKeyboardMarkup([
+            [
+                BTN("🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞",
+                    switch_inline_query_current_chat="")
+            ],
+            [
+                BTN("⚡ ʜᴇʟᴘ", callback_data="help|menu"),
+                BTN("ᴀʙᴏᴜᴛ ✨", callback_data="about|menu")
+            ],
+            [
+                BTN("🍷 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ 🍷",
+                    url="https://t.me/TomxSupport")
+            ]
+        ])
 
         await message.reply_photo(
             START_IMG,
-            caption=f"Welcome to {bot.first_name}\n\nSend series name."
+            caption=START_TEXT,
+            reply_markup=CYBER_KEYBOARD,
+            parse_mode=enums.ParseMode.HTML
         )
 
     # =================================================
@@ -165,7 +208,7 @@ def register_command_handlers(cyber: Client):
         await m.reply("🗑️ All files deleted.")
 
     # =================================================
-    # DELETE SINGLE FILE
+    # DELETE ONE FILE
     # =================================================
     @cyber.on_message(filters.command("deletefile") & filters.user(ADMIN_USERS))
     async def deletefile(_, m):
@@ -199,7 +242,6 @@ def register_command_handlers(cyber: Client):
                     + log_content[-(MAX_LOG_SIZE // 2):]
                 )
 
-            # IMPORTANT FIX
             log_file = io.BytesIO(
                 log_content.encode("utf-8")
             )
@@ -216,7 +258,7 @@ def register_command_handlers(cyber: Client):
             await message.reply("Failed to send logs.")
 
     # =================================================
-    # ADD INDEX CHANNEL
+    # INDEX CHANNEL MANAGEMENT
     # =================================================
     @cyber.on_message(filters.command("addindex") & filters.user(ADMIN_USERS))
     async def add_index_channel(_, message):
@@ -225,7 +267,6 @@ def register_command_handlers(cyber: Client):
             return await message.reply("Usage:\n/addindex <channel_id>")
 
         cid = int(message.command[1])
-
         channels = await get_index_channels()
 
         if cid in channels:
@@ -234,11 +275,8 @@ def register_command_handlers(cyber: Client):
         channels.append(cid)
         await set_index_channels(channels)
 
-        await message.reply(f"✅ Added: `{cid}`")
+        await message.reply(f"✅ Added `{cid}`")
 
-    # =================================================
-    # DELETE INDEX CHANNEL
-    # =================================================
     @cyber.on_message(filters.command("delindex") & filters.user(ADMIN_USERS))
     async def del_index_channel(_, message):
 
@@ -246,7 +284,6 @@ def register_command_handlers(cyber: Client):
             return await message.reply("Usage:\n/delindex <channel_id>")
 
         cid = int(message.command[1])
-
         channels = await get_index_channels()
 
         if cid not in channels:
@@ -257,9 +294,6 @@ def register_command_handlers(cyber: Client):
 
         await message.reply(f"🗑️ Removed `{cid}`")
 
-    # =================================================
-    # LIST INDEX CHANNELS
-    # =================================================
     @cyber.on_message(filters.command("listindex") & filters.user(ADMIN_USERS))
     async def list_index_channels(_, message):
 
@@ -269,9 +303,7 @@ def register_command_handlers(cyber: Client):
             return await message.reply("No index channels.")
 
         text = "📝 Index Channels:\n\n"
-
-        for cid in channels:
-            text += f"• `{cid}`\n"
+        text += "\n".join([f"• `{c}`" for c in channels])
 
         await message.reply(
             text,
