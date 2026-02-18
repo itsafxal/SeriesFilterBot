@@ -23,7 +23,7 @@ from .poster import get_series_info
 
 
 # -------------------------------------------------
-# SMART SEARCH LOGIC
+# SMART SEARCH
 # -------------------------------------------------
 
 async def resolve_series_with_suggestions(text):
@@ -34,24 +34,25 @@ async def resolve_series_with_suggestions(text):
     if not results:
         return None, []
 
-    exact = [r for r in results if r.lower() == text]
+    # normalize
+    unique = list(dict.fromkeys(results))
 
-    # EXACT exists + other matches → suggestions
-    if exact and len(results) > 1:
-        suggestions = list(dict.fromkeys(results))[:10]
-        return None, suggestions
+    exact = [r for r in unique if r.lower() == text]
 
-    # ONLY exact result
+    # EXACT + MORE RESULTS → suggestions
+    if exact and len(unique) > 1:
+        return None, unique[:10]
+
+    # ONLY EXACT → direct
     if exact:
         return exact[0], []
 
-    # partial suggestions
-    suggestions = list(dict.fromkeys(results))[:10]
-    return None, suggestions
+    # partial → suggestions
+    return None, unique[:10]
 
 
 # -------------------------------------------------
-# CAPTION BUILDER
+# CAPTION
 # -------------------------------------------------
 
 def build_caption(series, year, genre, rating,
@@ -114,7 +115,6 @@ def build_season_pages(seasons, uid, series, page=0):
     rows, row = [], []
 
     for s in chunk:
-
         row.append(
             BTN(
                 f"Season {s}",
@@ -153,12 +153,12 @@ def build_season_pages(seasons, uid, series, page=0):
 
 
 # -------------------------------------------------
-# MAIN REGISTER
+# REGISTER
 # -------------------------------------------------
 
 def register_filters(cyber: Client):
 
-    # ---------- SEARCH ----------
+    # ---------------- SEARCH ----------------
 
     @cyber.on_message(filters.text & (filters.private | filters.group))
     async def search_handler(_, m):
@@ -172,8 +172,7 @@ def register_filters(cyber: Client):
         if series:
 
             poster, year, genre, rating = await get_series_info(series)
-            summary = await get_series_summary(series)
-            seasons = list(summary["seasons"])
+            seasons = list((await get_series_summary(series))["seasons"])
 
             kb = build_season_pages(seasons, m.from_user.id, series)
 
@@ -193,8 +192,8 @@ def register_filters(cyber: Client):
 
             kb = InlineKeyboardMarkup(
                 [[BTN(s, callback_data=f"sug|{s}")]
-                 for s in suggestions[:8]] +
-                [[BTN("Close", callback_data="close_spell")]]
+                 for s in suggestions[:8]]
+                + [[BTN("Close", callback_data="close_spell")]]
             )
 
             await m.reply_photo(
@@ -203,7 +202,7 @@ def register_filters(cyber: Client):
                 reply_markup=kb
             )
 
-    # ---------- SPELL SELECT ----------
+    # ---------------- SPELL SELECT ----------------
 
     @cyber.on_callback_query(filters.regex("^sug\\|"))
     async def sug(_, q):
@@ -234,7 +233,7 @@ def register_filters(cyber: Client):
         await q.message.delete()
         await q.answer()
 
-    # ---------- PAGINATION ----------
+    # ---------------- PAGINATION ----------------
 
     @cyber.on_callback_query(filters.regex("^spg\\|"))
     async def spg(_, q):
@@ -255,7 +254,7 @@ def register_filters(cyber: Client):
     async def noop(_, q):
         await q.answer()
 
-    # ---------- SEASON → LANGUAGE ----------
+    # ---------------- SEASON → LANGUAGE ----------------
 
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q):
@@ -279,7 +278,7 @@ def register_filters(cyber: Client):
         await q.message.edit_reply_markup(kb)
         await q.answer()
 
-    # ---------- LANGUAGE → QUALITY ----------
+    # ---------------- LANGUAGE → QUALITY ----------------
 
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q):
@@ -305,7 +304,7 @@ def register_filters(cyber: Client):
         await q.message.edit_reply_markup(kb)
         await q.answer()
 
-    # ---------- BACK BUTTONS ----------
+    # ---------------- BACK BUTTONS ----------------
 
     @cyber.on_callback_query(filters.regex("^back_season\\|"))
     async def back_season(_, q):
@@ -344,7 +343,7 @@ def register_filters(cyber: Client):
         await q.message.edit_reply_markup(kb)
         await q.answer()
 
-    # ---------- QUALITY → DOWNLOAD ----------
+    # ---------------- QUALITY → DOWNLOAD ----------------
 
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
     async def gqs(_, q):
