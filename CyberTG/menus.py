@@ -6,7 +6,7 @@ from pyrogram.types import (
 )
 
 from config import DEFAULT_POSTER, ADMIN_USERS
-from utils.font_helper import BTN, UI
+from utils.cyber_font import BTN, UI
 
 import logging
 
