@@ -23,7 +23,7 @@ from utils.cyber_font import BTN, UI, small_caps
 from .poster import get_series_info
 
 # FSUB IMPORT
-from fsub import (
+from .fsub import (
     check_fsub,
     build_fsub_keyboard,
     fsub_text,
