@@ -3,6 +3,10 @@ import re
 import sqlite3
 from functools import lru_cache
 
+BATCH_SIZE = 10000
+PROGRESS_STEP = 50000
+SUPER_BATCH_SIZE = 100000
+
 SQLITE_DB_PATH = "series_index.db"
 sql_db_lock = asyncio.Lock() 
 
@@ -97,8 +101,8 @@ def create_sql_schema(conn):
     conn.commit()
 
 def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func, logger):
-    """Migrate all Mongo files into SQLite without skipping anything."""
-    
+    """High-performance migration with progress tracking."""
+
     conn = sqlite3.connect(SQLITE_DB_PATH)
     create_sql_schema_func(conn)
     cursor = conn.cursor()
@@ -106,6 +110,9 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
     cursor.execute("DELETE FROM files")
     conn.commit()
     logger.info("ℹ️ Cleared SQLite table for fresh migration.")
+
+    doc_count = files_collection.count_documents({})
+    logger.info(f"📦 Total Mongo documents found: {doc_count}")
 
     mongo_docs = files_collection.find({}, {
         "channel_id": 1,
@@ -120,13 +127,15 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
         "_id": 0
     })
 
-    insert_data = []
+    batch = []
+    total_saved_current_collection = 0
+    last_progress_log = 0
 
     for doc in mongo_docs:
         fn = doc.get("file_name", "") or ""
         normalized = _normalized_series_from_filename(fn)
 
-        insert_data.append((
+        batch.append((
             doc.get("channel_id"),
             doc.get("message_id"),
             fn,
@@ -138,20 +147,47 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
             doc.get("file_id")
         ))
 
-    if insert_data:
-        try:
+        # 🔹 Commit batch
+        if len(batch) >= BATCH_SIZE:
             cursor.executemany("""
-                INSERT OR IGNORE INTO files 
+                INSERT OR IGNORE INTO files
                 (channel_id, message_id, file_name, normalized_name,
                  season, episode, quality, language, file_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, insert_data)
+            """, batch)
 
             conn.commit()
-            logger.info(f"✅ Migrated {len(insert_data)} documents from MongoDB to SQLite.")
+            total_saved_current_collection += len(batch)
+            batch.clear()
 
-        except Exception as e:
-            logger.error(f"❌ Bulk SQL insert failed: {e}")
+        # 🔹 Progress logging
+        if total_saved_current_collection - last_progress_log >= PROGRESS_STEP:
+            percent = (total_saved_current_collection / doc_count) * 100 if doc_count else 0
+            logger.info(
+                f"batch inserted: {total_saved_current_collection} / {doc_count} "
+                f"({percent:.2f}%)"
+            )
+            last_progress_log = total_saved_current_collection
+
+        # 🔹 Safety flush for massive DB
+        if total_saved_current_collection >= SUPER_BATCH_SIZE:
+            conn.commit()
+
+    # Insert remaining
+    if batch:
+        cursor.executemany("""
+            INSERT OR IGNORE INTO files
+            (channel_id, message_id, file_name, normalized_name,
+             season, episode, quality, language, file_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, batch)
+
+        conn.commit()
+        total_saved_current_collection += len(batch)
+
+    logger.info(
+        f"✅ Migration completed: {total_saved_current_collection} / {doc_count} files inserted."
+    )
 
     conn.close()
     
