@@ -107,26 +107,55 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
     logger.info("ℹ️ Cleared SQLite table for fresh migration.")
 
     mongo_docs = files_collection.find({}, {
-        "channel_id": 1, "message_id": 1, "file_name": 1, 
-        "normalized_name": 1, "season": 1, "episode": 1, 
-        "quality": 1, "language": 1, "file_id": 1, "_id": 0
+        "channel_id": 1,
+        "message_id": 1,
+        "file_name": 1,
+        "normalized_name": 1,
+        "season": 1,
+        "episode": 1,
+        "quality": 1,
+        "language": 1,
+        "file_id": 1,
+        "_id": 0
     })
-    
+
     unique = {}
+
     for doc in mongo_docs:
         fn = doc.get("file_name", "") or ""
         normalized = _normalized_series_from_filename(fn)
-        
+
         season = doc.get("season", 0)
         episode = doc.get("episode", 0)
         quality = doc.get("quality", "Unknown")
         language = _extract_language_local(fn)
 
         key = (normalized, season, episode, quality, language)
+
+        # 🔥 DELETE DUPLICATES FROM MONGO
         if key in unique:
-            logger.info(f"[MIGRATION SKIP] Duplicate → {normalized} | S{season}E{episode} | {quality} | {language}")
+            logger.info(
+                f"[MIGRATION DELETE] Duplicate → "
+                f"{normalized} | S{season}E{episode} | {quality} | {language}"
+            )
+
+            try:
+                files_collection.delete_one({
+                    "channel_id": doc.get("channel_id"),
+                    "message_id": doc.get("message_id")
+                })
+
+                logger.info(
+                    f"🗑 Deleted from Mongo → "
+                    f"{doc.get('channel_id')} | {doc.get('message_id')}"
+                )
+
+            except Exception as e:
+                logger.error(f"Mongo delete failed: {e}")
+
             continue
 
+        # ✅ Store unique record
         unique[key] = (
             doc.get("channel_id"),
             doc.get("message_id"),
@@ -136,7 +165,7 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
             episode,
             quality,
             language,
-            doc.get("file_id") 
+            doc.get("file_id")
         )
 
     insert_data = list(unique.values())
@@ -145,14 +174,17 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
         try:
             cursor.executemany("""
                 INSERT OR IGNORE INTO files 
-                (channel_id, message_id, file_name, normalized_name, season, episode, quality, language, file_id)
+                (channel_id, message_id, file_name, normalized_name,
+                 season, episode, quality, language, file_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, insert_data)
+
             conn.commit()
             logger.info(f"✅ Migrated {len(insert_data)} unique documents from MongoDB to SQLite.")
+
         except Exception as e:
             logger.error(f"❌ Failed to execute bulk SQL insert during migration: {e}")
-    
+
     conn.close()
     
 def repair_normalized_names_in_sqlite_sync(logger):
