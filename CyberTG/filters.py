@@ -19,6 +19,7 @@ from DB.database import (
     get_unique_qualities_by_lang_season
 )
 
+from utils.series_helper import suggest_series
 from utils.cyber_series import check_owner
 from utils.cyber_filter import encode_payload
 from utils.cyber_font import BTN, UI, small_caps
@@ -27,27 +28,43 @@ from .poster import get_series_info
 
 
 # =================================================
-# SMART SEARCH
+# SMART SEARCH (MULTI + FUZZY)
 # =================================================
 
 async def resolve_series_with_suggestions(text):
 
-    text = text.strip().lower()
-    results = await search_series(text)
+    query = text.strip().lower()
 
-    if not results:
-        return None, []
+    # Normal DB search
+    results = await search_series(query)
 
-    unique = list(dict.fromkeys(results))
+    if results:
 
-    exact = [x for x in unique if x.lower() == text]
+        unique = list(dict.fromkeys(results))
 
-    # If exact match exists → auto resolve
-    if exact:
-        return exact[0], []
+        # Only one match → auto open
+        if len(unique) == 1:
+            return unique[0], []
 
-    # Otherwise return top suggestions
-    return None, unique[:8]
+        # Smart ranking
+        def sort_key(name):
+            n = name.lower()
+            exact = (n == query)
+            starts = n.startswith(query)
+            contains = query in n
+            return (not exact, not starts, not contains, len(n))
+
+        unique.sort(key=sort_key)
+
+        return None, unique[:8]
+
+    # Wrong spelling → fuzzy fallback
+    fuzzy = await suggest_series(query)
+
+    if fuzzy:
+        return None, fuzzy[:8]
+
+    return None, []
 
 
 # =================================================
@@ -71,7 +88,7 @@ def build_caption(series, year, genre, rating,
     if step == "season":
         if seasons:
             txt = ", ".join(f"S{s}" for s in seasons)
-            lines.append(f"<b>○ {small_caps('Seasons')}: {txt}</b>")
+            lines.append(f"<b>○ {small_caps('Seasons')}: {small_caps(txt)}</b>")
         lines.append("")
         lines.append(f"<b>{small_caps('Select Season')}</b>")
 
@@ -101,7 +118,7 @@ def build_grid_keyboard(items, cb_builder, per_row=2):
     rows, row = [], []
 
     for it in items:
-        row.append(BTN(it, callback_data=cb_builder(it)))
+        row.append(BTN(small_caps(it), callback_data=cb_builder(it)))
 
         if len(row) == per_row:
             rows.append(row)
@@ -126,7 +143,7 @@ def build_season_pages(seasons, uid, series, page=0):
     for s in chunk:
         row.append(
             BTN(
-                f"Season {s}",
+                small_caps(f"Season {s}"),
                 callback_data=f"gss|{uid}|{series}|{s}"
             )
         )
@@ -144,16 +161,25 @@ def build_season_pages(seasons, uid, series, page=0):
 
         if page > 0:
             nav.append(
-                BTN("◀ Prev",
-                    callback_data=f"spg|{uid}|{series}|{page-1}")
+                BTN(
+                    small_caps("Prev"),
+                    callback_data=f"spg|{uid}|{series}|{page-1}"
+                )
             )
 
-        nav.append(BTN(f"{page+1}/{total_pages}", callback_data="noop"))
+        nav.append(
+            BTN(
+                small_caps(f"{page+1}/{total_pages}"),
+                callback_data="noop"
+            )
+        )
 
         if page < total_pages - 1:
             nav.append(
-                BTN("Next ▶",
-                    callback_data=f"spg|{uid}|{series}|{page+1}")
+                BTN(
+                    small_caps("Next"),
+                    callback_data=f"spg|{uid}|{series}|{page+1}"
+                )
             )
 
         rows.append(nav)
@@ -168,7 +194,7 @@ def build_season_pages(seasons, uid, series, page=0):
 def register_filters(cyber: Client):
 
     # -------------------------------------------------
-    # SEARCH
+    # SEARCH HANDLER
     # -------------------------------------------------
     @cyber.on_message(filters.text & (filters.private | filters.group))
     async def search_handler(_, m):
@@ -179,7 +205,7 @@ def register_filters(cyber: Client):
         series, suggestions = await resolve_series_with_suggestions(m.text)
 
         # -------------------------------------------------
-        # EXACT MATCH
+        # SINGLE MATCH
         # -------------------------------------------------
         if series:
 
@@ -200,37 +226,52 @@ def register_filters(cyber: Client):
             return
 
         # -------------------------------------------------
-        # PREMIUM SUGGESTION UI
+        # MULTIPLE OR FUZZY MATCHES
         # -------------------------------------------------
         if suggestions:
 
+            lines = [
+                f"<b>{small_caps('I Found The Following Series Matched To Your Query')}</b>",
+                f"<b>({small_caps(m.text.strip())})</b>",
+                "",
+                f"<b>{small_caps('Matched Series')}</b>"
+            ]
+
             buttons = []
 
-            for s in suggestions[:5]:
+            for s in suggestions:
                 _, year, _, _ = await get_series_info(s)
                 label = f"{s} ({year})" if year else s
+
+                lines.append(f"○ {small_caps(label)}")
+
                 buttons.append([
-                    BTN(label, callback_data=f"sug|{s}")
+                    BTN(small_caps(label), callback_data=f"sug|{s}")
                 ])
 
             buttons.append([
-                BTN("❌ Close", callback_data="close_spell")
+                BTN(small_caps("Close"), callback_data="close_spell")
             ])
 
             kb = InlineKeyboardMarkup(buttons)
 
             await m.reply_photo(
                 SPELL_IMG,
-                caption=(
-                    "🔎 <b>Multiple series matched your query</b>\n\n"
-                    "Please select the correct title below:"
-                ),
+                caption="\n".join(lines),
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb
             )
+            return
+
+        # -------------------------------------------------
+        # NOTHING FOUND
+        # -------------------------------------------------
+        await m.reply_text(
+            UI(small_caps("No Series Found. Please Try Another Title."))
+        )
 
     # -------------------------------------------------
-    # SPELL SELECT
+    # SUGGESTION CLICK
     # -------------------------------------------------
     @cyber.on_callback_query(filters.regex("^sug\\|"))
     async def sug(_, q):
@@ -341,7 +382,7 @@ def register_filters(cyber: Client):
         )
 
     # -------------------------------------------------
-    # QUALITY → GENERATE PAYLOAD
+    # QUALITY → DOWNLOAD LINK
     # -------------------------------------------------
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
     async def gqs(_, q):
@@ -354,12 +395,11 @@ def register_filters(cyber: Client):
         payload = encode_payload(series, season, lang, quality, uid)
 
         bot = await cyber.get_me()
-
         link = f"https://t.me/{bot.username}?start={payload}"
 
         await q.message.edit_caption(
-            UI("☘️ Your files are ready!\nTap below to download."),
+            UI(small_caps("Your Files Are Ready. Tap Below To Download.")),
             reply_markup=InlineKeyboardMarkup([
-                [BTN("☘️ DOWNLOAD FILES ☘️", url=link)]
+                [BTN(small_caps("Download Files"), url=link)]
             ])
         )
