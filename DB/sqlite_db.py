@@ -40,15 +40,39 @@ def _clean_series_name_local(name: str) -> str:
 def _normalized_series_from_filename(file_name: str) -> str:
     if not file_name:
         return ""
-    m = re.search(r"[sS](\d+)[._\-\s]*[eE](\d+)", file_name)
-    if not m:
-        return _clean_series_name_local(file_name)
-    left = file_name[:m.start()]
-    base = _clean_series_name_local(left) or _clean_series_name_local(file_name)
-    parts = base.split()
-    if len(parts) > 5:
-        base = " ".join(parts[:5])
-    return base.title()
+
+    name = file_name
+
+    # Remove extension
+    name = re.sub(r"\.(mkv|mp4|avi|mov)$", "", name, flags=re.IGNORECASE)
+
+    # Remove season/episode
+    name = re.sub(r"[sS]\d+\s*[eE]\d+", "", name)
+
+    # Remove years
+    name = re.sub(r"\b(19|20)\d{2}\b", "", name)
+
+    # Remove quality
+    name = re.sub(
+        r"\b(4K|1080P|720P|480P|360P|HDRIP|WEB-DL|WEBRIP|BLURAY|HDTV|HEVC|X264|X265)\b",
+        "",
+        name,
+        flags=re.IGNORECASE
+    )
+
+    # Remove brackets
+    name = re.sub(r"\[.*?\]|\(.*?\)", "", name)
+
+    # Remove symbols
+    name = re.sub(r"[-_#@]", " ", name)
+
+    # Remove standalone numbers
+    name = re.sub(r"\b\d+\b", "", name)
+
+    # Clean spaces
+    name = re.sub(r"\s+", " ", name).strip()
+
+    return name.title()
     
 def _extract_language_local(file_name: str) -> str:
     name = (file_name or "").upper()
