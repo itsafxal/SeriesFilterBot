@@ -139,7 +139,7 @@ def parse_series_info(file_name: str):
     """
 
     if not file_name:
-        return "", 0, 0, "UNKNOWN", "English"
+        return "", 0, 0, "UNKNOWN", "Orginal Language"
 
     name = file_name
 
@@ -177,7 +177,7 @@ def parse_series_info(file_name: str):
     if "MALAYALAM" in upper:
         langs.append("Malayalam")
 
-    language = "-".join(langs) if langs else "English"
+    language = "-".join(langs) if langs else "Orginal Language"
 
     # ---------------- NORMALIZE TITLE ----------------
 
