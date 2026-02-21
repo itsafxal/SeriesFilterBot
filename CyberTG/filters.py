@@ -27,10 +27,6 @@ from utils.cyber_font import BTN, UI, small_caps
 from CyberTG.poster import get_series_info
 
 
-# =================================================
-# SMART SEARCH (MULTI + FUZZY)
-# =================================================
-
 async def resolve_series_with_suggestions(text):
 
     query = text.strip().lower()
@@ -46,31 +42,26 @@ async def resolve_series_with_suggestions(text):
         return None, []
 
     unique = list(dict.fromkeys(results))
+    query_words = query.split()
 
     # -------------------------------------------------
-    # SMART DECISION LOGIC
+    # If only one result exists
     # -------------------------------------------------
-
-    query_lower = query.lower()
-
-    # count how many titles start with the query
-    starts_with = [
-        r for r in unique
-        if r.lower().startswith(query_lower)
-    ]
-
-    # If multiple series start with query → show suggestions
-    if len(starts_with) > 1:
-        return None, starts_with[:8]
-
-    # If exactly ONE strong start match → open directly
-    if len(starts_with) == 1:
-        return starts_with[0], []
-
-    # fallback: if only one total result
     if len(unique) == 1:
-        return unique[0], []
+        result = unique[0].lower()
+        result_words = result.split()
 
+        # Open only if query is specific enough
+        # (query has equal or more words than result base)
+        if len(query_words) >= len(result_words):
+            return unique[0], []
+
+        # Otherwise show suggestion
+        return None, unique
+
+    # -------------------------------------------------
+    # If multiple results → always show suggestions
+    # -------------------------------------------------
     return None, unique[:8]
     
 # =================================================
