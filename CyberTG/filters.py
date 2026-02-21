@@ -34,43 +34,24 @@ from CyberTG.poster import get_series_info
 async def resolve_series_with_suggestions(text):
 
     query = text.strip().lower()
+    if not query:
+        return None, []
 
     results = await search_series(query)
 
-    # -----------------------------------
-    # CASE 1: DB MATCH FOUND
-    # -----------------------------------
     if results:
-
         unique = list(dict.fromkeys(results))
 
-        # Only one → auto open
-        if len(unique) == 1:
+        if len(unique) == 1 and len(query) >= 5:
             return unique[0], []
-
-        # Smart ranking
-        def sort_key(name):
-            n = name.lower()
-            exact = (n == query)
-            starts = n.startswith(query)
-            contains = query in n
-            return (not exact, not starts, not contains, len(n))
-
-        unique.sort(key=sort_key)
 
         return None, unique[:8]
 
-    # -----------------------------------
-    # CASE 2: WRONG SPELLING (FUZZY)
-    # -----------------------------------
+    # Fuzzy fallback
     fuzzy = await suggest_series(query)
-
     if fuzzy:
         return None, fuzzy[:8]
 
-    # -----------------------------------
-    # CASE 3: NOTHING
-    # -----------------------------------
     return None, []
 
 
