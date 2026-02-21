@@ -39,22 +39,40 @@ async def resolve_series_with_suggestions(text):
 
     results = await search_series(query)
 
-    if results:
-        unique = list(dict.fromkeys(results))
+    if not results:
+        fuzzy = await suggest_series(query)
+        if fuzzy:
+            return None, fuzzy[:8]
+        return None, []
 
-        if len(unique) == 1 and len(query) >= 5:
-            return unique[0], []
+    unique = list(dict.fromkeys(results))
 
-        return None, unique[:8]
+    # -------------------------------------------------
+    # SMART DECISION LOGIC
+    # -------------------------------------------------
 
-    # Fuzzy fallback
-    fuzzy = await suggest_series(query)
-    if fuzzy:
-        return None, fuzzy[:8]
+    query_lower = query.lower()
 
-    return None, []
+    # count how many titles start with the query
+    starts_with = [
+        r for r in unique
+        if r.lower().startswith(query_lower)
+    ]
 
+    # If multiple series start with query → show suggestions
+    if len(starts_with) > 1:
+        return None, starts_with[:8]
 
+    # If exactly ONE strong start match → open directly
+    if len(starts_with) == 1:
+        return starts_with[0], []
+
+    # fallback: if only one total result
+    if len(unique) == 1:
+        return unique[0], []
+
+    return None, unique[:8]
+    
 # =================================================
 # CAPTION BUILDER
 # =================================================
