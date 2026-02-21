@@ -265,57 +265,63 @@ def get_series_summary_sync(series_name: str):
 
 @lru_cache(maxsize=1024)
 def search_series_sync(query: str):
+
     conn = sqlite3.connect(SQLITE_DB_PATH)
     cursor = conn.cursor()
 
     q = query.strip()
-    unique_results = set()
-    
+
+    if not q:
+        cursor.execute("SELECT DISTINCT normalized_name FROM files")
+        results = [r[0] for r in cursor.fetchall()]
+        conn.close()
+        return tuple(sorted(results))
+
+    # -------------------------------------------------
+    # 1️⃣ EXACT MATCH FIRST (STRICT)
+    # -------------------------------------------------
     cursor.execute("""
-        SELECT DISTINCT normalized_name FROM files 
-        WHERE normalized_name = ? COLLATE NOCASE
+        SELECT DISTINCT normalized_name
+        FROM files
+        WHERE normalized_name = ?
+        COLLATE NOCASE
     """, (q,))
-    for r in cursor.fetchall():
-        unique_results.add(r[0])
+    exact = [r[0] for r in cursor.fetchall()]
 
-    search_words = q.split()
-    full_phrase_pattern = "%" + "%".join(search_words) + "%"
+    if exact:
+        conn.close()
+        return tuple(exact)
 
+    # -------------------------------------------------
+    # 2️⃣ STARTS WITH MATCH
+    # -------------------------------------------------
     cursor.execute("""
-        SELECT DISTINCT normalized_name FROM files 
-        WHERE normalized_name LIKE ? COLLATE NOCASE
-    """, (full_phrase_pattern,))
-    for r in cursor.fetchall():
-        unique_results.add(r[0])
+        SELECT DISTINCT normalized_name
+        FROM files
+        WHERE normalized_name LIKE ?
+        COLLATE NOCASE
+    """, (f"{q}%",))
+    starts = [r[0] for r in cursor.fetchall()]
 
-    for word in search_words:
-        if len(word) >= 3: 
-            cursor.execute("""
-                SELECT DISTINCT normalized_name FROM files 
-                WHERE normalized_name LIKE ? COLLATE NOCASE
-            """, (f"%{word}%",))
-            for r in cursor.fetchall():
-                unique_results.add(r[0])
+    if starts:
+        conn.close()
+        return tuple(sorted(starts))
 
-    final_results = list(unique_results)
-    
-    def sort_key(name):
-        name_lower = name.lower()
-        query_lower = q.lower()
-        
-        starts_with_exact = 1 if name_lower.startswith(query_lower) else 0
-        
-        contains_whole_word = 1 if re.search(r'\b' + re.escape(query_lower) + r'\b', name_lower) else 0
-
-        length_diff = abs(len(name_lower) - len(query_lower))
-
-        return (not starts_with_exact, not contains_whole_word, length_diff, len(name_lower))
-
-    final_results.sort(key=sort_key)
+    # -------------------------------------------------
+    # 3️⃣ CONTAINS MATCH
+    # -------------------------------------------------
+    cursor.execute("""
+        SELECT DISTINCT normalized_name
+        FROM files
+        WHERE normalized_name LIKE ?
+        COLLATE NOCASE
+    """, (f"%{q}%",))
+    contains = [r[0] for r in cursor.fetchall()]
 
     conn.close()
-    return tuple(final_results) 
 
+    return tuple(sorted(contains))
+    
 @lru_cache(maxsize=1024) 
 def get_unique_languages_by_name_sync(series_name: str):
     """Gets unique language strings for a given series from SQLITE."""
