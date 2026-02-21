@@ -268,31 +268,49 @@ def register_filters(cyber: Client):
             UI("No Series Found. Please Try Another Title.")
         )
 
-    # -------------------------------------------------
-    # SUGGESTION CLICK
-    # -------------------------------------------------
-    @cyber.on_callback_query(filters.regex("^sug\\|"))
+
+    @cyber.on_callback_query(filters.regex(r"^sug\|"))
     async def sug(_, q):
 
-        series = q.data.split("|", 1)[1]
+        try:
+            series = q.data.split("|", 1)[1]
+        except Exception:
+            return await q.answer("Invalid data.", show_alert=True)
 
         poster, year, genre, rating = await get_series_info(series)
-        seasons = list((await get_series_summary(series))["seasons"])
+        summary = await get_series_summary(series)
 
-        kb = build_season_pages(seasons, q.from_user.id, series)
+        seasons = list(summary.get("seasons", []))
 
+        if not seasons:
+            return await q.answer("No seasons found.", show_alert=True)
+
+        kb = build_season_pages(
+            seasons,
+            q.from_user.id,
+            series
+        )
+
+        # STEP 1 — Edit media ONLY
         await q.message.edit_media(
             InputMediaPhoto(
-                poster or DEFAULT_POSTER,
+                media=poster or DEFAULT_POSTER,
                 caption=build_caption(
-                    series, year, genre, rating,
+                    series,
+                    year,
+                    genre,
+                    rating,
                     seasons=seasons
                 ),
                 parse_mode=enums.ParseMode.HTML
-            ),
-            reply_markup=kb
+            )
         )
 
+        # STEP 2 — Edit keyboard separately
+        await q.message.edit_reply_markup(kb)
+
+        await q.answer()
+        
     @cyber.on_callback_query(filters.regex("^close_spell$"))
     async def close_spell(_, q):
         await q.message.delete()
