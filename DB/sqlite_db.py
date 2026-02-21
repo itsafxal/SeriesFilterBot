@@ -17,38 +17,68 @@ _CLEAN_TAGS = [
 ]
 
 def _clean_series_name_local(name: str) -> str:
-    name = re.sub(r"[._\s]+", " ", name).strip()
-    name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", name).strip()
-    name = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', name)
-    for term in _CLEAN_TAGS + [r"(19|20)\d{2}"]:
-        t = term
-        if term != r"(19|20)\d{2}":
-            t = rf"\b{re.escape(term)}\b"
-        name = re.sub(t, " ", name, flags=re.IGNORECASE).strip()
-    for tag in ["CK","UB","TG","MOVIE HUB","FILM"]:
-        tag_regex = rf"(?:^|[\W_]+){re.escape(tag)}(?:$|[\W_]+)"
-        name = re.sub(tag_regex, " ", name, flags=re.IGNORECASE).strip()
+    if not name:
+        return ""
+
+    # normalize separators
+    name = re.sub(r"[._\-]+", " ", name)
+
+    # remove brackets, tags, mentions
+    name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", name)
+
+    # remove season/episode markers early
+    name = re.sub(r"[sS]\d+\s*[eE]\d+", " ", name)
+
+    # remove resolutions / codecs / junk words ANYWHERE
+    JUNK_WORDS = r"""
+    \b(
+    collection|pack|set|series|season|episode|ep|vol|volume|
+    batch|complete|full|release|mux|rip|hq|ultra|
+    theatre|theater|bluray|remux|webdl|webrip|web|
+    netflix|prime|amzn|hulu|hotstar|disney|hbo|
+    tgx|yts|subs|dub|audio|team|group|
+    4k|1080p|720p|480p|360p|
+    x264|x265|hevc|hdrip|aac|ddp5\.1|
+    rz
+    )\b
+    """
+
+    name = re.sub(JUNK_WORDS, " ", name, flags=re.IGNORECASE | re.VERBOSE)
+
+    # remove year
+    name = re.sub(r"\b(19|20)\d{2}\b", " ", name)
+
+    # remove special characters
+    name = re.sub(r"[^a-zA-Z0-9\s]", " ", name)
+
+    # collapse spaces
     name = re.sub(r"\s+", " ", name).strip()
-    name = re.sub(
-    r'^(?:collection|pack|set|series|season|episode|ep|vol|volume|batch|complete|full|合集|koleksi|release|mux|rip|hq|ultra|theatre|theater|bluray|remux|webdl|webrip|web|netflix|prime|amzn|hulu|hotstar|disney|hbo|tgx|yts|subs|dub|audio|team|group)\b',
-    ' ',
-    name,
-    flags=re.IGNORECASE
-    )
+
+    # remove small garbage words at end
+    name = re.sub(r"\b[a-zA-Z]{1,2}\b$", "", name).strip()
+
     return name.title()
 
 def _normalized_series_from_filename(file_name: str) -> str:
     if not file_name:
         return ""
+
+    # remove S01E01 part first
     m = re.search(r"[sS](\d+)[._\-\s]*[eE](\d+)", file_name)
-    if not m:
-        return _clean_series_name_local(file_name)
-    left = file_name[:m.start()]
-    base = _clean_series_name_local(left) or _clean_series_name_local(file_name)
+
+    if m:
+        base = file_name[:m.start()]
+    else:
+        base = file_name
+
+    base = _clean_series_name_local(base)
+
+    # limit to first 4 words only
     parts = base.split()
-    if len(parts) > 5:
-        base = " ".join(parts[:5])
-    return base.title()
+    if len(parts) > 4:
+        base = " ".join(parts[:4])
+
+    return base.strip()
     
 def _extract_language_local(file_name: str) -> str:
     name = (file_name or "").upper()
