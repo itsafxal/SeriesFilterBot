@@ -6,7 +6,10 @@ from pyrogram import Client, filters, enums
 from pyrogram.types import (
     Message,
 )
-
+from pyrogram.types import (
+    InlineKeyboardMarkup,
+    InputMediaPhoto
+)
 from config import (
     logger,
     ADMIN_USERS,
