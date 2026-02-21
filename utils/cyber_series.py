@@ -1,12 +1,10 @@
-# utils/series_helper.py
-
 import re
 from typing import List, Optional
 
 from DB.database import search_series
 
 # -------------------------------------------------
-# RAPIDFUZZ (OPTIONAL)
+# RAPIDFUZZ (OPTIONAL BUT RECOMMENDED)
 # -------------------------------------------------
 
 try:
@@ -36,7 +34,7 @@ def clean_query(q: str) -> str:
 
 
 # -------------------------------------------------
-# STRICT RESOLVER (EXACT ONLY)
+# STRICT RESOLVER (EXACT MATCH ONLY)
 # -------------------------------------------------
 
 async def resolve_series(query: str) -> Optional[str]:
@@ -60,7 +58,22 @@ async def resolve_series(query: str) -> Optional[str]:
 
 
 # -------------------------------------------------
-# SUGGESTIONS (FUZZY ONLY)
+# GET ALL SERIES TITLES (FOR FUZZY SEARCH)
+# -------------------------------------------------
+
+async def _get_all_series_titles() -> List[str]:
+    """
+    Fetch all distinct series names from database.
+    This is used for real fuzzy matching when LIKE fails.
+    """
+    rows = await search_series("")  # empty query returns all
+    if not rows:
+        return []
+    return list(set(rows))
+
+
+# -------------------------------------------------
+# FUZZY SUGGESTIONS (WORKS EVEN IF NO LIKE MATCH)
 # -------------------------------------------------
 
 async def suggest_series(query: str, limit: int = 5) -> List[str]:
@@ -70,13 +83,19 @@ async def suggest_series(query: str, limit: int = 5) -> List[str]:
     if not query:
         return []
 
+    # First attempt normal LIKE search
     rows = await search_series(query)
 
-    if not rows:
+    if rows:
+        candidates = list(set(rows))
+    else:
+        # If LIKE fails → get all titles for fuzzy comparison
+        candidates = await _get_all_series_titles()
+
+    if not candidates:
         return []
 
-    candidates = list(set(rows))
-
+    # ---------------- RAPIDFUZZ MODE ----------------
     if HAVE_RAPIDFUZZ:
         matches = rf_process.extract(
             query,
@@ -87,27 +106,36 @@ async def suggest_series(query: str, limit: int = 5) -> List[str]:
         )
         return [m[0] for m in matches]
 
-    # fallback simple scoring
+    # ---------------- FALLBACK SCORING ----------------
     scored = []
 
     for c in candidates:
         cl = c.lower()
-        m = sum(ch in cl for ch in query)
-        score = (m / (len(query) + len(cl))) * 200
+
+        # Simple similarity scoring
+        match_chars = sum(ch in cl for ch in query)
+        score = (match_chars / (len(query) + len(cl))) * 200
+
+        # Boost if startswith
+        if cl.startswith(query):
+            score += 20
+
         scored.append((c, score))
 
     scored.sort(key=lambda x: x[1], reverse=True)
 
     return [x[0] for x in scored[:limit]]
 
+
 # -------------------------------------------------
-# PARSER FOR INDEXING (USED BY index_helper.py)
+# PARSER FOR INDEXING
 # -------------------------------------------------
 
 def parse_series_info(file_name: str):
     """
     Parser used during bulk index.
-    Returns: normalized_name, season, episode, quality, language
+    Returns:
+        normalized_name, season, episode, quality, language
     """
 
     if not file_name:
@@ -115,7 +143,8 @@ def parse_series_info(file_name: str):
 
     name = file_name
 
-    # Season / Episode
+    # ---------------- SEASON / EPISODE ----------------
+
     season = 0
     episode = 0
 
@@ -124,14 +153,16 @@ def parse_series_info(file_name: str):
         season = int(m.group(1))
         episode = int(m.group(2))
 
-    # Quality
+    # ---------------- QUALITY ----------------
+
     quality = "UNKNOWN"
     for q in ["4K", "1080P", "720P", "480P", "360P"]:
         if q.lower() in name.lower():
             quality = q
             break
 
-    # Language detection
+    # ---------------- LANGUAGE ----------------
+
     langs = []
     upper = name.upper()
 
@@ -148,7 +179,8 @@ def parse_series_info(file_name: str):
 
     language = "-".join(langs) if langs else "English"
 
-    # Normalize series title
+    # ---------------- NORMALIZE TITLE ----------------
+
     clean = re.sub(r"[._]", " ", name)
     clean = re.sub(r"\[.*?\]|\(.*?\)", "", clean)
     clean = re.sub(r"[sS]\d+[^\d]?[eE]\d+.*", "", clean)
@@ -156,14 +188,14 @@ def parse_series_info(file_name: str):
 
     return clean, season, episode, quality, language
 
+
 # -------------------------------------------------
 # BUTTON OWNER CHECK
 # -------------------------------------------------
 
 async def check_owner(q, uid: int):
     """
-    Allow only the original requester
-    to use inline buttons.
+    Allow only original requester to use inline buttons.
     """
 
     if q.from_user.id != int(uid):
@@ -177,4 +209,3 @@ async def check_owner(q, uid: int):
         return False
 
     return True
-
