@@ -19,12 +19,12 @@ from DB.database import (
     get_unique_qualities_by_lang_season
 )
 
-from utils.series_helper import suggest_series
-from utils.cyber_series import check_owner
+# ✅ TOP-LEVEL utils imports (correct for your structure)
+from utils.cyber_series import suggest_series, check_owner
 from utils.cyber_filter import encode_payload
 from utils.cyber_font import BTN, UI, small_caps
 
-from .poster import get_series_info
+from CyberTG.poster import get_series_info
 
 
 # =================================================
@@ -35,14 +35,16 @@ async def resolve_series_with_suggestions(text):
 
     query = text.strip().lower()
 
-    # Normal DB search
     results = await search_series(query)
 
+    # -----------------------------------
+    # CASE 1: DB MATCH FOUND
+    # -----------------------------------
     if results:
 
         unique = list(dict.fromkeys(results))
 
-        # Only one match → auto open
+        # Only one → auto open
         if len(unique) == 1:
             return unique[0], []
 
@@ -58,12 +60,17 @@ async def resolve_series_with_suggestions(text):
 
         return None, unique[:8]
 
-    # Wrong spelling → fuzzy fallback
+    # -----------------------------------
+    # CASE 2: WRONG SPELLING (FUZZY)
+    # -----------------------------------
     fuzzy = await suggest_series(query)
 
     if fuzzy:
         return None, fuzzy[:8]
 
+    # -----------------------------------
+    # CASE 3: NOTHING
+    # -----------------------------------
     return None, []
 
 
@@ -118,7 +125,7 @@ def build_grid_keyboard(items, cb_builder, per_row=2):
     rows, row = [], []
 
     for it in items:
-        row.append(BTN(small_caps(it), callback_data=cb_builder(it)))
+        row.append(BTN(it, callback_data=cb_builder(it)))
 
         if len(row) == per_row:
             rows.append(row)
@@ -143,7 +150,7 @@ def build_season_pages(seasons, uid, series, page=0):
     for s in chunk:
         row.append(
             BTN(
-                small_caps(f"Season {s}"),
+                f"Season {s}",
                 callback_data=f"gss|{uid}|{series}|{s}"
             )
         )
@@ -161,25 +168,16 @@ def build_season_pages(seasons, uid, series, page=0):
 
         if page > 0:
             nav.append(
-                BTN(
-                    small_caps("Prev"),
-                    callback_data=f"spg|{uid}|{series}|{page-1}"
-                )
+                BTN("◀ Prev",
+                    callback_data=f"spg|{uid}|{series}|{page-1}")
             )
 
-        nav.append(
-            BTN(
-                small_caps(f"{page+1}/{total_pages}"),
-                callback_data="noop"
-            )
-        )
+        nav.append(BTN(f"{page+1}/{total_pages}", callback_data="noop"))
 
         if page < total_pages - 1:
             nav.append(
-                BTN(
-                    small_caps("Next"),
-                    callback_data=f"spg|{uid}|{series}|{page+1}"
-                )
+                BTN("Next ▶",
+                    callback_data=f"spg|{uid}|{series}|{page+1}")
             )
 
         rows.append(nav)
@@ -246,11 +244,11 @@ def register_filters(cyber: Client):
                 lines.append(f"○ {small_caps(label)}")
 
                 buttons.append([
-                    BTN(small_caps(label), callback_data=f"sug|{s}")
+                    BTN(label, callback_data=f"sug|{s}")
                 ])
 
             buttons.append([
-                BTN(small_caps("Close"), callback_data="close_spell")
+                BTN("Close", callback_data="close_spell")
             ])
 
             kb = InlineKeyboardMarkup(buttons)
@@ -267,7 +265,7 @@ def register_filters(cyber: Client):
         # NOTHING FOUND
         # -------------------------------------------------
         await m.reply_text(
-            UI(small_caps("No Series Found. Please Try Another Title."))
+            UI("No Series Found. Please Try Another Title.")
         )
 
     # -------------------------------------------------
@@ -382,7 +380,7 @@ def register_filters(cyber: Client):
         )
 
     # -------------------------------------------------
-    # QUALITY → DOWNLOAD LINK
+    # QUALITY → DOWNLOAD
     # -------------------------------------------------
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
     async def gqs(_, q):
@@ -398,8 +396,8 @@ def register_filters(cyber: Client):
         link = f"https://t.me/{bot.username}?start={payload}"
 
         await q.message.edit_caption(
-            UI(small_caps("Your Files Are Ready. Tap Below To Download.")),
+            UI("Your Files Are Ready. Tap Below To Download."),
             reply_markup=InlineKeyboardMarkup([
-                [BTN(small_caps("Download Files"), url=link)]
+                [BTN("Download Files", url=link)]
             ])
         )
