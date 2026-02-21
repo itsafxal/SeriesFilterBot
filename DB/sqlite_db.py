@@ -281,20 +281,20 @@ def search_series_sync(query: str):
 
     unique_results = set()
 
-    # exact match first
+    # Exact match
     cursor.execute("""
-        SELECT DISTINCT normalized_name FROM files
+        SELECT DISTINCT normalized_name FROM files 
         WHERE normalized_name = ? COLLATE NOCASE
     """, (q,))
     for r in cursor.fetchall():
         unique_results.add(r[0])
 
-    # phrase match
+    # LIKE phrase match
     search_words = q.split()
     full_phrase_pattern = "%" + "%".join(search_words) + "%"
 
     cursor.execute("""
-        SELECT DISTINCT normalized_name FROM files
+        SELECT DISTINCT normalized_name FROM files 
         WHERE normalized_name LIKE ? COLLATE NOCASE
     """, (full_phrase_pattern,))
     for r in cursor.fetchall():
@@ -302,46 +302,21 @@ def search_series_sync(query: str):
 
     final_results = list(unique_results)
 
-    # -------------------------------------------------
-    # STRICT CANONICAL FILTER
-    # -------------------------------------------------
-
-    query_clean = re.sub(r"[^a-z0-9\s]", "", q.lower()).strip()
-
-    strict_results = []
-
-    for name in final_results:
-        name_clean = re.sub(r"[^a-z0-9\s]", "", name.lower()).strip()
-
-        # 1. exact match
-        if name_clean == query_clean:
-            strict_results.append(name)
-            continue
-
-        # 2. exact match + year only
-        if re.fullmatch(rf"{re.escape(query_clean)}\s(19|20)\d{{2}}", name_clean):
-            strict_results.append(name)
-            continue
-
-    # If strict matches exist → return ONLY them
-    if strict_results:
-        conn.close()
-        return tuple(sorted(strict_results))
-
-    # Fallback (if nothing strict matched)
+    # Ranking only (no strict filtering)
     def sort_key(name):
         name_lower = name.lower()
         query_lower = q.lower()
 
-        starts_with_exact = name_lower.startswith(query_lower)
+        starts_with = name_lower.startswith(query_lower)
+        contains = query_lower in name_lower
         length_diff = abs(len(name_lower) - len(query_lower))
 
-        return (not starts_with_exact, length_diff, len(name_lower))
+        return (not starts_with, not contains, length_diff, len(name_lower))
 
     final_results.sort(key=sort_key)
 
     conn.close()
-    return tuple(final_results[:8])
+    return tuple(final_results)
     
 @lru_cache(maxsize=1024) 
 def get_unique_languages_by_name_sync(series_name: str):
