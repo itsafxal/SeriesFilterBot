@@ -20,7 +20,6 @@ DEFAULT_POSTER = "https://ibb.co/1tSFHQKw"
 TMDB_API_KEY = "0e027f75bc7f6a14139ad3e6fe76ed97"
 OMDB_API_KEY = "f93ab313"
 TMDB_CACHE_DB = "/tmp/TMDB_cache.db"
-TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 
 # Captions
 CUSTOM_CAPTION_TEXT = """
