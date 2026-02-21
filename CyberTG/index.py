@@ -162,11 +162,20 @@ def register_index_handlers(cyber: Client):
     @cyber.on_message(media_filter & filters.channel)
     async def rti(_, msg):
         channels = await get_index_channels()
+
         if msg.chat.id in channels:
             try:
+                file = msg.document or msg.video or msg.audio or msg.photo
+                if not file:
+                    return
+
+                file_name = getattr(file, "file_name", None) or "No_Name"
+
                 ok, cnt = await save_series_file_for_bulk_index(msg)
+
                 if ok:
-                    logger.info(f"RTI saved {cnt} files.")
+                    logger.info(f"RTI saved file: {file_name}")
+
             except Exception as e:
                 logger.error(f"RTI error: {e}")
 
