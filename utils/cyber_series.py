@@ -23,13 +23,16 @@ def clean_query(q: str) -> str:
         return ""
 
     q = q.lower()
+
+    # Remove special chars
     q = re.sub(r"[^a-z0-9\s]", " ", q)
 
-    # remove season words
+    # Remove season words
     q = re.sub(r"\bseason\s*\d+\b", "", q)
     q = re.sub(r"\bs\d+\b", "", q)
 
     q = re.sub(r"\s+", " ", q).strip()
+
     return q
 
 
@@ -62,18 +65,14 @@ async def resolve_series(query: str) -> Optional[str]:
 # -------------------------------------------------
 
 async def _get_all_series_titles() -> List[str]:
-    """
-    Fetch all distinct series names from database.
-    This is used for real fuzzy matching when LIKE fails.
-    """
-    rows = await search_series("")  # empty query returns all
+    rows = await search_series("")
     if not rows:
         return []
     return list(set(rows))
 
 
 # -------------------------------------------------
-# FUZZY SUGGESTIONS (WORKS EVEN IF NO LIKE MATCH)
+# FUZZY SUGGESTIONS
 # -------------------------------------------------
 
 async def suggest_series(query: str, limit: int = 5) -> List[str]:
@@ -83,19 +82,17 @@ async def suggest_series(query: str, limit: int = 5) -> List[str]:
     if not query:
         return []
 
-    # First attempt normal LIKE search
     rows = await search_series(query)
 
     if rows:
         candidates = list(set(rows))
     else:
-        # If LIKE fails → get all titles for fuzzy comparison
         candidates = await _get_all_series_titles()
 
     if not candidates:
         return []
 
-    # ---------------- RAPIDFUZZ MODE ----------------
+    # -------- RAPIDFUZZ MODE --------
     if HAVE_RAPIDFUZZ:
         matches = rf_process.extract(
             query,
@@ -106,17 +103,15 @@ async def suggest_series(query: str, limit: int = 5) -> List[str]:
         )
         return [m[0] for m in matches]
 
-    # ---------------- FALLBACK SCORING ----------------
+    # -------- FALLBACK SCORING --------
     scored = []
 
     for c in candidates:
         cl = c.lower()
 
-        # Simple similarity scoring
         match_chars = sum(ch in cl for ch in query)
         score = (match_chars / (len(query) + len(cl))) * 200
 
-        # Boost if startswith
         if cl.startswith(query):
             score += 20
 
@@ -128,7 +123,7 @@ async def suggest_series(query: str, limit: int = 5) -> List[str]:
 
 
 # -------------------------------------------------
-# PARSER FOR INDEXING
+# BULK INDEX PARSER
 # -------------------------------------------------
 
 def parse_series_info(file_name: str):
@@ -156,6 +151,7 @@ def parse_series_info(file_name: str):
     # ---------------- QUALITY ----------------
 
     quality = "UNKNOWN"
+
     for q in ["4K", "1080P", "720P", "480P", "360P"]:
         if q.lower() in name.lower():
             quality = q
@@ -163,8 +159,8 @@ def parse_series_info(file_name: str):
 
     # ---------------- LANGUAGE ----------------
 
-    langs = []
     upper = name.upper()
+    langs = []
 
     if "HINDI" in upper:
         langs.append("Hindi")
@@ -179,19 +175,43 @@ def parse_series_info(file_name: str):
 
     language = "-".join(langs) if langs else "English"
 
-    # ---------------- NORMALIZE TITLE ----------------
+    # ---------------- STRONG NORMALIZATION ----------------
+    # This fixes: Dark 480p, Dark #, Dark [2026], etc.
 
-    clean = re.sub(r"[._]", " ", name)
+    clean = name
+
+    # Remove extension
+    clean = re.sub(r"\.(mkv|mp4|avi|mov)$", "", clean, flags=re.IGNORECASE)
+
+    # Remove season/episode
+    clean = re.sub(r"[sS]\d+\s*[eE]\d+", "", clean)
+
+    # Remove year
+    clean = re.sub(r"\b(19|20)\d{2}\b", "", clean)
+
+    # Remove quality
+    clean = re.sub(
+        r"\b(4K|1080P|720P|480P|360P|HDRIP|WEB-DL|WEBRIP|BLURAY|HDTV|HEVC|X264|X265)\b",
+        "",
+        clean,
+        flags=re.IGNORECASE
+    )
+
+    # Remove brackets
     clean = re.sub(r"\[.*?\]|\(.*?\)", "", clean)
-    clean = re.sub(r"[sS]\d+[^\d]?[eE]\d+.*", "", clean)
-    clean = re.sub(r"\s+", " ", clean).strip().title()
 
-    return clean, season, episode, quality, language
+    # Remove symbols
+    clean = re.sub(r"[-_#@]", " ", clean)
 
+    # Remove standalone numbers
+    clean = re.sub(r"\b\d+\b", "", clean)
 
-# -------------------------------------------------
-# BUTTON OWNER CHECK
-# -------------------------------------------------
+    # Collapse spaces
+    clean = re.sub(r"\s+", " ", clean).strip()
+
+    normalized_name = clean.title()
+
+    return normalized_name, season, episode, quality, language
 
 async def check_owner(q, uid: int):
     """
