@@ -42,13 +42,12 @@ async def resolve_series_with_suggestions(text):
 
     exact = [x for x in unique if x.lower() == text]
 
-    if exact and len(unique) > 1:
-        return None, unique[:10]
-
+    # If exact match exists → auto resolve
     if exact:
         return exact[0], []
 
-    return None, unique[:10]
+    # Otherwise return top suggestions
+    return None, unique[:8]
 
 
 # =================================================
@@ -179,6 +178,9 @@ def register_filters(cyber: Client):
 
         series, suggestions = await resolve_series_with_suggestions(m.text)
 
+        # -------------------------------------------------
+        # EXACT MATCH
+        # -------------------------------------------------
         if series:
 
             poster, year, genre, rating = await get_series_info(series)
@@ -197,17 +199,33 @@ def register_filters(cyber: Client):
             )
             return
 
+        # -------------------------------------------------
+        # PREMIUM SUGGESTION UI
+        # -------------------------------------------------
         if suggestions:
 
-            kb = InlineKeyboardMarkup(
-                [[BTN(s, callback_data=f"sug|{s}")]
-                 for s in suggestions[:8]]
-                + [[BTN("Close", callback_data="close_spell")]]
-            )
+            buttons = []
+
+            for s in suggestions[:5]:
+                _, year, _, _ = await get_series_info(s)
+                label = f"{s} ({year})" if year else s
+                buttons.append([
+                    BTN(label, callback_data=f"sug|{s}")
+                ])
+
+            buttons.append([
+                BTN("❌ Close", callback_data="close_spell")
+            ])
+
+            kb = InlineKeyboardMarkup(buttons)
 
             await m.reply_photo(
                 SPELL_IMG,
-                caption=UI("Did you mean one of these?"),
+                caption=(
+                    "🔎 <b>Multiple series matched your query</b>\n\n"
+                    "Please select the correct title below:"
+                ),
+                parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb
             )
 
