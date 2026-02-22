@@ -79,13 +79,12 @@ async def suggest_series(query: str, limit: int = 4) -> List[str]:
         candidates = await search_series(short_query)
         if not candidates:
             return []
-
         matches = rf_process.extract(
             query,
             candidates,
             limit=limit,
-            scorer=rf_fuzz.ratio,
-            score_cutoff=50
+            scorer=rf_fuzz.token_sort_ratio,   # better scorer
+            score_cutoff=80                    # STRICT 80% MATCH
         )
 
         return [m[0] for m in matches]
