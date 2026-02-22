@@ -11,7 +11,6 @@ from config import (
     SPELL_IMG,
     SEASONS_PER_PAGE
 )
-from DB.sqlite_db import search_series_sync
 from DB.database import (
     search_series,
     get_series_summary,
@@ -34,7 +33,7 @@ async def resolve_series_with_suggestions(text):
         return None, []
 
     # 🔥 Use FAST SQLite search (indexed + cached)
-    results = search_series_sync(query)
+    results = search_series(query)
 
     if not results:
         return None, []
