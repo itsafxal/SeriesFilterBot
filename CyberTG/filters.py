@@ -181,9 +181,6 @@ def build_season_pages(seasons, uid, series, page=0):
 
 def register_filters(cyber: Client):
 
-    # -------------------------------------------------
-    # SEARCH HANDLER
-    # -------------------------------------------------
     @cyber.on_message(filters.text & (filters.private | filters.group))
     async def search_handler(_, m):
 
@@ -194,17 +191,13 @@ def register_filters(cyber: Client):
 
         series, suggestions = await resolve_series_with_suggestions(m.text)
 
-        # -------------------------------------------------
         # SINGLE MATCH
-        # -------------------------------------------------
         if series:
-
             poster, year, genre, rating = await get_series_info(series)
             seasons = list((await get_series_summary(series))["seasons"])
-
             kb = build_season_pages(seasons, m.from_user.id, series)
 
-            await m.reply_photo(
+            msg = await m.reply_photo(
                 poster or DEFAULT_POSTER,
                 caption=build_caption(
                     series, year, genre, rating,
@@ -213,20 +206,18 @@ def register_filters(cyber: Client):
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb
             )
+
             if AUTO_DELETE_DELAY > 0:
-            delete_message_later(
-                cyber,
-                msg.chat.id,
-                msg.id,
-                AUTO_DELETE_DELAY
-            )
+                delete_message_later(
+                    cyber,
+                    msg.chat.id,
+                    msg.id,
+                    AUTO_DELETE_DELAY
+                )
             return
 
-        # -------------------------------------------------
-        # MULTIPLE OR FUZZY MATCHES
-        # -------------------------------------------------
+        # MULTIPLE MATCHES
         if suggestions:
-
             lines = [
                 f"<b>{small_caps('I Found The Following Series Matched To Your Query')}</b>",
                 f"<b>({small_caps(m.text.strip())})</b>",
@@ -239,48 +230,40 @@ def register_filters(cyber: Client):
             for s in suggestions:
                 _, year, _, _ = await get_series_info(s)
                 label = f"{s} ({year})" if year else s
-
                 lines.append(f"○ {small_caps(label)}")
+                buttons.append([BTN(label, callback_data=f"sug|{s}")])
 
-                buttons.append([
-                    BTN(label, callback_data=f"sug|{s}")
-                ])
-
-            buttons.append([
-                BTN("Close", callback_data="close_spell")
-            ])
-
+            buttons.append([BTN("Close", callback_data="close_spell")])
             kb = InlineKeyboardMarkup(buttons)
 
-            await m.reply_photo(
+            msg = await m.reply_photo(
                 SPELL_IMG,
                 caption="\n".join(lines),
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb
             )
+
             if AUTO_DELETE_DELAY > 0:
-            delete_message_later(
-                cyber,
-                msg.chat.id,
-                msg.id,
-                AUTO_DELETE_DELAY
-            )
+                delete_message_later(
+                    cyber,
+                    msg.chat.id,
+                    msg.id,
+                    AUTO_DELETE_DELAY
+                )
             return
 
-        # -------------------------------------------------
         # NOTHING FOUND
-        # -------------------------------------------------
-        await m.reply_text(
+        msg = await m.reply_text(
             UI("No Series Found. Please Try Another Title.")
         )
-       if AUTO_DELETE_DELAY > 0:
+
+        if AUTO_DELETE_DELAY > 0:
             delete_message_later(
                 cyber,
                 msg.chat.id,
                 msg.id,
                 AUTO_DELETE_DELAY
             )
-
     # -------------------------------------------------
     # SUGGESTION CLICK
     # -------------------------------------------------
