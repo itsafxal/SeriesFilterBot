@@ -214,12 +214,12 @@ def register_filters(cyber: Client):
                 reply_markup=kb
             )
             if AUTO_DELETE_DELAY > 0:
-                delete_message_later(
-                    cyber,
-                    msg.chat.id,
-                    msg.id,
-                    AUTO_DELETE_DELAY
-                )
+            delete_message_later(
+                cyber,
+                msg.chat.id,
+                msg.id,
+                AUTO_DELETE_DELAY
+            )
             return
 
         # -------------------------------------------------
@@ -259,12 +259,12 @@ def register_filters(cyber: Client):
                 reply_markup=kb
             )
             if AUTO_DELETE_DELAY > 0:
-                delete_message_later(
-                    cyber,
-                    msg.chat.id,
-                    msg.id,
-                    AUTO_DELETE_DELAY
-                )
+            delete_message_later(
+                cyber,
+                msg.chat.id,
+                msg.id,
+                AUTO_DELETE_DELAY
+            )
             return
 
         # -------------------------------------------------
@@ -273,7 +273,7 @@ def register_filters(cyber: Client):
         await m.reply_text(
             UI("No Series Found. Please Try Another Title.")
         )
-        if AUTO_DELETE_DELAY > 0:
+       if AUTO_DELETE_DELAY > 0:
             delete_message_later(
                 cyber,
                 msg.chat.id,
