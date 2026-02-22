@@ -51,9 +51,6 @@ from .fsub import (
 
 def register_command_handlers(cyber: Client):
 
-    # =================================================
-    # START COMMAND
-    # =================================================
     @cyber.on_message(filters.command("start") & filters.private)
     async def start_command(_, message: Message):
 
@@ -84,7 +81,8 @@ def register_command_handlers(cyber: Client):
                     # save pending payload
                     save_pending(uid, payload)
 
-                    return await message.reply(
+                    # Send FSUB message
+                    await message.reply(
                         fsub_text(),
                         reply_markup=build_fsub_keyboard(
                             bot.username,
@@ -92,26 +90,38 @@ def register_command_handlers(cyber: Client):
                         )
                     )
 
+                    # 🔥 Delete /start payload message
+                    try:
+                        await message.delete()
+                    except:
+                        pass
+
+                    return
+
                 # ------------------------------
                 # PAYLOAD DECODE
                 # ------------------------------
                 try:
                     decoded = decode_payload(payload)
                     if not decoded:
-                        return await message.reply("Invalid or expired link.")
+                        await message.reply("Invalid or expired link.")
+                        await message.delete()
+                        return
 
                     owner, series, season, lang, quality = decoded
 
                     if int(owner) != uid:
-                        return await message.reply(
-                            "⚠️ This link is not for you."
-                        )
+                        await message.reply("⚠️ This link is not for you.")
+                        await message.delete()
+                        return
 
                     season = int(season)
 
                 except Exception as e:
                     logger.error(f"PAYLOAD ERROR: {e}")
-                    return await message.reply("Invalid link.")
+                    await message.reply("Invalid link.")
+                    await message.delete()
+                    return
 
                 # ------------------------------
                 # START FILE DELIVERY
@@ -124,6 +134,13 @@ def register_command_handlers(cyber: Client):
                 })
 
                 await deliver_files_direct(cyber, uid)
+
+                # 🔥 Delete /start payload message
+                try:
+                    await message.delete()
+                except:
+                    pass
+
                 return
 
         # ---------------------------------------------
