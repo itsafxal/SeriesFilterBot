@@ -130,12 +130,12 @@ async def suggest_series(query: str, limit: int = 5) -> List[str]:
 # -------------------------------------------------
 # PARSER FOR INDEXING
 # -------------------------------------------------
-
 import re
 
 def parse_series_info(file_name: str):
     """
     Parser used during bulk index.
+
     Returns:
         normalized_name, season, episode, quality, language
     """
@@ -146,59 +146,69 @@ def parse_series_info(file_name: str):
     name = file_name
     upper = name.upper()
 
-    # ---------------- SEASON / EPISODE ----------------
+    # =================================================
+    # SEASON / EPISODE DETECTION
+    # =================================================
 
     season = 0
     episode = 0
 
+    # Pattern: S01E02 / S1E2 / s01 e02
     m = re.search(r"[sS](\d+)[^\d]?[eE](\d+)", name)
     if m:
         season = int(m.group(1))
         episode = int(m.group(2))
 
-    # ---------------- QUALITY ----------------
+    # =================================================
+    # QUALITY DETECTION
+    # =================================================
 
     quality = "UNKNOWN"
+
     for q in ["4K", "1080P", "720P", "480P", "360P"]:
         if q in upper:
             quality = q
             break
 
-    # ---------------- LANGUAGE DETECTION ----------------
+    # =================================================
+    # LANGUAGE DETECTION (FROM FILENAME ONLY)
+    # =================================================
 
     langs = set()
 
-    # Full language names
-    if "HINDI" in upper:
-        langs.add("Hindi")
-    if "ENGLISH" in upper:
-        langs.add("English")
-    if "TAMIL" in upper:
-        langs.add("Tamil")
-    if "TELUGU" in upper:
-        langs.add("Telugu")
-    if "MALAYALAM" in upper:
-        langs.add("Malayalam")
-    if "KANNADA" in upper:
-        langs.add("Kannada")
+    # ---------- Full language keywords ----------
+    LANG_KEYWORDS = {
+        "HINDI": "Hindi",
+        "ENGLISH": "English",
+        "TAMIL": "Tamil",
+        "TELUGU": "Telugu",
+        "MALAYALAM": "Malayalam",
+        "KANNADA": "Kannada"
+    }
 
-    # Short tags
-    if re.search(r"\bHIN\b", upper):
-        langs.add("Hindi")
-    if re.search(r"\bENG\b", upper):
-        langs.add("English")
-    if re.search(r"\bTAM\b", upper):
-        langs.add("Tamil")
-    if re.search(r"\bTEL\b", upper):
-        langs.add("Telugu")
-    if re.search(r"\bMAL\b", upper):
-        langs.add("Malayalam")
+    for key, value in LANG_KEYWORDS.items():
+        if key in upper:
+            langs.add(value)
 
-    # Multi / Dual detection
+    # ---------- Short tags ----------
+    SHORT_TAGS = {
+        r"\bHIN\b": "Hindi",
+        r"\bENG\b": "English",
+        r"\bTAM\b": "Tamil",
+        r"\bTEL\b": "Telugu",
+        r"\bMAL\b": "Malayalam",
+        r"\bKAN\b": "Kannada"
+    }
+
+    for pattern, value in SHORT_TAGS.items():
+        if re.search(pattern, upper):
+            langs.add(value)
+
+    # ---------- Multi / Dual detection ----------
     if "DUAL" in upper or "MULTI" in upper:
         return _normalize_title(name), season, episode, quality, "Multi Audio"
 
-    # Final language resolution
+    # ---------- Final resolution ----------
     if len(langs) == 1:
         language = next(iter(langs))
     elif len(langs) > 1:
@@ -206,35 +216,47 @@ def parse_series_info(file_name: str):
     else:
         language = "Unknown"
 
-    # ---------------- NORMALIZE TITLE ----------------
+    # =================================================
+    # TITLE NORMALIZATION
+    # =================================================
 
     normalized_title = _normalize_title(name)
 
     return normalized_title, season, episode, quality, language
 
 
-# -------------------------------------------------
+# =================================================
 # TITLE NORMALIZER
-# -------------------------------------------------
+# =================================================
 
 def _normalize_title(name: str):
 
-    clean = re.sub(r"[._\-]", " ", name)
+    clean = name
+
+    # Replace separators
+    clean = re.sub(r"[._\-]", " ", clean)
+
+    # Remove brackets
     clean = re.sub(r"\[.*?\]|\(.*?\)", "", clean)
+
+    # Remove season/episode and everything after
     clean = re.sub(r"[sS]\d+[^\d]?[eE]\d+.*", "", clean)
 
-    # Remove common junk words
+    # Remove quality + junk tags
     clean = re.sub(
-        r"\b(4K|1080P|720P|480P|360P|HDRIP|WEBRIP|WEB|BLURAY|X264|X265|HEVC|AAC|DDP5\.1)\b",
+        r"\b(4K|1080P|720P|480P|360P|HDRIP|WEBRIP|WEB|BLURAY|X264|X265|HEVC|AAC|DDP5\.1|REPACK|COMPLETE|BATCH)\b",
         "",
         clean,
         flags=re.IGNORECASE
     )
 
+    # Remove year
+    clean = re.sub(r"\b(19|20)\d{2}\b", "", clean)
+
+    # Remove extra spaces
     clean = re.sub(r"\s+", " ", clean).strip()
 
     return clean.title()
-
 
 # -------------------------------------------------
 # BUTTON OWNER CHECK
