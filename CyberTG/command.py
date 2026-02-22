@@ -28,8 +28,10 @@ from DB.database import (
     delete_one_file,
     get_index_channels,
     set_index_channels,
+    set_global_setting, 
+    get_global_setting,
 )
-
+from DB.database import s
 from .files import (
     deliver_files_direct,
     set_session
@@ -309,3 +311,45 @@ def register_command_handlers(cyber: Client):
         )
 
     logger.info("✅ Command handlers registered.")
+
+    @cyber.on_message(filters.command("autodel") & filters.user(ADMIN_USERS))
+    async def set_autodel_command(_, message: Message):
+
+        KEY = "AUTO_DELETE_DELAY"
+
+        # Show current status
+        if len(message.command) < 2:
+            current = await get_global_setting(KEY, 0)
+            status = "OFF" if current == 0 else f"{current} seconds"
+            return await message.reply(
+                f"Usage:\n"
+                f"/autodel <seconds>\n\n"
+                f"Current auto-delete: {status}"
+            )
+
+        value = message.command[1].lower()
+
+        # Turn OFF
+        if value in ["off", "0"]:
+            await set_global_setting(KEY, 0)
+            return await message.reply("🛑 Auto-delete disabled.")
+
+        # Set seconds
+        try:
+            seconds = int(value)
+
+            if seconds < 0:
+                return await message.reply("Seconds must be positive.")
+
+            await set_global_setting(KEY, seconds)
+
+            await message.reply(
+                f"⏳ Auto-delete set to {seconds} seconds."
+            )
+
+        except ValueError:
+            await message.reply(
+                "Invalid value.\n\nExample:\n/autodel 300\n/autodel off"
+            )
+
+
