@@ -40,7 +40,7 @@ FORCE_SUB_CHANNEL = None
 LOG_FILE_PATH = "bot.log"
 MAX_LOG_SIZE = 10 * 1024 * 1024
 
-#LOGGING INFO 
+# LOGGING INFO
 formatter = logging.Formatter(
     "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 )
@@ -63,3 +63,6 @@ root_logger.addHandler(console_handler)
 
 logger = logging.getLogger("BOT")
 logger.info("Logger initialized")
+
+# ✅ ADD THIS
+logging.getLogger("apscheduler").setLevel(logging.ERROR)
