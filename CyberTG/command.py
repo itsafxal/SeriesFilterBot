@@ -351,5 +351,44 @@ def register_command_handlers(cyber: Client):
             await message.reply(
                 "Invalid value.\n\nExample:\n/autodel 300\n/autodel off"
             )
+########################################################################################
 
+    @cyber.on_message(filters.command("filedel") & filters.user(ADMIN_USERS))
+    async def set_autodel_command(_, message: Message):
 
+        KEY = "FILE_AUTODEL_DELAY"
+
+        # Show current status
+        if len(message.command) < 2:
+            current = await get_global_setting(KEY, 0)
+            status = "OFF" if current == 0 else f"{current} seconds"
+            return await message.reply(
+                f"Usage:\n"
+                f"/filedel <seconds>\n\n"
+                f"Current file-auto-delete: {status}"
+            )
+
+        value = message.command[1].lower()
+
+        # Turn OFF
+        if value in ["off", "0"]:
+            await set_global_setting(KEY, 0)
+            return await message.reply("🛑 Auto-delete disabled.")
+
+        # Set seconds
+        try:
+            seconds = int(value)
+
+            if seconds < 0:
+                return await message.reply("Seconds must be positive.")
+
+            await set_global_setting(KEY, seconds)
+
+            await message.reply(
+                f"⏳ File Auto-delete set to {seconds} seconds."
+            )
+
+        except ValueError:
+            await message.reply(
+                "Invalid value.\n\nExample:\n/filedel 300\n/filedel off"
+            )
