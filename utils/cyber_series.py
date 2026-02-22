@@ -1,7 +1,7 @@
 import re
 from typing import List, Optional
 
-from sqlite_db import search_series_sync
+from DB.sqlite_db import search_series_sync
 # -------------------------------------------------
 # RAPIDFUZZ (OPTIONAL BUT RECOMMENDED)
 # -------------------------------------------------
