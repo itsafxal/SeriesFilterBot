@@ -1,9 +1,11 @@
 from pyrogram import enums, types
 from DB.database import save_file_to_db, get_all_files_by_season_and_quality
 from utils.cyber_series import parse_series_info
-from CyberTG.poster import get_series_poster_async
+from CyberTG.poster import get_series_info
 from config import DEFAULT_POSTER, logger
 
+# 🔥 Cache to avoid repeated API calls per series
+SERIES_LANGUAGE_CACHE = {}
 
 async def save_series_file_for_bulk_index(message: types.Message):
 
@@ -41,6 +43,33 @@ async def save_series_file_for_bulk_index(message: types.Message):
     if season == 0:
         return False, 0
 
+    # ------------------ AUTO LANGUAGE DETECT (ONLY IF UNKNOWN) ------------------
+
+    if language in ["Unknown", "Original Language", "", None]:
+
+        try:
+            # Use cache first
+            if series in SERIES_LANGUAGE_CACHE:
+                language = SERIES_LANGUAGE_CACHE[series]
+
+            else:
+                poster, year, genre, rating = await get_series_info(series)
+
+                # get_series_info already uses TMDB internally
+                # We assume TMDB mapping sets proper language
+                from CyberTG.poster import fetch_tmdb
+
+                tmdb_data = await fetch_tmdb(series)
+
+                if tmdb_data:
+                    _, _, _, _, api_language = tmdb_data
+                    if api_language:
+                        language = api_language
+                        SERIES_LANGUAGE_CACHE[series] = api_language
+
+        except Exception as e:
+            logger.error(f"Language auto-detect failed: {e}")
+
     # ------------------ DUPLICATE CHECK ------------------
 
     existing = await get_all_files_by_season_and_quality(
@@ -53,7 +82,8 @@ async def save_series_file_for_bulk_index(message: types.Message):
 
     # ------------------ POSTER ------------------
 
-    poster = await get_series_poster_async(series) or DEFAULT_POSTER
+    poster, _, _, _ = await get_series_info(series)
+    poster = poster or DEFAULT_POSTER
 
     # ------------------ SAVE DOC ------------------
 
@@ -67,7 +97,7 @@ async def save_series_file_for_bulk_index(message: types.Message):
         "quality": quality,
         "language": language,
         "file_id": file_id,
-        "media_type": media_type,  # 🔥 NEW FIELD
+        "media_type": media_type,
         "poster": poster,
         "timestamp": message.date
     }
