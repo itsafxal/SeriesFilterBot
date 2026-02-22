@@ -11,7 +11,7 @@ from config import (
     SPELL_IMG,
     SEASONS_PER_PAGE
 )
-
+from sqlite_db import search_series_sync
 from DB.database import (
     search_series,
     get_series_summary,
@@ -29,40 +29,27 @@ from CyberTG.poster import get_series_info
 
 async def resolve_series_with_suggestions(text):
 
-    query = text.strip().lower()
+    query = text.strip()
     if not query:
         return None, []
 
-    results = await search_series(query)
+    # ⚡ FAST SQLITE SEARCH (indexed + cached)
+    results = search_series_sync(query)
 
-    if not results:
-        fuzzy = await suggest_series(query)
-        if fuzzy:
-            return None, fuzzy[:8]
-        return None, []
+    if results:
+        unique = list(dict.fromkeys(results))
 
-    unique = list(dict.fromkeys(results))
-    query_words = query.split()
+        # Exact match → open directly
+        for r in unique:
+            if r.lower() == query.lower():
+                return r, []
 
-    # -------------------------------------------------
-    # If only one result exists
-    # -------------------------------------------------
-    if len(unique) == 1:
-        result = unique[0].lower()
-        result_words = result.split()
+        # Otherwise show only TOP 4
+        return None, unique[:4]
 
-        # Open only if query is specific enough
-        # (query has equal or more words than result base)
-        if len(query_words) >= len(result_words):
-            return unique[0], []
-
-        # Otherwise show suggestion
-        return None, unique
-
-    # -------------------------------------------------
-    # If multiple results → always show suggestions
-    # -------------------------------------------------
-    return None, unique[:8]
+    # If no SQLite match → fuzzy fallback (LIMIT 4)
+    fuzzy = await suggest_series(query, limit=4)
+    return None, fuzzy[:4]
     
 # =================================================
 # CAPTION BUILDER
