@@ -2,6 +2,7 @@ import re
 from typing import List, Optional
 
 from DB.sqlite_db import search_series_sync
+from DB.database import search_series
 # -------------------------------------------------
 # RAPIDFUZZ (OPTIONAL BUT RECOMMENDED)
 # -------------------------------------------------
@@ -33,30 +34,6 @@ def clean_query(q: str) -> str:
 
 
 # -------------------------------------------------
-# STRICT RESOLVER (EXACT MATCH ONLY)
-# -------------------------------------------------
-
-async def resolve_series(query: str) -> Optional[str]:
-
-    query = clean_query(query)
-    if not query:
-        return None
-
-    rows = await search_series(query)
-
-    if not rows:
-        return None
-
-    query_lower = query.lower()
-
-    for r in rows:
-        if r.lower().strip() == query_lower:
-            return r
-
-    return None
-
-
-# -------------------------------------------------
 # GET ALL SERIES TITLES (FOR FUZZY SEARCH)
 # -------------------------------------------------
 
@@ -83,7 +60,7 @@ async def suggest_series(query: str, limit: int = 4) -> List[str]:
         return []
 
     # 1️⃣ First try direct SQLite LIKE search
-    rows = search_series_sync(query)
+    rows = search_series(query)
 
     if rows:
         return list(rows)[:limit]
@@ -92,13 +69,13 @@ async def suggest_series(query: str, limit: int = 4) -> List[str]:
     short_query = query[:3]
 
     if len(short_query) >= 3:
-        rows = search_series_sync(short_query)
+        rows = search_series(short_query)
         if rows:
             return list(rows)[:limit]
 
     # 3️⃣ LAST fallback → RapidFuzz but only on narrowed candidates
     if HAVE_RAPIDFUZZ:
-        candidates = list(search_series_sync(short_query))
+        candidates = list(search_series(short_query))
         if not candidates:
             return []
 
