@@ -213,10 +213,8 @@ def register_filters(cyber: Client):
             ]
 
             buttons = []
-
             for s in suggestions:
-                _, year, _, _ = await get_series_info(s)
-                label = f"{s} ({year})" if year else s
+                label = s  # No TMDB call here
                 lines.append(f"○ {small_caps(label)}")
                 buttons.append([BTN(label, callback_data=f"sug|{s}")])
 
