@@ -104,12 +104,23 @@ async def finish_progress(cyber, user_id):
         return
 
     try:
-        await cyber.edit_message_text(
+        msg = await cyber.edit_message_text(
             user_id,
             p["msg_id"],
             f"✅ Delivery complete!\nSent: {p['total']} files",
             parse_mode=enums.ParseMode.MARKDOWN
         )
+
+        # 🔥 AUTO DELETE PROGRESS MESSAGE
+        delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
+        if delay and delay > 0:
+            delete_message_later(
+                cyber,
+                user_id,
+                p["msg_id"],
+                delay
+            )
+
     except:
         pass
 
