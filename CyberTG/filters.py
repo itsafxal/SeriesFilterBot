@@ -26,37 +26,72 @@ from utils.cyber_delete import delete_message_later
 from CyberTG.poster import get_series_info
 
 
-async def resolve_series_with_suggestions(text):
+async def resolve_series_with_suggestions(text: str):
+    """
+    Resolves a series name from user input.
+
+    Returns:
+        (series_name, [])
+        OR
+        (None, suggestions_list)
+    """
+
+    if not text:
+        return None, []
 
     query = text.strip().lower()
     if not query:
         return None, []
 
-    # 🔥 Use FAST SQLite search (indexed + cached)
-    results = await search_series(query)   # ✅ FIXED
-
-    if not results:
+    # -------------------------------------------------
+    # 1️⃣ Primary DB Search (FAST indexed search)
+    # -------------------------------------------------
+    try:
+        results = await search_series(query)   # MUST be awaited
+    except Exception:
         return None, []
 
-    # Remove duplicates
-    unique = list(dict.fromkeys(results))[:4]   # LIMIT 4
+    # Safety check (avoid coroutine leakage)
+    if not isinstance(results, (list, tuple)):
+        return None, []
+
+    # -------------------------------------------------
+    # 2️⃣ No direct results → fallback to fuzzy suggestions
+    # -------------------------------------------------
+    if not results:
+        try:
+            fuzzy = await suggest_series(query)
+            if isinstance(fuzzy, (list, tuple)):
+                unique_fuzzy = list(dict.fromkeys(fuzzy))[:4]
+                return None, unique_fuzzy
+        except Exception:
+            pass
+
+        return None, []
+
+    # -------------------------------------------------
+    # 3️⃣ Remove duplicates + limit 4
+    # -------------------------------------------------
+    unique = list(dict.fromkeys(results))[:4]
     query_words = query.split()
 
     # -------------------------------------------------
-    # If only one result exists
+    # 4️⃣ If exactly one result
     # -------------------------------------------------
     if len(unique) == 1:
         result = unique[0]
         result_words = result.lower().split()
 
-        # Open only if query is specific enough
+        # Auto-open only if query is specific enough
+        # (user typed full name or more words)
         if len(query_words) >= len(result_words):
             return result, []
 
+        # Otherwise show suggestion
         return None, unique
 
     # -------------------------------------------------
-    # If multiple results → always show suggestions
+    # 5️⃣ Multiple matches → always show suggestions
     # -------------------------------------------------
     return None, unique
     
