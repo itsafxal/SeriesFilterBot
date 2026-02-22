@@ -16,14 +16,14 @@ from DB.database import (
     search_series,
     get_series_summary,
     get_unique_languages_by_season,
-    get_unique_qualities_by_lang_season
+    get_unique_qualities_by_lang_season,
+    get_global_setting
 )
 
-# ✅ TOP-LEVEL utils imports (correct for your structure)
 from utils.cyber_series import suggest_series, check_owner
 from utils.cyber_filter import encode_payload
 from utils.cyber_font import BTN, UI, small_caps
-
+from utils.cyber_delete import delete_message_later
 from CyberTG.poster import get_series_info
 
 
@@ -211,6 +211,13 @@ def register_filters(cyber: Client):
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb
             )
+            if AUTO_DELETE_DELAY > 0:
+                delete_message_later(
+                    cyber,
+                    msg.chat.id,
+                    msg.id,
+                    AUTO_DELETE_DELAY
+                )
             return
 
         # -------------------------------------------------
@@ -249,6 +256,13 @@ def register_filters(cyber: Client):
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb
             )
+            if AUTO_DELETE_DELAY > 0:
+                delete_message_later(
+                    cyber,
+                    msg.chat.id,
+                    msg.id,
+                    AUTO_DELETE_DELAY
+                )
             return
 
         # -------------------------------------------------
@@ -257,6 +271,13 @@ def register_filters(cyber: Client):
         await m.reply_text(
             UI("No Series Found. Please Try Another Title.")
         )
+        if AUTO_DELETE_DELAY > 0:
+            delete_message_later(
+                cyber,
+                msg.chat.id,
+                msg.id,
+                AUTO_DELETE_DELAY
+            )
 
     # -------------------------------------------------
     # SUGGESTION CLICK
