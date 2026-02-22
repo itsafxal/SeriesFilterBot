@@ -5,8 +5,9 @@ from pyrogram import enums
 from pyrogram.errors import FloodWait, MessageNotModified
 
 from config import logger, CUSTOM_CAPTION_TEXT
-from DB.database import get_all_files_by_season_and_quality
+from DB.database import get_all_files_by_season_and_quality, get_global_setting
 
+from utils.cyber_delete import delete_message_later
 
 # =========================================================
 # SESSION STORE
@@ -167,6 +168,9 @@ async def deliver_files_direct(cyber, user_id):
         clear_session(user_id)
         return
 
+    # 🔥 Fetch auto-delete delay ONCE (important)
+    auto_delay = await get_global_setting("AUTO_DELETE_DELAY", 0)
+
     await init_progress(cyber, user_id, series, len(files))
 
     queue = get_user_queue(user_id)
@@ -179,35 +183,32 @@ async def deliver_files_direct(cyber, user_id):
                 file_name=f.get("file_name", "Episode")
             )
 
-            # skip if no file_id
             if not f.get("file_id"):
                 return
 
             media_type = f.get("media_type")
+            sent_msg = None
 
             try:
 
-                # ---------- VIDEO ----------
                 if media_type == "video":
-                    await cyber.send_video(
+                    sent_msg = await cyber.send_video(
                         user_id,
                         f["file_id"],
                         caption=caption,
                         parse_mode=enums.ParseMode.MARKDOWN
                     )
 
-                # ---------- AUDIO ----------
                 elif media_type == "audio":
-                    await cyber.send_audio(
+                    sent_msg = await cyber.send_audio(
                         user_id,
                         f["file_id"],
                         caption=caption,
                         parse_mode=enums.ParseMode.MARKDOWN
                     )
 
-                # ---------- DOCUMENT ----------
                 else:
-                    await cyber.send_document(
+                    sent_msg = await cyber.send_document(
                         user_id,
                         f["file_id"],
                         caption=caption,
@@ -216,21 +217,32 @@ async def deliver_files_direct(cyber, user_id):
 
             except Exception:
 
-                # 🔥 fallback for old DB entries
+                # fallback
                 try:
-                    await cyber.send_video(
+                    sent_msg = await cyber.send_video(
                         user_id,
                         f["file_id"],
                         caption=caption,
                         parse_mode=enums.ParseMode.MARKDOWN
                     )
                 except:
-                    await cyber.send_document(
+                    sent_msg = await cyber.send_document(
                         user_id,
                         f["file_id"],
                         caption=caption,
                         parse_mode=enums.ParseMode.MARKDOWN
                     )
+
+            # -----------------------------------------
+            # AUTO DELETE
+            # -----------------------------------------
+            if sent_msg and auto_delay and auto_delay > 0:
+                delete_message_later(
+                    cyber,
+                    user_id,
+                    sent_msg.id,
+                    auto_delay
+                )
 
         await queue.put(send_job)
 
