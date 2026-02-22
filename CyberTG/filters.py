@@ -11,7 +11,7 @@ from config import (
     SPELL_IMG,
     SEASONS_PER_PAGE
 )
-from sqlite_db import search_series_sync
+from DB.sqlite_db import search_series_sync
 from DB.database import (
     search_series,
     get_series_summary,
