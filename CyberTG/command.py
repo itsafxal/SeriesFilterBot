@@ -1,6 +1,7 @@
 import io
 import asyncio
 import base64
+from utils.cyber_filter import decode_payload
 from utils.cyber_font import BTN, UI, small_caps
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
@@ -93,17 +94,11 @@ def register_command_handlers(cyber: Client):
                 # PAYLOAD DECODE
                 # ------------------------------
                 try:
-                    data = payload.replace("send_", "")
-                    data += "=" * (-len(data) % 4)
+                    decoded = decode_payload(payload)
+                    if not decoded:
+                        return await message.reply("Invalid or expired link.")
 
-                    raw = base64.urlsafe_b64decode(data).decode()
-
-                    parts = raw.split("|")
-
-                    if len(parts) != 5:
-                        return await message.reply("Invalid link.")
-
-                    owner, series, season, lang, quality = parts
+                    owner, series, season, lang, quality = decoded
 
                     if int(owner) != uid:
                         return await message.reply(
