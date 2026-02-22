@@ -64,5 +64,12 @@ root_logger.addHandler(console_handler)
 logger = logging.getLogger("BOT")
 logger.info("Logger initialized")
 
-# ✅ ADD THIS
-logging.getLogger("apscheduler").setLevel(logging.ERROR)
+# ✅ Silence APScheduler logs
+for name in [
+    "apscheduler",
+    "apscheduler.scheduler",
+    "apscheduler.executors",
+    "apscheduler.executors.default",
+    "apscheduler.jobstores",
+]:
+    logging.getLogger(name).setLevel(logging.CRITICAL)
