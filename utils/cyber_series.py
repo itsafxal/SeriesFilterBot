@@ -1,8 +1,7 @@
 import re
 from typing import List, Optional
 
-from DB.database import search_series
-
+from sqlite_db import search_series_sync
 # -------------------------------------------------
 # RAPIDFUZZ (OPTIONAL BUT RECOMMENDED)
 # -------------------------------------------------
@@ -76,61 +75,48 @@ async def _get_all_series_titles() -> List[str]:
 # FUZZY SUGGESTIONS (WORKS EVEN IF NO LIKE MATCH)
 # -------------------------------------------------
 
-async def suggest_series(query: str, limit: int = 5) -> List[str]:
+async def suggest_series(query: str, limit: int = 4) -> List[str]:
 
     query = clean_query(query)
 
     if not query:
         return []
 
-    # First attempt normal LIKE search
-    rows = await search_series(query)
+    # 1️⃣ First try direct SQLite LIKE search
+    rows = search_series_sync(query)
 
     if rows:
-        candidates = list(set(rows))
-    else:
-        # If LIKE fails → get all titles for fuzzy comparison
-        candidates = await _get_all_series_titles()
+        return list(rows)[:limit]
 
-    if not candidates:
-        return []
+    # 2️⃣ If no match → try relaxed search using first 3 letters
+    short_query = query[:3]
 
-    # ---------------- RAPIDFUZZ MODE ----------------
+    if len(short_query) >= 3:
+        rows = search_series_sync(short_query)
+        if rows:
+            return list(rows)[:limit]
+
+    # 3️⃣ LAST fallback → RapidFuzz but only on narrowed candidates
     if HAVE_RAPIDFUZZ:
+        candidates = list(search_series_sync(short_query))
+        if not candidates:
+            return []
+
         matches = rf_process.extract(
             query,
             candidates,
             limit=limit,
             scorer=rf_fuzz.ratio,
-            score_cutoff=40
+            score_cutoff=50
         )
         return [m[0] for m in matches]
 
-    # ---------------- FALLBACK SCORING ----------------
-    scored = []
-
-    for c in candidates:
-        cl = c.lower()
-
-        # Simple similarity scoring
-        match_chars = sum(ch in cl for ch in query)
-        score = (match_chars / (len(query) + len(cl))) * 200
-
-        # Boost if startswith
-        if cl.startswith(query):
-            score += 20
-
-        scored.append((c, score))
-
-    scored.sort(key=lambda x: x[1], reverse=True)
-
-    return [x[0] for x in scored[:limit]]
+    return []
 
 
 # -------------------------------------------------
 # PARSER FOR INDEXING
 # -------------------------------------------------
-import re
 
 def parse_series_info(file_name: str):
     """
