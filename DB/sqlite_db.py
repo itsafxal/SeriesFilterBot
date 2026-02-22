@@ -109,25 +109,50 @@ def _extract_language_local(file_name: str) -> str:
     return "-".join(sorted(found))
 
 def create_sql_schema(conn):
-    """Creates the necessary table in the SQLite database, including 'language'."""
+    """
+    Creates hardened SQLite schema with duplicate protection.
+    """
     cursor = conn.cursor()
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+
             channel_id INTEGER NOT NULL,
             message_id INTEGER NOT NULL,
+
             file_name TEXT NOT NULL,
-            normalized_name TEXT NOT NULL,
+
+            -- Case-insensitive series name
+            normalized_name TEXT NOT NULL COLLATE NOCASE,
+
             season INTEGER NOT NULL,
             episode INTEGER NOT NULL,
+
             quality TEXT NOT NULL,
-            language TEXT NOT NULL, 
-            file_id TEXT,  
-            UNIQUE(channel_id, message_id)
+            language TEXT NOT NULL,
+
+            file_id TEXT,
+
+            -- Prevent duplicate telegram messages
+            UNIQUE(channel_id, message_id),
+
+            -- Prevent duplicate episode entries
+            UNIQUE(normalized_name, season, episode, quality, language)
         )
     """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_normalized_season_language ON files (normalized_name, language, season)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_name_season_quality_language ON files (normalized_name, season, quality, language)")
+
+    # Optimized search indexes
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_series_lookup
+        ON files (normalized_name, language, season)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_quality_lookup
+        ON files (normalized_name, season, quality, language)
+    """)
+
     conn.commit()
 
 def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func, logger):
@@ -419,26 +444,45 @@ def get_file_by_message_id_and_channel_id_sync(channel_id: int, message_id: int)
     return dict(file_entry) if file_entry else None
 
 def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
-    """Synchronously inserts/updates a single file document into SQLITE."""
+    """Safely inserts a single file document into SQLITE with duplicate protection."""
+
     try:
         conn = sqlite3.connect(SQLITE_DB_PATH)
         cursor = conn.cursor()
+
+        # 🔒 HARD NORMALIZATION (DB-level safety)
+        normalized = (file_doc.get("normalized_name") or "").strip().lower()
+        file_doc["normalized_name"] = normalized
+
         cursor.execute("""
-            INSERT OR REPLACE INTO files 
-            (channel_id, message_id, file_name, normalized_name, season, episode, quality, language, file_id)
+            INSERT OR IGNORE INTO files
+            (channel_id, message_id, file_name, normalized_name,
+             season, episode, quality, language, file_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            file_doc["channel_id"], file_doc["message_id"], file_doc["file_name"], 
-            file_doc["normalized_name"], file_doc["season"], file_doc["episode"], 
-            file_doc["quality"], file_doc["language"],
+            file_doc["channel_id"],
+            file_doc["message_id"],
+            file_doc["file_name"],
+            file_doc["normalized_name"],
+            file_doc["season"],
+            file_doc["episode"],
+            file_doc["quality"],
+            file_doc["language"],
             file_doc.get("file_id")
         ))
+
+        inserted = cursor.rowcount  # 1 if inserted, 0 if duplicate
+
         conn.commit()
         conn.close()
-        clear_all_caches() 
-        return True
+
+        if inserted:
+            clear_all_caches()
+
+        return bool(inserted)
+
     except Exception as e:
-        logger.error(f"Failed to insert/update file doc in SQLite: {e}")
+        logger.error(f"Failed to insert file into SQLite: {e}")
         return False
 
 def clear_all_caches():
