@@ -51,8 +51,6 @@ async def fetch_tmdb(series_name: str):
     rating = str(item.get("vote_average", "N/A"))
     genre = "Unknown"
 
-    # ------------------ LANGUAGE DETECTION ------------------
-
     lang_code = item.get("original_language", "")
 
     LANG_MAP = {
@@ -79,7 +77,7 @@ async def fetch_tmdb(series_name: str):
 
 
 # =========================================================
-# OMDB FETCH (Fallback)
+# OMDB FETCH
 # =========================================================
 
 async def fetch_omdb(series_name: str):
@@ -110,11 +108,7 @@ async def fetch_omdb(series_name: str):
     genre = data.get("Genre", "N/A")
     rating = data.get("imdbRating", "N/A")
 
-    # ------------------ LANGUAGE ------------------
-
     language = data.get("Language", "Original Language")
-
-    # Example: "Malayalam, Hindi"
     if "," in language:
         language = language.split(",")[0].strip()
 
@@ -122,20 +116,22 @@ async def fetch_omdb(series_name: str):
 
 
 # =========================================================
-# MAIN INFO FUNCTION (WITH CACHE)
+# MAIN INFO (BACKWARD SAFE)
 # =========================================================
 
 async def get_series_info(series_name: str):
+    """
+    Backward-compatible.
+    Returns ONLY:
+        poster, year, genre, rating
+    """
 
     cached = get_cached(series_name)
 
     if cached:
-        # Expected cached order:
-        # poster, year, genre, rating, source, language
         poster, year, genre, rating, source, language = cached
-        return poster, year, genre, rating, language
+        return poster, year, genre, rating
 
-    # ---------- TMDB FIRST ----------
     tmdb = await fetch_tmdb(series_name)
 
     if tmdb:
@@ -151,9 +147,8 @@ async def get_series_info(series_name: str):
             language
         )
 
-        return poster, year, genre, rating, language
+        return poster, year, genre, rating
 
-    # ---------- OMDB FALLBACK ----------
     omdb = await fetch_omdb(series_name)
 
     if omdb:
@@ -169,19 +164,43 @@ async def get_series_info(series_name: str):
             language
         )
 
-        return poster, year, genre, rating, language
+        return poster, year, genre, rating
 
-    return None, None, None, None, None
+    return None, None, None, None
 
 
 # =========================================================
-# LEGACY POSTER WRAPPER (Backward Compatible)
+# LANGUAGE ACCESSOR (NEW)
+# =========================================================
+
+async def get_series_language(series_name: str):
+    """
+    Returns only language.
+    Safe for indexing usage.
+    """
+
+    cached = get_cached(series_name)
+
+    if cached:
+        _, _, _, _, _, language = cached
+        return language
+
+    tmdb = await fetch_tmdb(series_name)
+    if tmdb:
+        return tmdb[4]
+
+    omdb = await fetch_omdb(series_name)
+    if omdb:
+        return omdb[4]
+
+    return "Original Language"
+
+
+# =========================================================
+# LEGACY POSTER WRAPPER
 # =========================================================
 
 async def get_series_poster_async(series_name: str):
-    """
-    Legacy wrapper for old imports.
-    Returns only poster.
-    """
-    poster, _, _, _, _ = await get_series_info(series_name)
+    poster, _, _, _ = await get_series_info(series_name)
     return poster
+    
