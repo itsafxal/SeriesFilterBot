@@ -31,7 +31,7 @@ from DB.database import (
     set_global_setting, 
     get_global_setting,
 )
-from DB.database import s
+
 from .files import (
     deliver_files_direct,
     set_session
