@@ -27,18 +27,13 @@ async def fetch_tmdb(series_name: str):
         return None
 
     results = data.get("results", [])
-
     if not results:
         return None
 
     item = results[0]
 
     poster_path = item.get("poster_path")
-
-    poster = (
-        f"{TMDB_IMAGE_BASE}{poster_path}"
-        if poster_path else None
-    )
+    poster = f"{TMDB_IMAGE_BASE}{poster_path}" if poster_path else None
 
     year = (
         item.get("first_air_date", "")[:4]
@@ -47,14 +42,32 @@ async def fetch_tmdb(series_name: str):
     )
 
     rating = str(item.get("vote_average", "N/A"))
-
     genre = "Unknown"
+
+    # 🔥 LANGUAGE DETECTION
+    lang_code = item.get("original_language", "")
+
+    LANG_MAP = {
+        "en": "English",
+        "hi": "Hindi",
+        "ml": "Malayalam",
+        "ta": "Tamil",
+        "te": "Telugu",
+        "kn": "Kannada",
+        "es": "Spanish",
+        "fr": "French",
+        "ko": "Korean",
+        "ja": "Japanese",
+        "zh": "Chinese"
+    }
+
+    language = LANG_MAP.get(lang_code, "Original Language")
 
     if not poster:
         return None
 
-    return poster, year, genre, rating
-
+    return poster, year, genre, rating, language
+    
 async def fetch_omdb(series_name: str):
 
     url = "http://www.omdbapi.com/"
@@ -76,7 +89,6 @@ async def fetch_omdb(series_name: str):
         return None
 
     poster = data.get("Poster")
-
     if not poster or poster == "N/A":
         return None
 
@@ -84,20 +96,28 @@ async def fetch_omdb(series_name: str):
     genre = data.get("Genre", "N/A")
     rating = data.get("imdbRating", "N/A")
 
-    return poster, year, genre, rating
+    # 🔥 LANGUAGE FROM OMDB
+    language = data.get("Language", "Original Language")
+
+    # OMDB sometimes returns: "Malayalam, Hindi"
+    if "," in language:
+        language = language.split(",")[0].strip()
+
+    return poster, year, genre, rating, language
+    
 
 async def get_series_info(series_name: str):
 
     cached = get_cached(series_name)
 
     if cached:
-        poster, year, genre, rating, source = cached
-        return poster, year, genre, rating
+        poster, year, genre, rating, source, language = cached
+        return poster, year, genre, rating, language
 
     tmdb = await fetch_tmdb(series_name)
 
     if tmdb:
-        poster, year, genre, rating = tmdb
+        poster, year, genre, rating, language = tmdb
 
         save_cache(
             series_name,
@@ -105,15 +125,16 @@ async def get_series_info(series_name: str):
             year,
             genre,
             rating,
-            "tmdb"
+            "tmdb",
+            language
         )
 
-        return poster, year, genre, rating
+        return poster, year, genre, rating, language
 
     omdb = await fetch_omdb(series_name)
 
     if omdb:
-        poster, year, genre, rating = omdb
+        poster, year, genre, rating, language = omdb
 
         save_cache(
             series_name,
@@ -121,13 +142,13 @@ async def get_series_info(series_name: str):
             year,
             genre,
             rating,
-            "omdb"
+            "omdb",
+            language
         )
 
-        return poster, year, genre, rating
-        
-    return None, None, None, None
+        return poster, year, genre, rating, language
 
+    return None, None, None, None, None
 
 async def get_series_poster_async(series_name: str):
     """
