@@ -3,7 +3,7 @@ from config import TMDB_CACHE_DB
 
 
 # -------------------------------------------------
-# INIT CACHE DB
+# INIT CACHE DB (WITH LANGUAGE COLUMN)
 # -------------------------------------------------
 
 def init_cache():
@@ -11,6 +11,7 @@ def init_cache():
     conn = sqlite3.connect(TMDB_CACHE_DB)
     c = conn.cursor()
 
+    # Create table if not exists
     c.execute("""
         CREATE TABLE IF NOT EXISTS poster_cache (
             title TEXT PRIMARY KEY,
@@ -19,9 +20,17 @@ def init_cache():
             genre TEXT,
             rating TEXT,
             source TEXT,
+            language TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # 🔥 Auto-migration: add language column if old DB
+    c.execute("PRAGMA table_info(poster_cache)")
+    columns = [col[1] for col in c.fetchall()]
+
+    if "language" not in columns:
+        c.execute("ALTER TABLE poster_cache ADD COLUMN language TEXT")
 
     conn.commit()
     conn.close()
@@ -41,7 +50,7 @@ def get_cached(title: str):
     c = conn.cursor()
 
     c.execute("""
-        SELECT poster, year, genre, rating, source
+        SELECT poster, year, genre, rating, source, language
         FROM poster_cache
         WHERE title=?
     """, (title.lower(),))
@@ -56,22 +65,23 @@ def get_cached(title: str):
 # SAVE CACHE
 # -------------------------------------------------
 
-def save_cache(title, poster, year, genre, rating, source):
+def save_cache(title, poster, year, genre, rating, source, language):
 
     conn = sqlite3.connect(TMDB_CACHE_DB)
     c = conn.cursor()
 
     c.execute("""
         INSERT OR REPLACE INTO poster_cache
-        (title, poster, year, genre, rating, source)
-        VALUES (?, ?, ?, ?, ?, ?)
+        (title, poster, year, genre, rating, source, language)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (
         title.lower(),
         poster,
         year,
         genre,
         rating,
-        source
+        source,
+        language
     ))
 
     conn.commit()
