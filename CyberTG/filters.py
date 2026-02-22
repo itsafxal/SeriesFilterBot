@@ -190,6 +190,8 @@ def register_filters(cyber: Client):
         if not m.text or m.text.startswith("/"):
             return
 
+        AUTO_DELETE_DELAY = await get_global_setting("AUTO_DELETE_DELAY", 0)
+
         series, suggestions = await resolve_series_with_suggestions(m.text)
 
         # -------------------------------------------------
