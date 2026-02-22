@@ -11,3 +11,4 @@ pyspellchecker
 aiohttp
 requests
 rapidfuzz
+apscheduler
