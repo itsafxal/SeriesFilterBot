@@ -6,8 +6,15 @@ scheduler = AsyncIOScheduler()
 
 
 def start_scheduler():
-    if not scheduler.running:
-        scheduler.start()
+    """
+    Start scheduler safely after event loop exists.
+    Call this once in main.py after await cyber.start()
+    """
+    try:
+        if not scheduler.running:
+            scheduler.start()
+    except RuntimeError:
+        pass
 
 
 async def delete_message_job(cyber, chat_id, message_id):
