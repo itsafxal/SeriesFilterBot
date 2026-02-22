@@ -368,7 +368,7 @@ def register_command_handlers(cyber: Client):
             await message.reply(
                 "Invalid value.\n\nExample:\n/autodel 300\n/autodel off"
             )
-########################################################################################
+
 
     @cyber.on_message(filters.command("filedel") & filters.user(ADMIN_USERS))
     async def set_autodel_command(_, message: Message):
