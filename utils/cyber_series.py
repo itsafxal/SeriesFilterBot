@@ -131,6 +131,8 @@ async def suggest_series(query: str, limit: int = 5) -> List[str]:
 # PARSER FOR INDEXING
 # -------------------------------------------------
 
+import re
+
 def parse_series_info(file_name: str):
     """
     Parser used during bulk index.
@@ -142,6 +144,7 @@ def parse_series_info(file_name: str):
         return "", 0, 0, "UNKNOWN", "Unknown"
 
     name = file_name
+    upper = name.upper()
 
     # ---------------- SEASON / EPISODE ----------------
 
@@ -157,36 +160,80 @@ def parse_series_info(file_name: str):
 
     quality = "UNKNOWN"
     for q in ["4K", "1080P", "720P", "480P", "360P"]:
-        if q.lower() in name.lower():
+        if q in upper:
             quality = q
             break
 
-    # ---------------- LANGUAGE ----------------
+    # ---------------- LANGUAGE DETECTION ----------------
 
-    langs = []
-    upper = name.upper()
+    langs = set()
 
+    # Full language names
     if "HINDI" in upper:
-        langs.append("Hindi")
+        langs.add("Hindi")
     if "ENGLISH" in upper:
-        langs.append("English")
+        langs.add("English")
     if "TAMIL" in upper:
-        langs.append("Tamil")
+        langs.add("Tamil")
     if "TELUGU" in upper:
-        langs.append("Telugu")
+        langs.add("Telugu")
     if "MALAYALAM" in upper:
-        langs.append("Malayalam")
+        langs.add("Malayalam")
+    if "KANNADA" in upper:
+        langs.add("Kannada")
 
-    language = "-".join(langs) if langs else "Unknown"
+    # Short tags
+    if re.search(r"\bHIN\b", upper):
+        langs.add("Hindi")
+    if re.search(r"\bENG\b", upper):
+        langs.add("English")
+    if re.search(r"\bTAM\b", upper):
+        langs.add("Tamil")
+    if re.search(r"\bTEL\b", upper):
+        langs.add("Telugu")
+    if re.search(r"\bMAL\b", upper):
+        langs.add("Malayalam")
+
+    # Multi / Dual detection
+    if "DUAL" in upper or "MULTI" in upper:
+        return _normalize_title(name), season, episode, quality, "Multi Audio"
+
+    # Final language resolution
+    if len(langs) == 1:
+        language = next(iter(langs))
+    elif len(langs) > 1:
+        language = "-".join(sorted(langs))
+    else:
+        language = "Unknown"
 
     # ---------------- NORMALIZE TITLE ----------------
 
-    clean = re.sub(r"[._]", " ", name)
+    normalized_title = _normalize_title(name)
+
+    return normalized_title, season, episode, quality, language
+
+
+# -------------------------------------------------
+# TITLE NORMALIZER
+# -------------------------------------------------
+
+def _normalize_title(name: str):
+
+    clean = re.sub(r"[._\-]", " ", name)
     clean = re.sub(r"\[.*?\]|\(.*?\)", "", clean)
     clean = re.sub(r"[sS]\d+[^\d]?[eE]\d+.*", "", clean)
-    clean = re.sub(r"\s+", " ", clean).strip().title()
 
-    return clean, season, episode, quality, language
+    # Remove common junk words
+    clean = re.sub(
+        r"\b(4K|1080P|720P|480P|360P|HDRIP|WEBRIP|WEB|BLURAY|X264|X265|HEVC|AAC|DDP5\.1)\b",
+        "",
+        clean,
+        flags=re.IGNORECASE
+    )
+
+    clean = re.sub(r"\s+", " ", clean).strip()
+
+    return clean.title()
 
 
 # -------------------------------------------------
