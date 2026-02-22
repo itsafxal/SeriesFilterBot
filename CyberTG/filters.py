@@ -29,27 +29,39 @@ from CyberTG.poster import get_series_info
 
 async def resolve_series_with_suggestions(text):
 
-    query = text.strip()
+    query = text.strip().lower()
     if not query:
         return None, []
 
-    # ⚡ FAST SQLITE SEARCH (indexed + cached)
+    # 🔥 Use FAST SQLite search (indexed + cached)
     results = search_series_sync(query)
 
-    if results:
-        unique = list(dict.fromkeys(results))
+    if not results:
+        return None, []
 
-        # Exact match → open directly
-        for r in unique:
-            if r.lower() == query.lower():
-                return r, []
+    # Remove duplicates
+    unique = list(dict.fromkeys(results))[:4]   # ✅ LIMIT 4 ALWAYS
+    query_words = query.split()
 
-        # Otherwise show only TOP 4
-        return None, unique[:4]
+    # -------------------------------------------------
+    # If only one result exists
+    # -------------------------------------------------
+    if len(unique) == 1:
+        result = unique[0]
+        result_words = result.lower().split()
 
-    # If no SQLite match → fuzzy fallback (LIMIT 4)
-    fuzzy = await suggest_series(query, limit=4)
-    return None, fuzzy[:4]
+        # Open only if query is specific enough
+        # (query has equal or more words than result base)
+        if len(query_words) >= len(result_words):
+            return result, []
+
+        # Otherwise show suggestion
+        return None, unique
+
+    # -------------------------------------------------
+    # If multiple results → always show suggestions (max 4)
+    # -------------------------------------------------
+    return None, unique
     
 # =================================================
 # CAPTION BUILDER
