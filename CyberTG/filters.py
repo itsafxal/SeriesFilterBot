@@ -33,13 +33,13 @@ async def resolve_series_with_suggestions(text):
         return None, []
 
     # 🔥 Use FAST SQLite search (indexed + cached)
-    results = search_series(query)
+    results = await search_series(query)   # ✅ FIXED
 
     if not results:
         return None, []
 
     # Remove duplicates
-    unique = list(dict.fromkeys(results))[:4]   # ✅ LIMIT 4 ALWAYS
+    unique = list(dict.fromkeys(results))[:4]   # LIMIT 4
     query_words = query.split()
 
     # -------------------------------------------------
@@ -50,15 +50,13 @@ async def resolve_series_with_suggestions(text):
         result_words = result.lower().split()
 
         # Open only if query is specific enough
-        # (query has equal or more words than result base)
         if len(query_words) >= len(result_words):
             return result, []
 
-        # Otherwise show suggestion
         return None, unique
 
     # -------------------------------------------------
-    # If multiple results → always show suggestions (max 4)
+    # If multiple results → always show suggestions
     # -------------------------------------------------
     return None, unique
     
