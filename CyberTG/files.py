@@ -169,7 +169,7 @@ async def deliver_files_direct(cyber, user_id):
         return
 
     # 🔥 Fetch auto-delete delay ONCE (important)
-    auto_delay = await get_global_setting("AUTO_DELETE_DELAY", 0)
+    auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
 
     await init_progress(cyber, user_id, series, len(files))
 
