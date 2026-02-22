@@ -59,23 +59,24 @@ async def suggest_series(query: str, limit: int = 4) -> List[str]:
     if not query:
         return []
 
-    # 1️⃣ First try direct SQLite LIKE search
-    rows = search_series(query)
+    # 1️⃣ Direct SQLite search
+    rows = await search_series(query)
 
     if rows:
         return list(rows)[:limit]
 
-    # 2️⃣ If no match → try relaxed search using first 3 letters
+    # 2️⃣ Relaxed search (first 3 letters)
     short_query = query[:3]
 
     if len(short_query) >= 3:
-        rows = search_series(short_query)
+        rows = await search_series(short_query)
         if rows:
             return list(rows)[:limit]
 
-    # 3️⃣ LAST fallback → RapidFuzz but only on narrowed candidates
-    if HAVE_RAPIDFUZZ:
-        candidates = list(search_series(short_query))
+    # 3️⃣ RapidFuzz fallback
+    if HAVE_RAPIDFUZZ and len(short_query) >= 3:
+
+        candidates = await search_series(short_query)
         if not candidates:
             return []
 
@@ -86,6 +87,7 @@ async def suggest_series(query: str, limit: int = 4) -> List[str]:
             scorer=rf_fuzz.ratio,
             score_cutoff=50
         )
+
         return [m[0] for m in matches]
 
     return []
