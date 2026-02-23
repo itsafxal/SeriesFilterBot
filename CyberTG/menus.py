@@ -6,6 +6,7 @@ from pyrogram.types import (
     InputMediaPhoto,
     Message
 )
+from pyrogram.errors import MessageNotModified
 
 from config import DEFAULT_POSTER, ADMIN_USERS
 from utils.cyber_font import BTN, UI
@@ -24,6 +25,29 @@ logger = logging.getLogger(__name__)
 # =====================================================
 admin_temp = {}
 
+# =====================================================
+# SAFE EDIT FUNCTION (Prevents MESSAGE_NOT_MODIFIED)
+# =====================================================
+async def safe_edit(message, text=None, caption=None, reply_markup=None):
+
+    try:
+        if caption is not None:
+            await message.edit_caption(
+                caption=caption,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+        elif text is not None:
+            await message.edit_text(
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+
+    except MessageNotModified:
+        pass
+    except Exception as e:
+        logger.error(f"Edit error: {e}")
 
 # =====================================================
 # HELP MENU
@@ -39,20 +63,12 @@ async def help_menu_handler(cyber: Client, query: CallbackQuery):
     )
 
     keyboard = InlineKeyboardMarkup([
-        [
-            BTN("🏡 HOME", callback_data="cyber|"),
-            BTN("🛠 ADMIN", callback_data="admin|menu")
-        ]
+        [BTN("🏡 HOME", callback_data="cyber|"),
+         BTN("🛠 ADMIN", callback_data="admin|menu")]
     ])
 
-    await query.message.edit_caption(
-        text,
-        parse_mode=enums.ParseMode.HTML,
-        reply_markup=keyboard
-    )
-
+    await safe_edit(query.message, caption=text, reply_markup=keyboard)
     await query.answer()
-
 
 # =====================================================
 # HOME MENU
@@ -71,23 +87,25 @@ async def cyber_menu_handler(cyber: Client, query: CallbackQuery):
     keyboard = InlineKeyboardMarkup([
         [BTN("🎞 Browse Library",
              switch_inline_query_current_chat="")],
-        [
-            BTN("⚡ Help", callback_data="help|menu"),
-            BTN("About ✨", callback_data="about|menu")
-        ]
+        [BTN("⚡ Help", callback_data="help|menu"),
+         BTN("About ✨", callback_data="about|menu")]
     ])
 
-    await query.message.edit_media(
-        InputMediaPhoto(
-            media=DEFAULT_POSTER,
-            caption=text,
-            parse_mode=enums.ParseMode.HTML
-        ),
-        reply_markup=keyboard
-    )
+    try:
+        await query.message.edit_media(
+            InputMediaPhoto(
+                media=DEFAULT_POSTER,
+                caption=text,
+                parse_mode=enums.ParseMode.HTML
+            ),
+            reply_markup=keyboard
+        )
+    except MessageNotModified:
+        pass
+    except Exception:
+        await safe_edit(query.message, caption=text, reply_markup=keyboard)
 
     await query.answer()
-
 
 # =====================================================
 # ABOUT MENU
@@ -102,23 +120,15 @@ async def about_menu_handler(_, query: CallbackQuery):
     )
 
     keyboard = InlineKeyboardMarkup([
-        [
-            BTN("🏡 HOME", callback_data="cyber|"),
-            BTN("⚡ HELP", callback_data="help|menu")
-        ]
+        [BTN("🏡 HOME", callback_data="cyber|"),
+         BTN("⚡ HELP", callback_data="help|menu")]
     ])
 
-    await query.message.edit_caption(
-        text,
-        parse_mode=enums.ParseMode.HTML,
-        reply_markup=keyboard
-    )
-
+    await safe_edit(query.message, caption=text, reply_markup=keyboard)
     await query.answer()
 
-
 # =====================================================
-# OWNER / ADMIN MENU
+# ADMIN PANEL
 # =====================================================
 async def owner_menu_handler(_, query: CallbackQuery):
 
@@ -130,14 +140,11 @@ async def owner_menu_handler(_, query: CallbackQuery):
         [BTN("🏡 HOME", callback_data="cyber|")]
     ])
 
-    await query.message.edit_caption(
-        "<b>🛠 Admin Panel</b>",
-        parse_mode=enums.ParseMode.HTML,
-        reply_markup=keyboard
-    )
+    await safe_edit(query.message,
+                    caption="<b>🛠 Admin Panel</b>",
+                    reply_markup=keyboard)
 
     await query.answer()
-
 
 # =====================================================
 # GLOBAL SETTINGS ROOT
@@ -145,23 +152,18 @@ async def owner_menu_handler(_, query: CallbackQuery):
 async def global_settings_router(_, query: CallbackQuery):
 
     keyboard = InlineKeyboardMarkup([
-        [BTN("📂 Index Channels", callback_data="gset|index")],
-        [BTN("📝 File Caption", callback_data="gset|caption")],
-        [
-            BTN("⏳ Auto Delete", callback_data="gset|autodel"),
-            BTN("📦 File Auto Delete", callback_data="gset|filedel")
-        ],
+        [BTN("📂 Index Channels", callback_data="index|index")],
+        [BTN("📝 File Caption", callback_data="caption|caption")],
+        [BTN("⏳ Auto Delete", callback_data="autodel|autodel")],
+        [BTN("📦 File Auto Delete", callback_data="filedel|filedel")],
         [BTN("🔙 Back", callback_data="admin|menu")]
     ])
 
-    await query.message.edit_caption(
-        "<b>⚙️ Global Settings</b>",
-        parse_mode=enums.ParseMode.HTML,
-        reply_markup=keyboard
-    )
+    await safe_edit(query.message,
+                    caption="<b>⚙️ Global Settings</b>",
+                    reply_markup=keyboard)
 
     await query.answer()
-
 
 # =====================================================
 # INDEX ROUTER
@@ -171,20 +173,17 @@ async def index_action_router(_, query: CallbackQuery):
     action = query.data.split("|")[1]
 
     if action == "index":
+
         keyboard = InlineKeyboardMarkup([
-            [
-                BTN("➕ Add", callback_data="index|add"),
-                BTN("➖ Delete", callback_data="index|del")
-            ],
+            [BTN("➕ Add", callback_data="index|add"),
+             BTN("➖ Delete", callback_data="index|del")],
             [BTN("📋 List", callback_data="index|list")],
             [BTN("🔙 Back", callback_data="gset|main")]
         ])
 
-        await query.message.edit_caption(
-            "<b>📂 Index Settings</b>",
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=keyboard
-        )
+        await safe_edit(query.message,
+                        caption="<b>📂 Index Settings</b>",
+                        reply_markup=keyboard)
 
     elif action == "list":
 
@@ -196,27 +195,19 @@ async def index_action_router(_, query: CallbackQuery):
             text = "<b>📂 Index Channels:</b>\n\n"
             text += "\n".join([f"<code>{c}</code>" for c in channels])
 
-        await query.message.edit_caption(
-            text,
-            parse_mode=enums.ParseMode.HTML
-        )
+        await safe_edit(query.message, caption=text)
 
     elif action == "add":
         admin_temp[query.from_user.id] = "WAITING_INDEX_ADD"
-        await query.message.edit_caption(
-            "<b>Send channel ID to add.</b>",
-            parse_mode=enums.ParseMode.HTML
-        )
+        await safe_edit(query.message,
+                        caption="<b>Send channel ID to add.</b>")
 
     elif action == "del":
         admin_temp[query.from_user.id] = "WAITING_INDEX_DEL"
-        await query.message.edit_caption(
-            "<b>Send channel ID to delete.</b>",
-            parse_mode=enums.ParseMode.HTML
-        )
+        await safe_edit(query.message,
+                        caption="<b>Send channel ID to delete.</b>")
 
     await query.answer()
-
 
 # =====================================================
 # CAPTION ROUTER
@@ -235,39 +226,28 @@ async def caption_action_router(_, query: CallbackQuery):
             [BTN("🔙 Back", callback_data="gset|main")]
         ])
 
-        await query.message.edit_caption(
-            "<b>📝 Caption Settings</b>",
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=keyboard
-        )
+        await safe_edit(query.message,
+                        caption="<b>📝 Caption Settings</b>",
+                        reply_markup=keyboard)
 
     elif action == "view":
         current = await get_global_setting(KEY, None)
-
         text = "<b>No custom caption set.</b>" \
             if not current else f"<b>Current Caption:</b>\n\n{current}"
 
-        await query.message.edit_caption(
-            text,
-            parse_mode=enums.ParseMode.HTML
-        )
+        await safe_edit(query.message, caption=text)
 
     elif action == "set":
         admin_temp[query.from_user.id] = "WAITING_CAPTION"
-        await query.message.edit_caption(
-            "<b>Send new caption now.</b>",
-            parse_mode=enums.ParseMode.HTML
-        )
+        await safe_edit(query.message,
+                        caption="<b>Send new caption now.</b>")
 
     elif action == "delete":
         await set_global_setting(KEY, None)
-        await query.message.edit_caption(
-            "<b>Caption reset.</b>",
-            parse_mode=enums.ParseMode.HTML
-        )
+        await safe_edit(query.message,
+                        caption="<b>Caption reset.</b>")
 
     await query.answer()
-
 
 # =====================================================
 # AUTODEL ROUTER
@@ -285,28 +265,21 @@ async def autodel_action_router(_, query: CallbackQuery):
             [BTN("🔙 Back", callback_data="gset|main")]
         ])
 
-        await query.message.edit_caption(
-            "<b>⏳ Auto Delete</b>",
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=keyboard
-        )
+        await safe_edit(query.message,
+                        caption="<b>⏳ Auto Delete</b>",
+                        reply_markup=keyboard)
 
     elif action == "set":
         admin_temp[query.from_user.id] = "WAITING_AUTODEL"
-        await query.message.edit_caption(
-            "<b>Send seconds value.</b>",
-            parse_mode=enums.ParseMode.HTML
-        )
+        await safe_edit(query.message,
+                        caption="<b>Send seconds value.</b>")
 
     elif action == "off":
         await set_global_setting(KEY, 0)
-        await query.message.edit_caption(
-            "<b>Auto delete disabled.</b>",
-            parse_mode=enums.ParseMode.HTML
-        )
+        await safe_edit(query.message,
+                        caption="<b>Auto delete disabled.</b>")
 
     await query.answer()
-
 
 # =====================================================
 # FILE AUTODEL ROUTER
@@ -324,28 +297,21 @@ async def filedel_action_router(_, query: CallbackQuery):
             [BTN("🔙 Back", callback_data="gset|main")]
         ])
 
-        await query.message.edit_caption(
-            "<b>📦 File Auto Delete</b>",
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=keyboard
-        )
+        await safe_edit(query.message,
+                        caption="<b>📦 File Auto Delete</b>",
+                        reply_markup=keyboard)
 
     elif action == "set":
         admin_temp[query.from_user.id] = "WAITING_FILE_AUTODEL"
-        await query.message.edit_caption(
-            "<b>Send seconds value.</b>",
-            parse_mode=enums.ParseMode.HTML
-        )
+        await safe_edit(query.message,
+                        caption="<b>Send seconds value.</b>")
 
     elif action == "off":
         await set_global_setting(KEY, 0)
-        await query.message.edit_caption(
-            "<b>File auto delete disabled.</b>",
-            parse_mode=enums.ParseMode.HTML
-        )
+        await safe_edit(query.message,
+                        caption="<b>File auto delete disabled.</b>")
 
     await query.answer()
-
 
 # =====================================================
 # ADMIN INPUT HANDLER
@@ -396,7 +362,6 @@ async def admin_input_handler(client, message: Message):
         await message.reply("Invalid input.")
 
     del admin_temp[user_id]
-
 
 # =====================================================
 # REGISTER CALLBACKS
