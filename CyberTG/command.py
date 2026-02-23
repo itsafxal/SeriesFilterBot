@@ -459,7 +459,7 @@ def register_command_handlers(cyber: Client):
         await message.reply(
             "✅ File caption updated successfully.\n\n"
             "Use /setcaption to view it.",
-            parse_mode=enums.ParseMode.MARKDOWN_V2
+            parse_mode="markdown"
         )
 
 
@@ -472,6 +472,6 @@ def register_command_handlers(cyber: Client):
         await set_global_setting("CUSTOM_FILE_CAPTION", None)
 
         await message.reply(
-            "♻️ Caption reset to default (config.py).",
-            parse_mode=enums.ParseMode.MARKDOWN_V2
+            "♻️ Caption reset to default",
+            parse_mode="markdown"
         )
