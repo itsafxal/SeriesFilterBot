@@ -25,20 +25,28 @@ def caption_filename(name: str):
     # Remove extension
     name = re.sub(r"\.(mkv|mp4|avi)$", "", name, flags=re.IGNORECASE)
 
-    # Replace separators with space
+    # Replace separators
     name = re.sub(r"[._\-]+", " ", name)
 
-    # Remove unwanted junk words
+    # Remove junk words
     JUNK = r"\b(bluray|webrip|webdl|hdrip|x264|x265|hevc|aac|10bit|ddp5\.1)\b"
     name = re.sub(JUNK, "", name, flags=re.IGNORECASE)
 
-    # Remove quality duplication if exists
+    # Remove duplicated quality
     name = re.sub(r"\b(4k|1080p|720p|480p|360p)\b", "", name, flags=re.IGNORECASE)
 
     # Collapse spaces
     name = re.sub(r"\s+", " ", name).strip()
 
     return name
+
+
+def clean_series_name(series: str):
+    if not series:
+        return ""
+    series = series.replace(".", " ").replace("_", " ")
+    series = re.sub(r"\s+", " ", series).strip()
+    return series
 
 
 def set_session(user_id: int, data: dict):
@@ -91,7 +99,7 @@ async def init_progress(cyber, user_id, total):
     msg = await cyber.send_message(
         user_id,
         f"📦 Sending files...\nProgress: 0 / {total}",
-        parse_mode=enums.ParseMode.MARKDOWN
+        parse_mode=enums.ParseMode.MARKDOWN_V2
     )
 
     USER_PROGRESS[user_id] = {
@@ -115,7 +123,7 @@ async def update_progress(cyber, user_id):
             user_id,
             p["msg_id"],
             f"📦 Sending files...\nProgress: {p['sent']} / {p['total']}",
-            parse_mode=enums.ParseMode.MARKDOWN
+            parse_mode=enums.ParseMode.MARKDOWN_V2
         )
         p["last"] = time.time()
     except MessageNotModified:
@@ -132,7 +140,7 @@ async def finish_progress(cyber, user_id):
             user_id,
             p["msg_id"],
             f"✅ Delivery complete!\nSent: {p['total']} files",
-            parse_mode=enums.ParseMode.MARKDOWN
+            parse_mode=enums.ParseMode.MARKDOWN_V2
         )
 
         delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
@@ -183,13 +191,15 @@ async def deliver_files_direct(cyber, user_id):
     if not session:
         return
 
-    series = session["series"]
+    raw_series = session["series"]
+    series = clean_series_name(raw_series)
+
     season = session["season"]
     language = session["language"]
     quality = session["quality"]
 
     files = await get_all_files_by_season_and_quality(
-        series, season, quality, language
+        raw_series, season, quality, language
     )
 
     if not files:
@@ -198,6 +208,12 @@ async def deliver_files_direct(cyber, user_id):
         return
 
     auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
+
+    # Get dynamic caption from DB (fallback to config default)
+    custom_caption = await get_global_setting(
+        "CUSTOM_FILE_CAPTION",
+        CUSTOM_CAPTION_TEXT
+    )
 
     await init_progress(cyber, user_id, len(files))
 
@@ -210,7 +226,8 @@ async def deliver_files_direct(cyber, user_id):
             raw_name = f.get("file_name", "")
             clean_name = caption_filename(raw_name)
 
-            caption = CUSTOM_CAPTION_TEXT.format(
+            caption = custom_caption.format(
+                series=series,
                 file_name=clean_name,
                 season=str(season).zfill(2),
                 episode=str(f.get("episode", 0)).zfill(2),
@@ -230,23 +247,21 @@ async def deliver_files_direct(cyber, user_id):
                         user_id,
                         f["file_id"],
                         caption=caption,
-                        parse_mode=enums.ParseMode.MARKDOWN
+                        parse_mode=enums.ParseMode.MARKDOWN_V2
                     )
-
                 elif media_type == "audio":
                     sent_msg = await cyber.send_audio(
                         user_id,
                         f["file_id"],
                         caption=caption,
-                        parse_mode=enums.ParseMode.MARKDOWN
+                        parse_mode=enums.ParseMode.MARKDOWN_V2
                     )
-
                 else:
                     sent_msg = await cyber.send_document(
                         user_id,
                         f["file_id"],
                         caption=caption,
-                        parse_mode=enums.ParseMode.MARKDOWN
+                        parse_mode=enums.ParseMode.MARKDOWN_V2
                     )
 
             except Exception:
@@ -255,14 +270,14 @@ async def deliver_files_direct(cyber, user_id):
                         user_id,
                         f["file_id"],
                         caption=caption,
-                        parse_mode=enums.ParseMode.MARKDOWN
+                        parse_mode=enums.ParseMode.MARKDOWN_V2
                     )
                 except Exception:
                     sent_msg = await cyber.send_document(
                         user_id,
                         f["file_id"],
                         caption=caption,
-                        parse_mode=enums.ParseMode.MARKDOWN
+                        parse_mode=enums.ParseMode.MARKDOWN_V2
                     )
 
             if sent_msg and auto_delay and auto_delay > 0:
