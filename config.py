@@ -22,19 +22,6 @@ OMDB_API_KEY = "f93ab313"
 TMDB_CACHE_DB = "/tmp/TMDB_cache.db"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 
-# Captions
-CUSTOM_CAPTION_TEXT = """
-```⊳ {file_name}
-⊳Season {season} 
-⊳Episode {episode}
-⊳Language {language} 
-⊳Quality {quality}```
-╔════ ᴊᴏɪɴ ᴡɪᴛʜ ᴜs ═════╗
-◻️ 𝙅𝙊𝙄𝙉 :- @SeriesXSpace
-◻️ 𝙅𝙊𝙄𝙉 :- @SeriesXSpaceChannel
-◻️ 𝙅𝙊𝙄𝙉 :- @TGxSeriesFilterBot
-╚════ ᴊᴏɪɴ ᴡɪᴛʜ ᴜs ═════╝"""
-
 # AS YOUR WISH
 INDEX_CHANNELS = []  
 MAX_CALLBACK_LENGTH = 50
