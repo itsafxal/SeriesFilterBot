@@ -5,6 +5,7 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InputMediaPhoto
 )
+from pyrogram.errors import MessageNotModified
 
 from config import (
     DEFAULT_POSTER,
@@ -26,15 +27,22 @@ from utils.cyber_delete import delete_message_later
 from CyberTG.poster import get_series_info
 
 
-async def resolve_series_with_suggestions(text: str):
-    """
-    Resolves a series name from user input.
+# =================================================
+# SAFE EDIT WRAPPER
+# =================================================
 
-    Returns:
-        (series_name, [])
-        OR
-        (None, suggestions_list)
-    """
+async def safe_edit(coro, q):
+    try:
+        await coro
+    except MessageNotModified:
+        await q.answer()
+
+
+# =================================================
+# RESOLVE SERIES
+# =================================================
+
+async def resolve_series_with_suggestions(text: str):
 
     if not text:
         return None, []
@@ -43,21 +51,14 @@ async def resolve_series_with_suggestions(text: str):
     if not query:
         return None, []
 
-    # -------------------------------------------------
-    # 1️⃣ Primary DB Search (FAST indexed search)
-    # -------------------------------------------------
     try:
-        results = await search_series(query)   # MUST be awaited
+        results = await search_series(query)
     except Exception:
         return None, []
 
-    # Safety check (avoid coroutine leakage)
     if not isinstance(results, (list, tuple)):
         return None, []
 
-    # -------------------------------------------------
-    # 2️⃣ No direct results → fallback to fuzzy suggestions
-    # -------------------------------------------------
     if not results:
         try:
             fuzzy = await suggest_series(query)
@@ -69,32 +70,21 @@ async def resolve_series_with_suggestions(text: str):
 
         return None, []
 
-    # -------------------------------------------------
-    # 3️⃣ Remove duplicates + limit 4
-    # -------------------------------------------------
     unique = list(dict.fromkeys(results))[:4]
     query_words = query.split()
 
-    # -------------------------------------------------
-    # 4️⃣ If exactly one result
-    # -------------------------------------------------
     if len(unique) == 1:
         result = unique[0]
         result_words = result.lower().split()
 
-        # Auto-open only if query is specific enough
-        # (user typed full name or more words)
         if len(query_words) >= len(result_words):
             return result, []
 
-        # Otherwise show suggestion
         return None, unique
 
-    # -------------------------------------------------
-    # 5️⃣ Multiple matches → always show suggestions
-    # -------------------------------------------------
     return None, unique
-    
+
+
 # =================================================
 # CAPTION BUILDER
 # =================================================
@@ -207,7 +197,7 @@ def build_season_pages(seasons, uid, series, page=0):
 
 
 # =================================================
-# MAIN REGISTER
+# REGISTER FILTERS
 # =================================================
 
 def register_filters(cyber: Client):
@@ -258,9 +248,8 @@ def register_filters(cyber: Client):
 
             buttons = []
             for s in suggestions:
-                label = s  # No TMDB call here
-                lines.append(f"○ {small_caps(label)}")
-                buttons.append([BTN(label, callback_data=f"sug|{s}")])
+                lines.append(f"○ {small_caps(s)}")
+                buttons.append([BTN(s, callback_data=f"sug|{s}")])
 
             buttons.append([BTN("Close", callback_data="close_spell")])
             kb = InlineKeyboardMarkup(buttons)
@@ -293,9 +282,11 @@ def register_filters(cyber: Client):
                 msg.id,
                 AUTO_DELETE_DELAY
             )
+
     # -------------------------------------------------
     # SUGGESTION CLICK
     # -------------------------------------------------
+
     @cyber.on_callback_query(filters.regex("^sug\\|"))
     async def sug(_, q):
 
@@ -303,19 +294,21 @@ def register_filters(cyber: Client):
 
         poster, year, genre, rating = await get_series_info(series)
         seasons = list((await get_series_summary(series))["seasons"])
-
         kb = build_season_pages(seasons, q.from_user.id, series)
 
-        await q.message.edit_media(
-            InputMediaPhoto(
-                poster or DEFAULT_POSTER,
-                caption=build_caption(
-                    series, year, genre, rating,
-                    seasons=seasons
+        await safe_edit(
+            q.message.edit_media(
+                InputMediaPhoto(
+                    poster or DEFAULT_POSTER,
+                    caption=build_caption(
+                        series, year, genre, rating,
+                        seasons=seasons
+                    ),
+                    parse_mode=enums.ParseMode.HTML
                 ),
-                parse_mode=enums.ParseMode.HTML
+                reply_markup=kb
             ),
-            reply_markup=kb
+            q
         )
 
     @cyber.on_callback_query(filters.regex("^close_spell$"))
@@ -325,6 +318,7 @@ def register_filters(cyber: Client):
     # -------------------------------------------------
     # PAGINATION
     # -------------------------------------------------
+
     @cyber.on_callback_query(filters.regex("^spg\\|"))
     async def spg(_, q):
 
@@ -336,7 +330,10 @@ def register_filters(cyber: Client):
         seasons = list((await get_series_summary(series))["seasons"])
         kb = build_season_pages(seasons, uid, series, int(page))
 
-        await q.message.edit_reply_markup(kb)
+        await safe_edit(
+            q.message.edit_reply_markup(kb),
+            q
+        )
 
     @cyber.on_callback_query(filters.regex("^noop$"))
     async def noop(_, q):
@@ -345,6 +342,7 @@ def register_filters(cyber: Client):
     # -------------------------------------------------
     # SEASON → LANGUAGE
     # -------------------------------------------------
+
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q):
 
@@ -361,19 +359,23 @@ def register_filters(cyber: Client):
             lambda l: f"gls|{uid}|{series}|{season}|{l}"
         )
 
-        await q.message.edit_caption(
-            build_caption(
-                series, year, genre, rating,
-                languages=langs,
-                step="language"
+        await safe_edit(
+            q.message.edit_caption(
+                build_caption(
+                    series, year, genre, rating,
+                    languages=langs,
+                    step="language"
+                ),
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=kb
             ),
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=kb
+            q
         )
 
     # -------------------------------------------------
     # LANGUAGE → QUALITY
     # -------------------------------------------------
+
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q):
 
@@ -386,27 +388,31 @@ def register_filters(cyber: Client):
             series, lang, int(season)
         )
 
-        poster, year, genre, rating = await get_series_info(series)
-
         kb = build_grid_keyboard(
             qs,
             lambda x: f"gqs|{uid}|{series}|{season}|{lang}|{x}"
         )
 
-        await q.message.edit_caption(
-            build_caption(
-                series, year, genre, rating,
-                languages=[lang],
-                qualities=qs,
-                step="quality"
+        poster, year, genre, rating = await get_series_info(series)
+
+        await safe_edit(
+            q.message.edit_caption(
+                build_caption(
+                    series, year, genre, rating,
+                    languages=[lang],
+                    qualities=qs,
+                    step="quality"
+                ),
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=kb
             ),
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=kb
+            q
         )
 
     # -------------------------------------------------
     # QUALITY → DOWNLOAD
     # -------------------------------------------------
+
     @cyber.on_callback_query(filters.regex("^gqs\\|"))
     async def gqs(_, q):
 
@@ -420,9 +426,12 @@ def register_filters(cyber: Client):
         bot = await cyber.get_me()
         link = f"https://t.me/{bot.username}?start={payload}"
 
-        await q.message.edit_caption(
-            UI("Your Files Are Ready. Tap Below To Download."),
-            reply_markup=InlineKeyboardMarkup([
-                [BTN("Download Files", url=link)]
-            ])
+        await safe_edit(
+            q.message.edit_caption(
+                UI("Your Files Are Ready. Tap Below To Download."),
+                reply_markup=InlineKeyboardMarkup([
+                    [BTN("Download Files", url=link)]
+                ])
+            ),
+            q
         )
