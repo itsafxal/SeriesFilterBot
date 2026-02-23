@@ -211,7 +211,7 @@ async def deliver_files_direct(cyber, user_id):
 
     auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
 
-    # 🔥 Load caption ONLY from DB
+    # 🔥 Load caption template from DB (fallback to default)
     custom_caption = await get_global_setting(
         "CUSTOM_FILE_CAPTION",
         DEFAULT_CAPTION
@@ -225,33 +225,66 @@ async def deliver_files_direct(cyber, user_id):
 
         async def send_job(f=f):
 
+            if not f.get("file_id"):
+                return
+
             raw_name = f.get("file_name", "")
             clean_name = caption_filename(raw_name)
 
+            episode = str(f.get("episode", 0)).zfill(2)
+            season_str = str(season).zfill(2)
+
+            # ✅ HTML SAFE formatting
             caption = custom_caption.format(
                 series=series,
                 file_name=clean_name,
-                season=str(season).zfill(2),
-                episode=str(f.get("episode", 0)).zfill(2),
+                season=season_str,
+                episode=episode,
                 language=language,
                 quality=quality
             )
 
-            if not f.get("file_id"):
-                return
+            sent_msg = None
 
             try:
-                sent_msg = await cyber.send_document(
-                    user_id,
-                    f["file_id"],
-                    caption=caption,
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-            except Exception:
+                media_type = f.get("media_type")
+
+                if media_type == "video":
+                    sent_msg = await cyber.send_video(
+                        user_id,
+                        f["file_id"],
+                        caption=caption,
+                        parse_mode=enums.ParseMode.HTML
+                    )
+
+                elif media_type == "audio":
+                    sent_msg = await cyber.send_audio(
+                        user_id,
+                        f["file_id"],
+                        caption=caption,
+                        parse_mode=enums.ParseMode.HTML
+                    )
+
+                else:
+                    sent_msg = await cyber.send_document(
+                        user_id,
+                        f["file_id"],
+                        caption=caption,
+                        parse_mode=enums.ParseMode.HTML
+                    )
+
+            except Exception as e:
+                logger.error(f"Send failed: {e}")
                 return
 
+            # 🔥 AUTO DELETE
             if sent_msg and auto_delay and auto_delay > 0:
-                delete_message_later(cyber, user_id, sent_msg.id, auto_delay)
+                delete_message_later(
+                    cyber,
+                    user_id,
+                    sent_msg.id,
+                    auto_delay
+                )
 
         await queue.put(send_job)
 
