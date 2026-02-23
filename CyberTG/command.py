@@ -411,7 +411,7 @@ def register_command_handlers(cyber: Client):
             
 
     # =================================================
-    # SET FILE CAPTION (Supports MarkdownV2)
+    # SET FILE CAPTION (HTML MODE)
     # =================================================
     @cyber.on_message(filters.command("setcaption") & filters.user(ADMIN_USERS))
     async def set_file_caption(_, message: Message):
@@ -424,47 +424,54 @@ def register_command_handlers(cyber: Client):
 
             if not current:
                 return await message.reply(
-                    "No custom caption set.\n\n"
-                    "Usage:\n"
-                    "/setcaption Your caption here\n\n"
-                    "Available variables:\n"
-                    "{series}\n"
-                    "{file_name}\n"
-                    "{season}\n"
-                    "{episode}\n"
-                    "{language}\n"
-                    "{quality}"
+                    "<b>No custom caption set.</b>\n\n"
+                    "<b>Usage:</b>\n"
+                    "<code>/setcaption Your caption here</code>\n\n"
+                    "<b>Available variables:</b>\n"
+                    "<code>{series}</code>\n"
+                    "<code>{file_name}</code>\n"
+                    "<code>{season}</code>\n"
+                    "<code>{episode}</code>\n"
+                    "<code>{language}</code>\n"
+                    "<code>{quality}</code>",
+                    parse_mode=enums.ParseMode.HTML
                 )
 
             return await message.reply(
-                f"📄 Current Caption:\n\n{current}",
-                parse_mode=enums.ParseMode.MARKDOWN_V2
+                "<b>📄 Current Caption:</b>\n\n" + current,
+                parse_mode=enums.ParseMode.HTML
             )
 
-        # Get caption from reply OR inline text
+        # Get caption from reply or command text
         if message.reply_to_message:
             new_caption = message.reply_to_message.text
         else:
             try:
                 new_caption = message.text.split(None, 1)[1]
             except IndexError:
-                return await message.reply("Caption cannot be empty.")
+                return await message.reply(
+                    "<b>Caption cannot be empty.</b>",
+                    parse_mode=enums.ParseMode.HTML
+                )
 
         if not new_caption.strip():
-            return await message.reply("Caption cannot be empty.")
+            return await message.reply(
+                "<b>Caption cannot be empty.</b>",
+                parse_mode=enums.ParseMode.HTML
+            )
 
         # Save caption
         await set_global_setting(KEY, new_caption)
 
         await message.reply(
-            "✅ File caption updated successfully.\n\n"
-            "Use /setcaption to view it.",
-            parse_mode=enums.ParseMode.MARKDOWN
+            "<b>✅ File caption updated successfully.</b>\n\n"
+            "Use <code>/setcaption</code> to view it.",
+            parse_mode=enums.ParseMode.HTML
         )
 
 
     # =================================================
-    # RESET FILE CAPTION
+    # RESET FILE CAPTION (HTML MODE)
     # =================================================
     @cyber.on_message(filters.command("resetcaption") & filters.user(ADMIN_USERS))
     async def reset_file_caption(_, message: Message):
@@ -472,6 +479,6 @@ def register_command_handlers(cyber: Client):
         await set_global_setting("CUSTOM_FILE_CAPTION", None)
 
         await message.reply(
-            "♻️ Caption reset to default",
-            parse_mode=enums.ParseMode.MARKDOWN
+            "<b>♻️ Caption reset to default.</b>",
+            parse_mode=enums.ParseMode.HTML
         )
