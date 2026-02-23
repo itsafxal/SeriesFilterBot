@@ -103,7 +103,7 @@ async def init_progress(cyber, user_id, total):
     msg = await cyber.send_message(
         user_id,
         f"📦 Sending files...\nProgress: 0 / {total}",
-        parse_mode=enums.ParseMode.MARKDOWN_V2
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
     USER_PROGRESS[user_id] = {
@@ -126,7 +126,7 @@ async def update_progress(cyber, user_id):
             user_id,
             p["msg_id"],
             f"📦 Sending files...\nProgress: {p['sent']} / {p['total']}",
-            parse_mode=enums.ParseMode.MARKDOWN_V2
+           parse_mode=enums.ParseMode.MARKDOWN
         )
         p["last"] = time.time()
     except MessageNotModified:
@@ -143,7 +143,7 @@ async def finish_progress(cyber, user_id):
             user_id,
             p["msg_id"],
             f"✅ Delivery complete!\nSent: {p['total']} files",
-            parse_mode=enums.ParseMode.MARKDOWN_V2
+            parse_mode=enums.ParseMode.MARKDOWN
         )
 
         delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
@@ -245,7 +245,7 @@ async def deliver_files_direct(cyber, user_id):
                     user_id,
                     f["file_id"],
                     caption=caption,
-                    parse_mode=enums.ParseMode.MARKDOWN_V2
+                    parse_mode=enums.ParseMode.MARKDOWN
                 )
             except Exception:
                 return
