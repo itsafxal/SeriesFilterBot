@@ -148,6 +148,10 @@ async def owner_menu_handler(_, query: CallbackQuery):
 
 # =====================================================
 # GLOBAL SETTINGS ROOT
+# FIX: Previously only handled "gset|main" but the
+# old adminsetting command sent "gset|index" etc.
+# which had no handler. Now everything flows through
+# gset|main → individual routers (index|, caption| etc.)
 # =====================================================
 async def global_settings_router(_, query: CallbackQuery):
 
@@ -167,6 +171,8 @@ async def global_settings_router(_, query: CallbackQuery):
 
 # =====================================================
 # INDEX ROUTER
+# FIX: Added reply_markup with back button to "list"
+# action so users are not left stuck with no navigation.
 # =====================================================
 async def index_action_router(_, query: CallbackQuery):
 
@@ -195,7 +201,12 @@ async def index_action_router(_, query: CallbackQuery):
             text = "<b>📂 Index Channels:</b>\n\n"
             text += "\n".join([f"<code>{c}</code>" for c in channels])
 
-        await safe_edit(query.message, caption=text)
+        # FIX: Added back button — previously left user with no navigation
+        back_kb = InlineKeyboardMarkup([
+            [BTN("🔙 Back", callback_data="index|index")]
+        ])
+
+        await safe_edit(query.message, caption=text, reply_markup=back_kb)
 
     elif action == "add":
         admin_temp[query.from_user.id] = "WAITING_INDEX_ADD"
@@ -211,6 +222,8 @@ async def index_action_router(_, query: CallbackQuery):
 
 # =====================================================
 # CAPTION ROUTER
+# FIX: Added reply_markup with back button to "view"
+# action so users are not left stuck with no navigation.
 # =====================================================
 async def caption_action_router(_, query: CallbackQuery):
 
@@ -235,7 +248,12 @@ async def caption_action_router(_, query: CallbackQuery):
         text = "<b>No custom caption set.</b>" \
             if not current else f"<b>Current Caption:</b>\n\n{current}"
 
-        await safe_edit(query.message, caption=text)
+        # FIX: Added back button — previously left user with no navigation
+        back_kb = InlineKeyboardMarkup([
+            [BTN("🔙 Back", callback_data="caption|caption")]
+        ])
+
+        await safe_edit(query.message, caption=text, reply_markup=back_kb)
 
     elif action == "set":
         admin_temp[query.from_user.id] = "WAITING_CAPTION"
@@ -244,8 +262,14 @@ async def caption_action_router(_, query: CallbackQuery):
 
     elif action == "delete":
         await set_global_setting(KEY, None)
+
+        back_kb = InlineKeyboardMarkup([
+            [BTN("🔙 Back", callback_data="caption|caption")]
+        ])
+
         await safe_edit(query.message,
-                        caption="<b>Caption reset.</b>")
+                        caption="<b>Caption reset.</b>",
+                        reply_markup=back_kb)
 
     await query.answer()
 
@@ -276,8 +300,14 @@ async def autodel_action_router(_, query: CallbackQuery):
 
     elif action == "off":
         await set_global_setting(KEY, 0)
+
+        back_kb = InlineKeyboardMarkup([
+            [BTN("🔙 Back", callback_data="autodel|autodel")]
+        ])
+
         await safe_edit(query.message,
-                        caption="<b>Auto delete disabled.</b>")
+                        caption="<b>Auto delete disabled.</b>",
+                        reply_markup=back_kb)
 
     await query.answer()
 
@@ -308,15 +338,23 @@ async def filedel_action_router(_, query: CallbackQuery):
 
     elif action == "off":
         await set_global_setting(KEY, 0)
+
+        back_kb = InlineKeyboardMarkup([
+            [BTN("🔙 Back", callback_data="filedel|filedel")]
+        ])
+
         await safe_edit(query.message,
-                        caption="<b>File auto delete disabled.</b>")
+                        caption="<b>File auto delete disabled.</b>",
+                        reply_markup=back_kb)
 
     await query.answer()
 
 # =====================================================
-# ADMIN INPUT HANDLER
+# ADMIN INPUT HANDLER (plain async function — no decorator)
+# FIX: Removed @Client.on_message class-level decorator.
+# It is now registered properly inside register_menu_handlers()
+# via the cyber instance, just like all other handlers.
 # =====================================================
-@Client.on_message(filters.private & filters.user(ADMIN_USERS))
 async def admin_input_handler(client, message: Message):
 
     user_id = message.from_user.id
@@ -332,7 +370,7 @@ async def admin_input_handler(client, message: Message):
             channels = await get_index_channels()
             channels.append(cid)
             await set_index_channels(channels)
-            await message.reply("✅ Index added.")
+            await message.reply("✅ Index channel added.")
 
         elif state == "WAITING_INDEX_DEL":
             cid = int(message.text)
@@ -340,9 +378,9 @@ async def admin_input_handler(client, message: Message):
             if cid in channels:
                 channels.remove(cid)
                 await set_index_channels(channels)
-                await message.reply("🗑 Index removed.")
+                await message.reply("🗑 Index channel removed.")
             else:
-                await message.reply("Channel not found.")
+                await message.reply("⚠️ Channel not found.")
 
         elif state == "WAITING_CAPTION":
             await set_global_setting("CUSTOM_FILE_CAPTION", message.text)
@@ -351,17 +389,22 @@ async def admin_input_handler(client, message: Message):
         elif state == "WAITING_AUTODEL":
             seconds = int(message.text)
             await set_global_setting("AUTO_DELETE_DELAY", seconds)
-            await message.reply("✅ Auto delete updated.")
+            await message.reply(f"✅ Auto delete set to {seconds}s.")
 
         elif state == "WAITING_FILE_AUTODEL":
             seconds = int(message.text)
             await set_global_setting("FILE_AUTODEL_DELAY", seconds)
-            await message.reply("✅ File auto delete updated.")
+            await message.reply(f"✅ File auto delete set to {seconds}s.")
 
-    except Exception:
-        await message.reply("Invalid input.")
+    except ValueError:
+        await message.reply("⚠️ Invalid input. Please send a valid value.")
+    except Exception as e:
+        logger.error(f"Admin input error: {e}")
+        await message.reply("❌ Something went wrong.")
 
-    del admin_temp[user_id]
+    finally:
+        # Always clear state even on error so admin isn't stuck
+        admin_temp.pop(user_id, None)
 
 # =====================================================
 # REGISTER CALLBACKS
@@ -403,3 +446,19 @@ def register_menu_handlers(cyber: Client):
     @cyber.on_callback_query(filters.regex("^filedel\\|"))
     async def _(c, q):
         await filedel_action_router(c, q)
+
+    # FIX: Added handler for close|menu callback which was used
+    # in adminsetting command but had no handler — caused dead button.
+    @cyber.on_callback_query(filters.regex("^close\\|menu$"))
+    async def _(c, q):
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+        await q.answer()
+
+    # FIX: admin_input_handler now registered here via the cyber instance
+    # instead of using the broken @Client.on_message class-level decorator.
+    @cyber.on_message(filters.private & filters.user(ADMIN_USERS))
+    async def _(c, m):
+        await admin_input_handler(c, m)
