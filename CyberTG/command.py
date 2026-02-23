@@ -150,12 +150,13 @@ def register_command_handlers(cyber: Client):
         user = message.from_user
         user_name = user.first_name
 
+        lets_dive = UI("Let's dive into entertainment 🌙")
         START_TEXT = (
             f"<b>{UI(f'Hey {user_name}!')}</b>\n\n"
             f"<b>{UI(f'Welcome to {bot.first_name}')}</b>\n\n"
             f"{UI('Your private cinema inside Telegram 🎬')}\n"
             f"{UI('Send any series name to begin.')}\n\n"
-            f"<blockquote>{UI('Let\'s dive into entertainment 🌙')}</blockquote>"
+            f"<blockquote>{lets_dive}</blockquote>"
         )
 
         CYBER_KEYBOARD = InlineKeyboardMarkup([
