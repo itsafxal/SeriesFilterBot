@@ -369,7 +369,6 @@ def register_command_handlers(cyber: Client):
                 "Invalid value.\n\nExample:\n/autodel 300\n/autodel off"
             )
 
-
     @cyber.on_message(filters.command("filedel") & filters.user(ADMIN_USERS))
     async def set_autodel_command(_, message: Message):
 
@@ -409,3 +408,70 @@ def register_command_handlers(cyber: Client):
             await message.reply(
                 "Invalid value.\n\nExample:\n/filedel 300\n/filedel off"
             )
+            
+
+    # =================================================
+    # SET FILE CAPTION (Supports MarkdownV2)
+    # =================================================
+    @cyber.on_message(filters.command("setcaption") & filters.user(ADMIN_USERS))
+    async def set_file_caption(_, message: Message):
+
+        KEY = "CUSTOM_FILE_CAPTION"
+
+        # Show current caption if no argument
+        if len(message.command) < 2 and not message.reply_to_message:
+            current = await get_global_setting(KEY, None)
+
+            if not current:
+                return await message.reply(
+                    "No custom caption set.\n\n"
+                    "Usage:\n"
+                    "/setcaption Your caption here\n\n"
+                    "Available variables:\n"
+                    "{series}\n"
+                    "{file_name}\n"
+                    "{season}\n"
+                    "{episode}\n"
+                    "{language}\n"
+                    "{quality}"
+                )
+
+            return await message.reply(
+                f"📄 Current Caption:\n\n{current}",
+                parse_mode=enums.ParseMode.MARKDOWN_V2
+            )
+
+        # Get caption from reply OR inline text
+        if message.reply_to_message:
+            new_caption = message.reply_to_message.text
+        else:
+            try:
+                new_caption = message.text.split(None, 1)[1]
+            except IndexError:
+                return await message.reply("Caption cannot be empty.")
+
+        if not new_caption.strip():
+            return await message.reply("Caption cannot be empty.")
+
+        # Save caption
+        await set_global_setting(KEY, new_caption)
+
+        await message.reply(
+            "✅ File caption updated successfully.\n\n"
+            "Use /setcaption to view it.",
+            parse_mode=enums.ParseMode.MARKDOWN_V2
+        )
+
+
+    # =================================================
+    # RESET FILE CAPTION
+    # =================================================
+    @cyber.on_message(filters.command("resetcaption") & filters.user(ADMIN_USERS))
+    async def reset_file_caption(_, message: Message):
+
+        await set_global_setting("CUSTOM_FILE_CAPTION", None)
+
+        await message.reply(
+            "♻️ Caption reset to default (config.py).",
+            parse_mode=enums.ParseMode.MARKDOWN_V2
+        )
