@@ -24,11 +24,11 @@ TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 
 # Captions
 CUSTOM_CAPTION_TEXT = """
-<blockquote>⊳ {file_name}
+```⊳ {file_name}
 ⊳Season {season} 
 ⊳Episode {episode}
 ⊳Language {language} 
-⊳Quality {quality}</blockquote>
+⊳Quality {quality}```
 ╔════ ᴊᴏɪɴ ᴡɪᴛʜ ᴜs ═════╗
 ◻️ 𝙅𝙊𝙄𝙉 :- @SeriesXSpace
 ◻️ 𝙅𝙊𝙄𝙉 :- @SeriesXSpaceChannel
