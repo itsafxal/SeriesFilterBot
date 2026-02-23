@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 # =====================================================
 # TEMP ADMIN STATE (RAM BASED)
+# Stores: { user_id: { "state": "WAITING_...", "message": <bot Message obj> } }
 # =====================================================
 admin_temp = {}
 
@@ -209,14 +210,22 @@ async def index_action_router(_, query: CallbackQuery):
         await safe_edit(query.message, caption=text, reply_markup=back_kb)
 
     elif action == "add":
-        admin_temp[query.from_user.id] = "WAITING_INDEX_ADD"
         await safe_edit(query.message,
-                        caption="<b>Send channel ID to add.</b>")
+                        caption="<b>📂 Send the channel ID to add.</b>")
+        admin_temp[query.from_user.id] = {
+            "state": "WAITING_INDEX_ADD",
+            "message": query.message,
+            "back": "index|index"
+        }
 
     elif action == "del":
-        admin_temp[query.from_user.id] = "WAITING_INDEX_DEL"
         await safe_edit(query.message,
-                        caption="<b>Send channel ID to delete.</b>")
+                        caption="<b>📂 Send the channel ID to delete.</b>")
+        admin_temp[query.from_user.id] = {
+            "state": "WAITING_INDEX_DEL",
+            "message": query.message,
+            "back": "index|index"
+        }
 
     await query.answer()
 
@@ -256,9 +265,13 @@ async def caption_action_router(_, query: CallbackQuery):
         await safe_edit(query.message, caption=text, reply_markup=back_kb)
 
     elif action == "set":
-        admin_temp[query.from_user.id] = "WAITING_CAPTION"
         await safe_edit(query.message,
-                        caption="<b>Send new caption now.</b>")
+                        caption="<b>📝 Send new caption now.</b>")
+        admin_temp[query.from_user.id] = {
+            "state": "WAITING_CAPTION",
+            "message": query.message,
+            "back": "caption|caption"
+        }
 
     elif action == "delete":
         await set_global_setting(KEY, None)
@@ -294,9 +307,13 @@ async def autodel_action_router(_, query: CallbackQuery):
                         reply_markup=keyboard)
 
     elif action == "set":
-        admin_temp[query.from_user.id] = "WAITING_AUTODEL"
         await safe_edit(query.message,
-                        caption="<b>Send seconds value.</b>")
+                        caption="<b>⏳ Send seconds value for auto delete.</b>")
+        admin_temp[query.from_user.id] = {
+            "state": "WAITING_AUTODEL",
+            "message": query.message,
+            "back": "autodel|autodel"
+        }
 
     elif action == "off":
         await set_global_setting(KEY, 0)
@@ -332,9 +349,13 @@ async def filedel_action_router(_, query: CallbackQuery):
                         reply_markup=keyboard)
 
     elif action == "set":
-        admin_temp[query.from_user.id] = "WAITING_FILE_AUTODEL"
         await safe_edit(query.message,
-                        caption="<b>Send seconds value.</b>")
+                        caption="<b>📦 Send seconds value for file auto delete.</b>")
+        admin_temp[query.from_user.id] = {
+            "state": "WAITING_FILE_AUTODEL",
+            "message": query.message,
+            "back": "filedel|filedel"
+        }
 
     elif action == "off":
         await set_global_setting(KEY, 0)
@@ -351,9 +372,10 @@ async def filedel_action_router(_, query: CallbackQuery):
 
 # =====================================================
 # ADMIN INPUT HANDLER (plain async function — no decorator)
-# FIX: Removed @Client.on_message class-level decorator.
-# It is now registered properly inside register_menu_handlers()
-# via the cyber instance, just like all other handlers.
+# Registered inside register_menu_handlers() via cyber instance.
+# After receiving input:
+#   1. Deletes the admin's sent message
+#   2. Edits the bot's prompt message back to the correct settings page
 # =====================================================
 async def admin_input_handler(client, message: Message):
 
@@ -362,49 +384,80 @@ async def admin_input_handler(client, message: Message):
     if user_id not in admin_temp:
         return
 
-    state = admin_temp[user_id]
+    entry   = admin_temp[user_id]
+    state   = entry["state"]
+    bot_msg = entry["message"]   # the bot's "Send X" prompt message
+    back    = entry["back"]      # callback_data of the page to return to
+
+    # Always delete the admin's input message silently
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    success_text = None
+    error_text   = None
 
     try:
+        # --------------------------------------------------
         if state == "WAITING_INDEX_ADD":
             cid = int(message.text)
             channels = await get_index_channels()
-            channels.append(cid)
-            await set_index_channels(channels)
-            await message.reply("✅ Index channel added.")
+            if cid in channels:
+                error_text = "⚠️ Channel already exists."
+            else:
+                channels.append(cid)
+                await set_index_channels(channels)
+                success_text = f"✅ Index channel <code>{cid}</code> added."
 
+        # --------------------------------------------------
         elif state == "WAITING_INDEX_DEL":
             cid = int(message.text)
             channels = await get_index_channels()
             if cid in channels:
                 channels.remove(cid)
                 await set_index_channels(channels)
-                await message.reply("🗑 Index channel removed.")
+                success_text = f"🗑 Index channel <code>{cid}</code> removed."
             else:
-                await message.reply("⚠️ Channel not found.")
+                error_text = "⚠️ Channel not found in list."
 
+        # --------------------------------------------------
         elif state == "WAITING_CAPTION":
             await set_global_setting("CUSTOM_FILE_CAPTION", message.text)
-            await message.reply("✅ Caption updated.")
+            success_text = "✅ Caption updated successfully."
 
+        # --------------------------------------------------
         elif state == "WAITING_AUTODEL":
             seconds = int(message.text)
             await set_global_setting("AUTO_DELETE_DELAY", seconds)
-            await message.reply(f"✅ Auto delete set to {seconds}s.")
+            success_text = f"✅ Auto delete set to <b>{seconds}s</b>."
 
+        # --------------------------------------------------
         elif state == "WAITING_FILE_AUTODEL":
             seconds = int(message.text)
             await set_global_setting("FILE_AUTODEL_DELAY", seconds)
-            await message.reply(f"✅ File auto delete set to {seconds}s.")
+            success_text = f"✅ File auto delete set to <b>{seconds}s</b>."
 
     except ValueError:
-        await message.reply("⚠️ Invalid input. Please send a valid value.")
+        error_text = "⚠️ Invalid input. Please send a valid value."
     except Exception as e:
         logger.error(f"Admin input error: {e}")
-        await message.reply("❌ Something went wrong.")
+        error_text = "❌ Something went wrong. Try again."
 
     finally:
-        # Always clear state even on error so admin isn't stuck
         admin_temp.pop(user_id, None)
+
+    # --------------------------------------------------
+    # Build the back keyboard based on which page we came from
+    # --------------------------------------------------
+    back_kb = InlineKeyboardMarkup([
+        [BTN("🔙 Back", callback_data=back)]
+    ])
+
+    result_text = success_text if success_text else error_text
+
+    # Edit the bot's original prompt message to show result + back button
+    await safe_edit(bot_msg, caption=result_text, reply_markup=back_kb)
 
 # =====================================================
 # REGISTER CALLBACKS
