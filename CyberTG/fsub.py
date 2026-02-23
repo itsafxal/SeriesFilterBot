@@ -140,14 +140,7 @@ DB_KEY = "fsub_config_v2"
 
 
 async def load_fsub_settings():
-    global (
-        FSUB_CHANNEL1, FSUB_LINK1, FSUB_MODE1,
-        FSUB_CHANNEL1_2, FSUB_LINK1_2,
-        FSUB_CHANNEL2, FSUB_LINK2, FSUB_MODE2,
-        FSUB_CHANNEL2_2, FSUB_LINK2_2,
-        COUNT_THRESHOLD1, COUNT_THRESHOLD2,
-        _req_count1, _req_count2,
-    )
+    global FSUB_CHANNEL1, FSUB_LINK1, FSUB_MODE1, FSUB_CHANNEL1_2, FSUB_LINK1_2, FSUB_CHANNEL2, FSUB_LINK2, FSUB_MODE2, FSUB_CHANNEL2_2, FSUB_LINK2_2, COUNT_THRESHOLD1, COUNT_THRESHOLD2, _req_count1, _req_count2
     await _mongo_connect()
     d = await get_global_setting(DB_KEY) or {}
 
@@ -260,12 +253,7 @@ async def _rotate_slot(slot: int):
     Switch primary → secondary when count > threshold.
     Clears the MongoDB collection after rotation.
     """
-    global (
-        FSUB_CHANNEL1, FSUB_LINK1, FSUB_CHANNEL1_2, FSUB_LINK1_2,
-        FSUB_CHANNEL2, FSUB_LINK2, FSUB_CHANNEL2_2, FSUB_LINK2_2,
-        COUNT_THRESHOLD1, COUNT_THRESHOLD2,
-        _req_count1, _req_count2,
-    )
+    global FSUB_CHANNEL1, FSUB_LINK1, FSUB_CHANNEL1_2, FSUB_LINK1_2, FSUB_CHANNEL2, FSUB_LINK2, FSUB_CHANNEL2_2, FSUB_LINK2_2, COUNT_THRESHOLD1, COUNT_THRESHOLD2, _req_count1, _req_count2
     import sys
     m = sys.modules[__name__]
 
