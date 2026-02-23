@@ -11,15 +11,15 @@ from utils.cyber_delete import delete_message_later
 
 
 # =========================================================
-# DEFAULT CAPTION (Used only if not set in DB)
+# DEFAULT CAPTION (Fallback if DB caption not set)
 # =========================================================
 
 DEFAULT_CAPTION = """
-{series}
+<b>{series}</b>
 
-{file_name}
+<b>{file_name}</b>
 
-Season {season} Episode {episode}
+Season <b>{season}</b> • Episode <b>{episode}</b>
 {language} • {quality}
 """
 
@@ -28,7 +28,7 @@ Season {season} Episode {episode}
 # SESSION STORE
 # =========================================================
 
-SESSION_TTL = 600
+SESSION_TTL = 600  # 10 minutes
 USER_SESSIONS = {}
 
 
@@ -36,7 +36,7 @@ def caption_filename(name: str):
     if not name:
         return "Episode"
 
-    name = re.sub(r"\.(mkv|mp4|avi)$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"\.(mkv|mp4|avi|mov)$", "", name, flags=re.IGNORECASE)
     name = re.sub(r"[._\-]+", " ", name)
 
     JUNK = r"\b(bluray|webrip|webdl|hdrip|x264|x265|hevc|aac|10bit|ddp5\.1)\b"
@@ -66,9 +66,11 @@ def get_session(user_id: int):
     s = USER_SESSIONS.get(user_id)
     if not s:
         return None
+
     if time.time() > s["expires"]:
         USER_SESSIONS.pop(user_id, None)
         return None
+
     return s["data"]
 
 
@@ -77,7 +79,7 @@ def clear_session(user_id: int):
 
 
 # =========================================================
-# PROGRESS SYSTEM
+# SEND QUEUE + PROGRESS SYSTEM
 # =========================================================
 
 USER_SEND_QUEUES = {}
@@ -103,7 +105,7 @@ async def init_progress(cyber, user_id, total):
     msg = await cyber.send_message(
         user_id,
         f"📦 Sending files...\nProgress: 0 / {total}",
-        parse_mode=enums.ParseMode.MARKDOWN
+        parse_mode=enums.ParseMode.HTML
     )
 
     USER_PROGRESS[user_id] = {
@@ -118,6 +120,7 @@ async def update_progress(cyber, user_id):
     p = USER_PROGRESS.get(user_id)
     if not p:
         return
+
     if time.time() - p["last"] < PROGRESS_EDIT_INTERVAL:
         return
 
@@ -125,10 +128,11 @@ async def update_progress(cyber, user_id):
         await cyber.edit_message_text(
             user_id,
             p["msg_id"],
-            f"📦 Sending files...\nProgress: {p['sent']} / {p['total']}",
-           parse_mode=enums.ParseMode.MARKDOWN
+            f"📦 Sending files...<br>Progress: <b>{p['sent']}</b> / <b>{p['total']}</b>",
+            parse_mode=enums.ParseMode.HTML
         )
         p["last"] = time.time()
+
     except MessageNotModified:
         pass
 
@@ -142,8 +146,8 @@ async def finish_progress(cyber, user_id):
         await cyber.edit_message_text(
             user_id,
             p["msg_id"],
-            f"✅ Delivery complete!\nSent: {p['total']} files",
-            parse_mode=enums.ParseMode.MARKDOWN
+            f"✅ <b>Delivery complete!</b><br>Sent: <b>{p['total']}</b> files",
+            parse_mode=enums.ParseMode.HTML
         )
 
         delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
@@ -185,7 +189,7 @@ async def sender_worker(cyber, user_id):
 
 
 # =========================================================
-# DELIVERY
+# DELIVERY LOGIC
 # =========================================================
 
 async def deliver_files_direct(cyber, user_id):
@@ -211,7 +215,6 @@ async def deliver_files_direct(cyber, user_id):
 
     auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
 
-    # 🔥 Load caption template from DB (fallback to default)
     custom_caption = await get_global_setting(
         "CUSTOM_FILE_CAPTION",
         DEFAULT_CAPTION
@@ -234,7 +237,6 @@ async def deliver_files_direct(cyber, user_id):
             episode = str(f.get("episode", 0)).zfill(2)
             season_str = str(season).zfill(2)
 
-            # ✅ HTML SAFE formatting
             caption = custom_caption.format(
                 series=series,
                 file_name=clean_name,
@@ -274,10 +276,9 @@ async def deliver_files_direct(cyber, user_id):
                     )
 
             except Exception as e:
-                logger.error(f"Send failed: {e}")
+                logger.error(f"SEND FAILED: {e}")
                 return
 
-            # 🔥 AUTO DELETE
             if sent_msg and auto_delay and auto_delay > 0:
                 delete_message_later(
                     cyber,
