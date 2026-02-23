@@ -5,16 +5,30 @@ import re
 from pyrogram import enums
 from pyrogram.errors import FloodWait, MessageNotModified
 
-from config import logger, CUSTOM_CAPTION_TEXT
+from config import logger
 from DB.database import get_all_files_by_season_and_quality, get_global_setting
 from utils.cyber_delete import delete_message_later
+
+
+# =========================================================
+# DEFAULT CAPTION (Used only if not set in DB)
+# =========================================================
+
+DEFAULT_CAPTION = """
+{series}
+
+{file_name}
+
+Season {season} Episode {episode}
+{language} • {quality}
+"""
 
 
 # =========================================================
 # SESSION STORE
 # =========================================================
 
-SESSION_TTL = 600  # 10 minutes
+SESSION_TTL = 600
 USER_SESSIONS = {}
 
 
@@ -22,20 +36,13 @@ def caption_filename(name: str):
     if not name:
         return "Episode"
 
-    # Remove extension
     name = re.sub(r"\.(mkv|mp4|avi)$", "", name, flags=re.IGNORECASE)
-
-    # Replace separators
     name = re.sub(r"[._\-]+", " ", name)
 
-    # Remove junk words
     JUNK = r"\b(bluray|webrip|webdl|hdrip|x264|x265|hevc|aac|10bit|ddp5\.1)\b"
     name = re.sub(JUNK, "", name, flags=re.IGNORECASE)
 
-    # Remove duplicated quality
     name = re.sub(r"\b(4k|1080p|720p|480p|360p)\b", "", name, flags=re.IGNORECASE)
-
-    # Collapse spaces
     name = re.sub(r"\s+", " ", name).strip()
 
     return name
@@ -45,8 +52,7 @@ def clean_series_name(series: str):
     if not series:
         return ""
     series = series.replace(".", " ").replace("_", " ")
-    series = re.sub(r"\s+", " ", series).strip()
-    return series
+    return re.sub(r"\s+", " ", series).strip()
 
 
 def set_session(user_id: int, data: dict):
@@ -60,11 +66,9 @@ def get_session(user_id: int):
     s = USER_SESSIONS.get(user_id)
     if not s:
         return None
-
     if time.time() > s["expires"]:
         USER_SESSIONS.pop(user_id, None)
         return None
-
     return s["data"]
 
 
@@ -73,7 +77,7 @@ def clear_session(user_id: int):
 
 
 # =========================================================
-# SEND QUEUE + PROGRESS SYSTEM
+# PROGRESS SYSTEM
 # =========================================================
 
 USER_SEND_QUEUES = {}
@@ -114,7 +118,6 @@ async def update_progress(cyber, user_id):
     p = USER_PROGRESS.get(user_id)
     if not p:
         return
-
     if time.time() - p["last"] < PROGRESS_EDIT_INTERVAL:
         return
 
@@ -182,7 +185,7 @@ async def sender_worker(cyber, user_id):
 
 
 # =========================================================
-# DELIVERY LOGIC
+# DELIVERY
 # =========================================================
 
 async def deliver_files_direct(cyber, user_id):
@@ -193,7 +196,6 @@ async def deliver_files_direct(cyber, user_id):
 
     raw_series = session["series"]
     series = clean_series_name(raw_series)
-
     season = session["season"]
     language = session["language"]
     quality = session["quality"]
@@ -209,10 +211,10 @@ async def deliver_files_direct(cyber, user_id):
 
     auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
 
-    # Get dynamic caption from DB (fallback to config default)
+    # 🔥 Load caption ONLY from DB
     custom_caption = await get_global_setting(
         "CUSTOM_FILE_CAPTION",
-        CUSTOM_CAPTION_TEXT
+        DEFAULT_CAPTION
     )
 
     await init_progress(cyber, user_id, len(files))
@@ -238,55 +240,18 @@ async def deliver_files_direct(cyber, user_id):
             if not f.get("file_id"):
                 return
 
-            media_type = f.get("media_type")
-            sent_msg = None
-
             try:
-                if media_type == "video":
-                    sent_msg = await cyber.send_video(
-                        user_id,
-                        f["file_id"],
-                        caption=caption,
-                        parse_mode=enums.ParseMode.MARKDOWN_V2
-                    )
-                elif media_type == "audio":
-                    sent_msg = await cyber.send_audio(
-                        user_id,
-                        f["file_id"],
-                        caption=caption,
-                        parse_mode=enums.ParseMode.MARKDOWN_V2
-                    )
-                else:
-                    sent_msg = await cyber.send_document(
-                        user_id,
-                        f["file_id"],
-                        caption=caption,
-                        parse_mode=enums.ParseMode.MARKDOWN_V2
-                    )
-
+                sent_msg = await cyber.send_document(
+                    user_id,
+                    f["file_id"],
+                    caption=caption,
+                    parse_mode=enums.ParseMode.MARKDOWN_V2
+                )
             except Exception:
-                try:
-                    sent_msg = await cyber.send_video(
-                        user_id,
-                        f["file_id"],
-                        caption=caption,
-                        parse_mode=enums.ParseMode.MARKDOWN_V2
-                    )
-                except Exception:
-                    sent_msg = await cyber.send_document(
-                        user_id,
-                        f["file_id"],
-                        caption=caption,
-                        parse_mode=enums.ParseMode.MARKDOWN_V2
-                    )
+                return
 
             if sent_msg and auto_delay and auto_delay > 0:
-                delete_message_later(
-                    cyber,
-                    user_id,
-                    sent_msg.id,
-                    auto_delay
-                )
+                delete_message_later(cyber, user_id, sent_msg.id, auto_delay)
 
         await queue.put(send_job)
 
