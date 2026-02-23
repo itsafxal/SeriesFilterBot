@@ -28,7 +28,7 @@ from DB.database import (
     delete_one_file,
     get_index_channels,
     set_index_channels,
-    set_global_setting, 
+    set_global_setting,
     get_global_setting,
 )
 
@@ -146,7 +146,6 @@ def register_command_handlers(cyber: Client):
         # ---------------------------------------------
         # NORMAL START MESSAGE
         # ---------------------------------------------
-        # NORMAL START
         bot = await cyber.get_me()
         user = message.from_user
         user_name = user.first_name
@@ -156,7 +155,7 @@ def register_command_handlers(cyber: Client):
             f"<b>{UI(f'Welcome to {bot.first_name}')}</b>\n\n"
             f"{UI('Your private cinema inside Telegram 🎬')}\n"
             f"{UI('Send any series name to begin.')}\n\n"
-            f"<blockquote>{UI('Let’s dive into entertainment 🌙')}</blockquote>"
+            f"<blockquote>{UI('Let\'s dive into entertainment 🌙')}</blockquote>"
         )
 
         CYBER_KEYBOARD = InlineKeyboardMarkup([
@@ -241,7 +240,7 @@ def register_command_handlers(cyber: Client):
         await m.reply("✅ File deleted.")
 
     # =================================================
-    # LOGS (FIXED)
+    # LOGS
     # =================================================
     @cyber.on_message(filters.command("logs") & filters.user(ADMIN_USERS))
     async def send_logs_cmd(_, message: Message):
@@ -274,21 +273,23 @@ def register_command_handlers(cyber: Client):
             logger.error(f"Error sending logs: {e}")
             await message.reply("Failed to send logs.")
 
+    # =================================================
+    # ADMIN SETTING
+    # FIX: Now correctly routes to gset|main so the
+    # full settings menu in menus.py handles everything.
+    # Removed duplicate inline buttons that had broken
+    # callback_data values (gset|index, gset|caption etc.)
+    # =================================================
     @cyber.on_message(filters.command("adminsetting") & filters.user(ADMIN_USERS))
     async def admin_settings(_, message: Message):
 
         keyboard = InlineKeyboardMarkup([
-            [BTN("📂 Index Channels", callback_data="gset|index")],
-            [BTN("📝 File Caption", callback_data="gset|caption")],
-            [
-                BTN("⏳ Auto Delete", callback_data="gset|autodel"),
-                BTN("📦 File Auto Delete", callback_data="gset|filedel"),
-            ],
+            [BTN("⚙️ Global Settings", callback_data="gset|main")],
             [BTN("❌ Close", callback_data="close|menu")]
         ])
 
         await message.reply(
-            "<b>⚙️ Global Settings Panel</b>",
+            "<b>🛠 Admin Panel</b>",
             parse_mode=enums.ParseMode.HTML,
             reply_markup=keyboard
         )
