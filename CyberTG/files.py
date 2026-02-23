@@ -1,13 +1,14 @@
 import time
 import asyncio
+import re
 
 from pyrogram import enums
 from pyrogram.errors import FloodWait, MessageNotModified
 
 from config import logger, CUSTOM_CAPTION_TEXT
 from DB.database import get_all_files_by_season_and_quality, get_global_setting
-
 from utils.cyber_delete import delete_message_later
+
 
 # =========================================================
 # SESSION STORE
@@ -15,6 +16,29 @@ from utils.cyber_delete import delete_message_later
 
 SESSION_TTL = 600  # 10 minutes
 USER_SESSIONS = {}
+
+
+def caption_filename(name: str):
+    if not name:
+        return "Episode"
+
+    # Remove extension
+    name = re.sub(r"\.(mkv|mp4|avi)$", "", name, flags=re.IGNORECASE)
+
+    # Replace separators with space
+    name = re.sub(r"[._\-]+", " ", name)
+
+    # Remove unwanted junk words
+    JUNK = r"\b(bluray|webrip|webdl|hdrip|x264|x265|hevc|aac|10bit|ddp5\.1)\b"
+    name = re.sub(JUNK, "", name, flags=re.IGNORECASE)
+
+    # Remove quality duplication if exists
+    name = re.sub(r"\b(4k|1080p|720p|480p|360p)\b", "", name, flags=re.IGNORECASE)
+
+    # Collapse spaces
+    name = re.sub(r"\s+", " ", name).strip()
+
+    return name
 
 
 def set_session(user_id: int, data: dict):
@@ -63,10 +87,10 @@ def is_sender_running(user_id):
     return t and not t.done()
 
 
-async def init_progress(cyber, user_id, series, total):
+async def init_progress(cyber, user_id, total):
     msg = await cyber.send_message(
         user_id,
-        f"📦 Sending files...\nSeries: {series}\nProgress: 0 / {total}",
+        f"📦 Sending files...\nProgress: 0 / {total}",
         parse_mode=enums.ParseMode.MARKDOWN
     )
 
@@ -104,24 +128,18 @@ async def finish_progress(cyber, user_id):
         return
 
     try:
-        msg = await cyber.edit_message_text(
+        await cyber.edit_message_text(
             user_id,
             p["msg_id"],
             f"✅ Delivery complete!\nSent: {p['total']} files",
             parse_mode=enums.ParseMode.MARKDOWN
         )
 
-        # 🔥 AUTO DELETE PROGRESS MESSAGE
         delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
         if delay and delay > 0:
-            delete_message_later(
-                cyber,
-                user_id,
-                p["msg_id"],
-                delay
-            )
+            delete_message_later(cyber, user_id, p["msg_id"], delay)
 
-    except:
+    except Exception:
         pass
 
 
@@ -179,10 +197,9 @@ async def deliver_files_direct(cyber, user_id):
         clear_session(user_id)
         return
 
-    # 🔥 Fetch auto-delete delay ONCE (important)
     auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
 
-    await init_progress(cyber, user_id, series, len(files))
+    await init_progress(cyber, user_id, len(files))
 
     queue = get_user_queue(user_id)
 
@@ -190,8 +207,15 @@ async def deliver_files_direct(cyber, user_id):
 
         async def send_job(f=f):
 
+            raw_name = f.get("file_name", "")
+            clean_name = caption_filename(raw_name)
+
             caption = CUSTOM_CAPTION_TEXT.format(
-                file_name=f.get("file_name", "Episode")
+                file_name=clean_name,
+                season=str(season).zfill(2),
+                episode=str(f.get("episode", 0)).zfill(2),
+                language=language,
+                quality=quality
             )
 
             if not f.get("file_id"):
@@ -201,7 +225,6 @@ async def deliver_files_direct(cyber, user_id):
             sent_msg = None
 
             try:
-
                 if media_type == "video":
                     sent_msg = await cyber.send_video(
                         user_id,
@@ -227,8 +250,6 @@ async def deliver_files_direct(cyber, user_id):
                     )
 
             except Exception:
-
-                # fallback
                 try:
                     sent_msg = await cyber.send_video(
                         user_id,
@@ -236,7 +257,7 @@ async def deliver_files_direct(cyber, user_id):
                         caption=caption,
                         parse_mode=enums.ParseMode.MARKDOWN
                     )
-                except:
+                except Exception:
                     sent_msg = await cyber.send_document(
                         user_id,
                         f["file_id"],
@@ -244,9 +265,6 @@ async def deliver_files_direct(cyber, user_id):
                         parse_mode=enums.ParseMode.MARKDOWN
                     )
 
-            # -----------------------------------------
-            # AUTO DELETE
-            # -----------------------------------------
             if sent_msg and auto_delay and auto_delay > 0:
                 delete_message_later(
                     cyber,
