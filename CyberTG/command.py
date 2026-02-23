@@ -274,7 +274,7 @@ def register_command_handlers(cyber: Client):
             logger.error(f"Error sending logs: {e}")
             await message.reply("Failed to send logs.")
 
-     @cyber.on_message(filters.command("adminsetting") & filters.user(ADMIN_USERS))
+    @cyber.on_message(filters.command("adminsetting") & filters.user(ADMIN_USERS))
     async def admin_settings(_, message: Message):
 
         keyboard = InlineKeyboardMarkup([
