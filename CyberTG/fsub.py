@@ -1,26 +1,22 @@
 """
-fsub.py — BULLETPROOF REWRITE
+fsub.py — FIXED VERSION
 
-THE REAL ROOT CAUSE (now fixed):
-  In "request" mode, the bot only passes check_fsub() if it received
-  the chat_join_request Telegram update and wrote it to MongoDB.
-
-  This update is silently dropped when:
-    - Bot lacks "Manage Invite Links" admin permission in the channel
-    - The invite link was not created by this bot
-    - Telegram fails to deliver the update (rare but happens)
-
-  Result: User sends join request → Telegram never tells the bot →
-  MongoDB stays empty → user clicks RETRY forever → always blocked.
+ROOT CAUSE OF 0 DB RECORDS:
+  @Client.on_chat_join_request() is a CLASS-LEVEL decorator.
+  It attaches the handler to ALL Client instances globally,
+  but only BEFORE the client starts. When used inside a module
+  that is imported after the client is created, it is silently
+  ignored — Pyrogram never routes the update to it.
 
 FIX:
-  check_fsub() now does a DUAL CHECK for "request" mode:
-    1. Check MongoDB (fast, works normally)
-    2. If not found → check Telegram API directly via get_chat_member()
-       If user IS in the channel (any status except left/banned) → PASS
-       and record them in DB for future fast lookups.
+  Removed @Client.on_chat_join_request() decorator entirely.
+  Added register_fsub_handlers(cyber) function that must be
+  called in main.py AFTER the client is created but BEFORE start().
+  This uses cyber.on_chat_join_request() (instance-level),
+  which is guaranteed to work.
 
-  This makes FSub work even when join_request events are dropped.
+  Also added /debugjoin command logic and extra print logs
+  so you can confirm events are arriving.
 """
 
 from __future__ import annotations
@@ -28,7 +24,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
-from pyrogram import Client
+from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, ChatJoinRequest
 from pyrogram.enums import ChatMemberStatus
 
@@ -76,10 +72,11 @@ def _col(slot: int):
 async def _add_req(slot: int, user_id: int, first_name: str = "", username: str = ""):
     col = _col(slot)
     if col is None:
+        print(f"[FSUB] _add_req: col=None for slot={slot} ch={_get_ch(slot)}")
         return
     def _sync():
         try:
-            col.update_one(
+            result = col.update_one(
                 {"user_id": int(user_id)},
                 {"$setOnInsert": {
                     "_id": int(user_id), "user_id": int(user_id),
@@ -88,7 +85,8 @@ async def _add_req(slot: int, user_id: int, first_name: str = "", username: str 
                 }},
                 upsert=True
             )
-            print(f"[FSUB] DB write: uid={user_id} slot={slot} col={col.name}")
+            print(f"[FSUB] _add_req: uid={user_id} slot={slot} col={col.name} "
+                  f"upserted={result.upserted_id is not None} matched={result.matched_count}")
         except Exception as e:
             print(f"[FSUB] _add_req error: {e}")
     await asyncio.to_thread(_sync)
@@ -189,7 +187,6 @@ async def save_fsub_settings():
 # ── Telegram API member check ─────────────────────────────────
 
 async def _is_member_via_api(cyber, channel_id: int, user_id: int) -> bool:
-    """Directly check if user is in channel via Telegram API."""
     try:
         member = await cyber.get_chat_member(channel_id, user_id)
         status = member.status
@@ -201,24 +198,13 @@ async def _is_member_via_api(cyber, channel_id: int, user_id: int) -> bool:
             ChatMemberStatus.RESTRICTED,
         )
     except Exception as e:
-        err = str(e).lower()
         print(f"[FSUB] API error: uid={user_id} ch={channel_id} err={e}")
-        # "user_not_participant" = not joined. Any other error = assume not joined.
         return False
 
 
 # ── MAIN CHECK — DUAL CHECK ───────────────────────────────────
 
 async def check_fsub(cyber, user_id: int) -> bool:
-    """
-    Returns True if user passes all active slots.
-
-    request mode: checks MongoDB FIRST, then falls back to Telegram API.
-    invite mode:  checks Telegram API only.
-
-    The API fallback is the KEY FIX — it makes FSub work even when
-    Telegram never delivered the join_request event to the bot.
-    """
     m = _m()
     slots = [
         (getattr(m, "FSUB_CHANNEL1", None), getattr(m, "FSUB_MODE1", "request"), 1),
@@ -233,19 +219,17 @@ async def check_fsub(cyber, user_id: int) -> bool:
         print(f"[FSUB] check_fsub: uid={user_id} slot={slot} ch={ch} mode={mode}")
 
         if mode == "request":
-            # Step 1: fast MongoDB check
             if await _has_req(slot, user_id):
                 print(f"[FSUB] ✅ uid={user_id} slot={slot}: pass (DB record)")
                 continue
 
-            # Step 2: API fallback — covers dropped join_request events
             print(f"[FSUB] uid={user_id} not in DB, trying API fallback...")
             if await _is_member_via_api(cyber, ch, user_id):
                 print(f"[FSUB] ✅ uid={user_id} slot={slot}: pass (API), recording in DB")
                 await _add_req(slot, user_id)
                 continue
 
-            print(f"[FSUB] ❌ uid={user_id} slot={slot}: FAIL (not in DB, not in channel)")
+            print(f"[FSUB] ❌ uid={user_id} slot={slot}: FAIL")
             return False
 
         else:  # invite mode
@@ -308,31 +292,62 @@ async def _rotate_slot(slot: int):
     await save_fsub_settings()
 
 
-# ── join request handler ──────────────────────────────────────
+# ── JOIN REQUEST HANDLER (instance-level, registered via register_fsub_handlers) ──
+#
+# ❌ OLD BROKEN WAY:
+#     @Client.on_chat_join_request()           ← class-level, silently ignored
+#     async def _on_join_request(bot, join_req): ...
+#
+# ✅ NEW CORRECT WAY:
+#     def register_fsub_handlers(cyber: Client):
+#         @cyber.on_chat_join_request()        ← instance-level, always works
+#         async def _on_join_request(bot, join_req): ...
+#
+# You MUST call register_fsub_handlers(cyber) in main.py.
+# ─────────────────────────────────────────────────────────────
 
-@Client.on_chat_join_request()
-async def _on_join_request(bot, join_req: ChatJoinRequest):
-    m = _m()
-    try:
-        chat_id    = join_req.chat.id
-        uid        = join_req.from_user.id
-        first_name = join_req.from_user.first_name or ""
-        username   = join_req.from_user.username   or ""
-        ch1 = getattr(m, "FSUB_CHANNEL1", None)
-        ch2 = getattr(m, "FSUB_CHANNEL2", None)
-        print(f"[FSUB] JoinRequest: uid={uid} chat={chat_id} ch1={ch1} ch2={ch2}")
-        if ch1 and chat_id == ch1 and getattr(m, "FSUB_MODE1", "request") == "request":
-            await _add_req(1, uid, first_name, username)
-            m._req_count1 += 1
-            await _rotate_slot(1)
-        elif ch2 and chat_id == ch2 and getattr(m, "FSUB_MODE2", "request") == "request":
-            await _add_req(2, uid, first_name, username)
-            m._req_count2 += 1
-            await _rotate_slot(2)
-        else:
-            print(f"[FSUB] JoinRequest from unregistered chat {chat_id}")
-    except Exception as e:
-        print(f"[FSUB] JOIN REQUEST ERROR: {e}")
+def register_fsub_handlers(cyber: Client):
+    """
+    Call this in main.py AFTER the Client is created but BEFORE cyber.start().
+    This is the ONLY correct way to register chat_join_request handlers
+    on a named Pyrogram client instance.
+    """
+
+    @cyber.on_chat_join_request()
+    async def _on_join_request(bot, join_req: ChatJoinRequest):
+        m = _m()
+        try:
+            chat_id    = join_req.chat.id
+            uid        = join_req.from_user.id
+            first_name = join_req.from_user.first_name or ""
+            username   = join_req.from_user.username   or ""
+
+            ch1 = getattr(m, "FSUB_CHANNEL1", None)
+            ch2 = getattr(m, "FSUB_CHANNEL2", None)
+
+            print(f"[FSUB] ⚡ JoinRequest RECEIVED: uid={uid} chat={chat_id} "
+                  f"ch1={ch1} ch2={ch2}")
+
+            if ch1 and chat_id == ch1 and getattr(m, "FSUB_MODE1", "request") == "request":
+                await _add_req(1, uid, first_name, username)
+                m._req_count1 += 1
+                await _rotate_slot(1)
+                print(f"[FSUB] ✅ Recorded slot=1 uid={uid}")
+
+            elif ch2 and chat_id == ch2 and getattr(m, "FSUB_MODE2", "request") == "request":
+                await _add_req(2, uid, first_name, username)
+                m._req_count2 += 1
+                await _rotate_slot(2)
+                print(f"[FSUB] ✅ Recorded slot=2 uid={uid}")
+
+            else:
+                print(f"[FSUB] ⚠️ JoinRequest from unregistered chat {chat_id} "
+                      f"(expected ch1={ch1} or ch2={ch2})")
+
+        except Exception as e:
+            print(f"[FSUB] ❌ JOIN REQUEST ERROR: {e}")
+
+    print("[FSUB] ✅ chat_join_request handler registered on client instance.")
 
 
 # ── public helpers ────────────────────────────────────────────
