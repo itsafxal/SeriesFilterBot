@@ -352,3 +352,28 @@ def register_command_handlers(cyber: Client):
             parse_mode=enums.ParseMode.HTML,
             reply_markup=keyboard,
         )
+
+
+
+    @cyber.on_message(filters.command("debugdb") & filters.user(ADMIN_USERS))
+    async def debug_db(_, message: Message):
+        from DB.database import mongo_client
+        jrdb = mongo_client["JoinReqs"]
+
+        lines = ["<b>🔍 JoinReqs DB — All Collections</b>\n"]
+
+        for col_name in jrdb.list_collection_names():
+            count = jrdb[col_name].count_documents({})
+            lines.append(f"Collection: <code>{col_name}</code> → <b>{count}</b> docs")
+
+            # Show sample docs
+            for doc in jrdb[col_name].find().limit(3):
+                lines.append(
+                    f"  • uid=<code>{doc.get('user_id')}</code> "
+                    f"name={doc.get('first_name','?')}"
+                )
+
+        await message.reply(
+            "\n".join(lines),
+            parse_mode=enums.ParseMode.HTML
+        )
