@@ -326,7 +326,7 @@ def register_index_handlers(cyber: Client):
 
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✅ Proceed", callback_data=f"index|{chat_id}|{start_id}|{last_id}|{target}"),
+                InlineKeyboardButton("✅ Proceed", callback_data=f"startidx|{chat_id}|{start_id}|{last_id}|{target}"),
             ],
             [
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_prompt"),
@@ -347,7 +347,7 @@ def register_index_handlers(cyber: Client):
             logger.error(f"[INDEX] idx_db_chosen edit failed: {e}")
 
     # ── START INDEX ───────────────────────────────────────────────────────
-    @cyber.on_callback_query(filters.regex(r"^index\|"))
+    @cyber.on_callback_query(filters.regex(r"^startidx\|"))
     async def start_index(bot, query):
         global index_task
 
@@ -358,7 +358,7 @@ def register_index_handlers(cyber: Client):
             await query.answer("Index already running.", show_alert=True)
             return
 
-        # format: index|chat_id|start_id|last_id|target
+        # format: startidx|chat_id|start_id|last_id|target
         try:
             parts    = query.data.split("|")
             chat_id  = int(parts[1])
