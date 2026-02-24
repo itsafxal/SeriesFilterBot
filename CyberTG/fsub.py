@@ -376,19 +376,28 @@ def fsub_text(statuses: list[dict] | None = None) -> str:
             "After joining, press ☘️ RETRY DOWNLOAD ☘️"
         )
 
-    pending = [s for s in statuses if not s["joined"] and not s["requested"]]
+    pending   = [s for s in statuses if not s["joined"] and not s["requested"]]
     requested = [s for s in statuses if s["requested"]]
+    joined    = [s for s in statuses if s["joined"]]
 
-    lines = ["⚠️ Access Restricted\n"]
+    lines = ["⚠️ <b>Access Restricted</b>\n"]
 
     if pending:
-        lines.append("Please join the channel(s) below to continue.")
+        lines.append("📢 Please join the channel(s) below to continue.")
 
-    if requested:
+    if requested and not pending:
+        # All remaining channels have been requested — waiting for approval
         lines.append(
-            "Your join request is pending admin approval. "
-            "Once approved, tap RETRY DOWNLOAD to get your files."
+            "⏳ Your join request is pending admin approval.\n"
+            "Once approved, tap <b>☘️ RETRY DOWNLOAD ☘️</b> to get your files."
         )
+    elif requested:
+        lines.append(
+            "⏳ Some channels are pending admin approval."
+        )
+
+    if joined and (pending or requested):
+        lines.append(f"\n✅ {len(joined)} channel(s) already satisfied.")
 
     return UI("\n".join(lines))
 
@@ -406,8 +415,7 @@ def register_pending_fsub(uid: int, msg: Message, payload: str):
     if old:
         # Schedule deletion of the old gate message without blocking
         try:
-            import asyncio
-            asyncio.get_event_loop().create_task(old["msg"].delete())
+            asyncio.create_task(old["msg"].delete())
         except Exception:
             pass
 
