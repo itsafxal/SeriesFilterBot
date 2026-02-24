@@ -31,6 +31,8 @@ from .fsub import (
     build_fsub_keyboard,
     fsub_text,
     register_pending_fsub,
+    clear_pending_fsub,
+    _PENDING_FSUB,
 )
 
 
@@ -77,7 +79,17 @@ def register_command_handlers(cyber: Client):
                         pass
                     return
 
-                # ── User passed — decode and deliver ──────────
+                # ── User passed — clean up gate message then deliver ──
+                # Delete the old fsub gate message (with ⏳/✅ buttons) so it
+                # doesn't linger after the user has fully joined.
+                pending = _PENDING_FSUB.get(uid)
+                if pending:
+                    try:
+                        await pending["msg"].delete()
+                    except Exception:
+                        pass
+                    clear_pending_fsub(uid)
+
                 try:
                     decoded = await decode_payload_async(payload)
                     if not decoded:
