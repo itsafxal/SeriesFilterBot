@@ -147,6 +147,35 @@ def register_command_handlers(cyber: Client):
                 except Exception as e:
                     logger.error(f"DELIVER ERROR uid={uid}: {e}")
                     await cyber.send_message(uid, "⚠️ Something went wrong sending files. Please try the link again.")
+                    return
+
+                # ── Send fallback RETRY button, auto-deletes after 60s ──
+                import asyncio as _asyncio
+                from pyrogram.types import InlineKeyboardMarkup as _IKM
+                from utils.cyber_font import BTN as _BTN
+                from pyrogram import enums as _enums
+                try:
+                    _bot = await cyber.get_me()
+                    retry_msg = await cyber.send_message(
+                        uid,
+                        "✅ <b>Files sent!</b>
+"
+                        "If anything is missing, tap below within 60 seconds.",
+                        reply_markup=_IKM([
+                            [_BTN("☘️ RETRY DOWNLOAD ☘️",
+                                  url=f"https://t.me/{_bot.username}?start={payload}")]
+                        ]),
+                        parse_mode=_enums.ParseMode.HTML,
+                    )
+                    async def _del_retry(m=retry_msg):
+                        await _asyncio.sleep(60)
+                        try:
+                            await m.delete()
+                        except Exception:
+                            pass
+                    _asyncio.create_task(_del_retry())
+                except Exception as _e:
+                    logger.error(f"RETRY BTN ERROR: {_e}")
                 return
 
         # ── normal /start ─────────────────────────────────────
