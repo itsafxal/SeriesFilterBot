@@ -421,29 +421,25 @@ def clear_pending_fsub(uid: int):
 
 async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> bool:
     """
-    Decodes payload, sets session, delivers files, sends retry button.
-    Returns True if delivery was started, False if locked (already running).
+    Decodes payload, sets session, delivers files.
+    Retry button is sent via on_complete callback AFTER sender_worker finishes.
 
-    source: label for logging ("auto_deliver" | "start" | "retry")
-
-    RETRY BEHAVIOUR:
-      - First call   → acquires lock → delivers
-      - Retry while running → lock held → returns False → caller ignores silently
-      - Retry after done  → lock released → acquires lock again → re-delivers
-        (this is correct — user genuinely missing files and clicked retry)
+    LOCK BEHAVIOUR:
+      - First call        → acquires lock → starts delivery → returns True
+      - While running     → lock held → returns False (silently ignored by caller)
+      - After done        → lock released by on_complete → next retry acquires → re-delivers
     """
     if not acquire_delivery_lock(uid):
-        print(f"[FSUB] do_deliver uid={uid} source={source} → LOCKED (already running)")
+        print(f"[FSUB] do_deliver uid={uid} source={source} → LOCKED (delivery in progress)")
         return False
 
-    print(f"[FSUB] do_deliver uid={uid} source={source} → acquired lock")
+    print(f"[FSUB] do_deliver uid={uid} source={source} → lock acquired")
 
     try:
         from utils.cyber_filter import decode_payload_async
         decoded = await decode_payload_async(payload)
 
         if not decoded:
-            print(f"[FSUB] do_deliver uid={uid} → payload expired/invalid")
             release_delivery_lock(uid)
             await cyber.send_message(
                 uid,
@@ -459,7 +455,7 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
             await cyber.send_message(uid, "⚠️ This link is not for you.")
             return False
 
-        from CyberTG.files import set_session, deliver_files_direct, is_sender_running
+        from CyberTG.files import set_session, deliver_files_direct
         from pyrogram import enums as _enums
 
         set_session(uid, {
@@ -469,50 +465,35 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
             "quality":  quality,
         })
 
-        await deliver_files_direct(cyber, uid)
+        # Build the on_complete callback — sent AFTER all files delivered
+        async def _after_delivery():
+            """Called by sender_worker when the last file is sent."""
+            release_delivery_lock(uid)
+            print(f"[FSUB] delivery done uid={uid} — sending retry button")
+            try:
+                bot       = await cyber.get_me()
+                retry_msg = await cyber.send_message(
+                    uid,
+                    "✅ <b>Files sent!</b>\n"
+                    "If anything is missing, tap below within 60 seconds.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [BTN("☘️ RETRY DOWNLOAD ☘️",
+                             url=f"https://t.me/{bot.username}?start={payload}")]
+                    ]),
+                    parse_mode=_enums.ParseMode.HTML,
+                )
+                delete_message_later(cyber, uid, retry_msg.id, 60)
+            except Exception as e:
+                print(f"[FSUB] retry button error uid={uid}: {e}")
 
-        # sender_worker runs as asyncio task — lock released when it finishes
-        # We schedule lock release after the task completes
-        asyncio.create_task(_release_lock_when_done(uid))
-
-        # Send retry button
-        try:
-            bot       = await cyber.get_me()
-            retry_msg = await cyber.send_message(
-                uid,
-                "✅ <b>Files sent!</b>\n"
-                "If anything is missing, tap below within 60 seconds.",
-                reply_markup=InlineKeyboardMarkup([
-                    [BTN("☘️ RETRY DOWNLOAD ☘️",
-                         url=f"https://t.me/{bot.username}?start={payload}")]
-                ]),
-                parse_mode=_enums.ParseMode.HTML,
-            )
-            delete_message_later(cyber, uid, retry_msg.id, 60)
-        except Exception as e:
-            print(f"[FSUB] retry msg error: {e}")
-
+        # Pass callback into deliver — sender_worker fires it when done
+        await deliver_files_direct(cyber, uid, on_complete=_after_delivery)
         return True
 
     except Exception as e:
         print(f"[FSUB] do_deliver error uid={uid}: {e}")
         release_delivery_lock(uid)
         return False
-
-
-async def _release_lock_when_done(uid: int):
-    """
-    Polls until the sender_worker task is done, then releases the delivery lock.
-    This allows retry to re-deliver AFTER the current send is complete.
-    """
-    from CyberTG.files import is_sender_running
-    # Wait up to 5 minutes for sender to finish
-    for _ in range(300):
-        await asyncio.sleep(1)
-        if not is_sender_running(uid):
-            break
-    release_delivery_lock(uid)
-    print(f"[FSUB] delivery lock released for uid={uid}")
 
 
 # ═══════════════════════════════════════════════════════════════
