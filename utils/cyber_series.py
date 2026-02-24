@@ -1,0 +1,288 @@
+import re
+from typing import List, Optional
+
+from DB.database import search_series
+
+# =================================================
+# SERIES REGEX
+# =================================================
+
+SERIES_RE = re.compile(
+    r"(?i)\b("
+    r"S\d{1,3}E\d{1,3}"
+    r"|Season\s?\d+\s?[-]?\s?Episode\s?\d+"
+    r"|\d{1,2}x\d{1,2}"
+    r"|E\d{1,3}(-E\d{1,3})?"
+    r"|EP\d{1,3}"
+    r"|(19|20)\d{2}.*S\d{1,3}E\d{1,3}"
+    r"|Combined"
+    r"|S\d{1,3}\s?EP\d{1,3}"
+    r"|S\d{1,3}E\d{1,3}E\d{1,3}"
+    r"|S\d{1,3}"
+    r"|Season\s?\d+"
+    r")\b"
+)
+from DB.database import search_series
+# -------------------------------------------------
+# RAPIDFUZZ (OPTIONAL BUT RECOMMENDED)
+# -------------------------------------------------
+
+try:
+    from rapidfuzz import process as rf_process, fuzz as rf_fuzz
+    HAVE_RAPIDFUZZ = True
+except ImportError:
+    HAVE_RAPIDFUZZ = False
+
+
+# -------------------------------------------------
+# QUERY CLEANER
+# -------------------------------------------------
+
+def clean_query(q: str) -> str:
+    if not q:
+        return ""
+
+    q = q.lower()
+    q = re.sub(r"[^a-z0-9\s]", " ", q)
+
+    # remove season words
+    q = SERIES_RE.sub("", q)
+
+    q = re.sub(r"\s+", " ", q).strip()
+    return q
+
+
+# -------------------------------------------------
+# GET ALL SERIES TITLES (FOR FUZZY SEARCH)
+# -------------------------------------------------
+
+async def _get_all_series_titles() -> List[str]:
+    """
+    Fetch all distinct series names from database.
+    This is used for real fuzzy matching when LIKE fails.
+    """
+    rows = await search_series("")  # empty query returns all
+    if not rows:
+        return []
+    return list(set(rows))
+
+
+# -------------------------------------------------
+# FUZZY SUGGESTIONS (WORKS EVEN IF NO LIKE MATCH)
+# -------------------------------------------------
+
+async def suggest_series(query: str, limit: int = 4) -> List[str]:
+
+    query = clean_query(query)
+
+    if not query:
+        return []
+
+    # 1️⃣ Direct SQLite search
+    rows = await search_series(query)
+
+    if rows:
+        return list(rows)[:limit]
+
+    # 2️⃣ Relaxed search (first 3 letters)
+    short_query = query[:3]
+
+    if len(short_query) >= 3:
+        rows = await search_series(short_query)
+        if rows:
+            return list(rows)[:limit]
+
+    # 3️⃣ RapidFuzz fallback
+    if HAVE_RAPIDFUZZ and len(short_query) >= 3:
+
+        candidates = await search_series(short_query)
+        if not candidates:
+            return []
+        matches = rf_process.extract(
+            query,
+            candidates,
+            limit=limit,
+            scorer=rf_fuzz.token_sort_ratio,   # better scorer
+            score_cutoff=80                    # STRICT 80% MATCH
+        )
+
+        return [m[0] for m in matches]
+
+    return []
+
+
+# -------------------------------------------------
+# PARSER FOR INDEXING
+# -------------------------------------------------
+
+def parse_series_info(file_name: str):
+    """
+    Parser used during bulk index.
+
+    Returns:
+        normalized_name, season, episode, quality, language
+    """
+
+    if not file_name:
+        return "", 0, 0, "UNKNOWN", "Unknown"
+
+    name = file_name
+    upper = name.upper()
+
+    # =================================================
+    # SEASON / EPISODE DETECTION
+    # =================================================
+
+    season = 0
+    episode = 0
+
+    # Try various patterns for extraction
+    # 1. S01E01 / S01 EP01 / S01E01E02
+    m = re.search(r"(?i)S(\d{1,3})[^\d]?(?:EP|E)(\d{1,3})", name)
+    if m:
+        season = int(m.group(1))
+        episode = int(m.group(2))
+    else:
+        # 2. Season 1 Episode 1
+        m = re.search(r"(?i)Season\s?(\d+)\s?[-]?\s?Episode\s?(\d+)", name)
+        if m:
+            season = int(m.group(1))
+            episode = int(m.group(2))
+        else:
+            # 3. 1x01
+            m = re.search(r"(?i)\b(\d{1,2})x(\d{1,2})\b", name)
+            if m:
+                season = int(m.group(1))
+                episode = int(m.group(2))
+            else:
+                # 4. S01
+                m = re.search(r"(?i)\bS(\d{1,3})\b", name)
+                if m:
+                    season = int(m.group(1))
+
+                # 5. EP01 / E01
+                m = re.search(r"(?i)\b(?:EP|E)(\d{1,3})\b", name)
+                if m:
+                    episode = int(m.group(1))
+
+    # =================================================
+    # QUALITY DETECTION
+    # =================================================
+
+    quality = "UNKNOWN"
+
+    for q in ["4K", "1080P", "720P", "480P", "360P"]:
+        if q in upper:
+            quality = q
+            break
+
+    # =================================================
+    # LANGUAGE DETECTION (FROM FILENAME ONLY)
+    # =================================================
+
+    langs = set()
+
+    # ---------- Full language keywords ----------
+    LANG_KEYWORDS = {
+        "HINDI": "Hindi",
+        "ENGLISH": "English",
+        "TAMIL": "Tamil",
+        "TELUGU": "Telugu",
+        "MALAYALAM": "Malayalam",
+        "KANNADA": "Kannada"
+    }
+
+    for key, value in LANG_KEYWORDS.items():
+        if key in upper:
+            langs.add(value)
+
+    # ---------- Short tags ----------
+    SHORT_TAGS = {
+        r"\bHIN\b": "Hindi",
+        r"\bENG\b": "English",
+        r"\bTAM\b": "Tamil",
+        r"\bTEL\b": "Telugu",
+        r"\bMAL\b": "Malayalam",
+        r"\bKAN\b": "Kannada"
+    }
+
+    for pattern, value in SHORT_TAGS.items():
+        if re.search(pattern, upper):
+            langs.add(value)
+
+    # ---------- Multi / Dual detection ----------
+    if "DUAL" in upper or "MULTI" in upper:
+        return _normalize_title(name), season, episode, quality, "Multi Audio"
+
+    # ---------- Final resolution ----------
+    if len(langs) == 1:
+        language = next(iter(langs))
+    elif len(langs) > 1:
+        language = "-".join(sorted(langs))
+    else:
+        language = "Unknown"
+
+    # =================================================
+    # TITLE NORMALIZATION
+    # =================================================
+
+    normalized_title = _normalize_title(name)
+
+    return normalized_title, season, episode, quality, language
+
+
+# =================================================
+# TITLE NORMALIZER
+# =================================================
+
+def _normalize_title(name: str):
+
+    clean = name
+
+    # Replace separators
+    clean = re.sub(r"[._\-]", " ", clean)
+
+    # Remove brackets
+    clean = re.sub(r"\[.*?\]|\(.*?\)", "", clean)
+
+    # Remove season/episode and everything after
+    match = SERIES_RE.search(clean)
+    if match:
+        clean = clean[:match.start()]
+
+    # Remove quality + junk tags
+    clean = re.sub(
+        r"\b(4K|1080P|720P|480P|360P|HDRIP|WEBRIP|WEB|BLURAY|X264|X265|HEVC|AAC|DDP5\.1|REPACK|COMPLETE|BATCH)\b",
+        "",
+        clean,
+        flags=re.IGNORECASE
+    )
+
+    # Remove year
+    clean = re.sub(r"\b(19|20)\d{2}\b", "", clean)
+
+    # Remove extra spaces
+    clean = re.sub(r"\s+", " ", clean).strip()
+
+    return clean.title()
+
+# -------------------------------------------------
+# BUTTON OWNER CHECK
+# -------------------------------------------------
+
+async def check_owner(q, uid: int):
+    """
+    Allow only original requester to use inline buttons.
+    """
+
+    if q.from_user.id != int(uid):
+
+        name = q.from_user.first_name or "User"
+
+        await q.answer(
+            f"Hey {name}, this is not for you 🙂",
+            show_alert=True
+        )
+        return False
+
+    return True
