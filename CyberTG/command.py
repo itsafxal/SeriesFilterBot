@@ -35,6 +35,7 @@ from DB.database import (
     get_total_files,
     get_total_series,
     get_total_files_per_db,
+    get_all_series,
     delete_all_files,
     delete_one_file,
 )
@@ -297,6 +298,46 @@ def register_command_handlers(cyber: Client):
             f"<b>📁 MongoDB File DBs</b>\n"
             f"  DB1 : <code>{db1}</code> files\n"
             f"  DB2 : <code>{db2}</code> files",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    # ──────────────────────────────────────────────────────────
+    # /listbatch
+    # ──────────────────────────────────────────────────────────
+    @cyber.on_message(filters.command("listbatch") & filters.user(ADMIN_USERS))
+    async def listbatch(_, m: Message):
+        series_list = await get_all_series()
+
+        if not series_list:
+            return await m.reply("❌ No series found in database.")
+
+        total_series = len(series_list)
+        total_files  = sum(count for _, count in series_list)
+
+        lines = [
+            f"🎬 BATCHED SERIES LIST",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"Total Series : {total_series}",
+            f"Total Files  : {total_files}",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+        ]
+
+        for i, (name, count) in enumerate(series_list, 1):
+            lines.append(f"{i:>4}. {name}  ({count} files)")
+
+        content = "\n".join(lines)
+
+        file_buf      = io.BytesIO(content.encode("utf-8"))
+        file_buf.name = "batched_series.txt"
+
+        await m.reply_document(
+            document=file_buf,
+            caption=(
+                f"<b>🎬 Batched Series List</b>\n"
+                f"Total Series: <code>{total_series}</code>\n"
+                f"Total Files : <code>{total_files}</code>"
+            ),
             parse_mode=enums.ParseMode.HTML,
         )
 
