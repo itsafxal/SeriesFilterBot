@@ -25,6 +25,7 @@ from DB.database import (
 )
 
 from .files import deliver_files_direct, set_session
+from utils.cyber_delete import delete_message_later
 from .fsub import (
     check_fsub,
     get_slot_statuses,
@@ -149,8 +150,7 @@ def register_command_handlers(cyber: Client):
                     await cyber.send_message(uid, "⚠️ Something went wrong sending files. Please try the link again.")
                     return
 
-                # ── Send fallback RETRY button, auto-deletes after 60s ──
-                import asyncio as _asyncio
+                # ── Send fallback RETRY button, auto-deletes after 60s via APScheduler ──
                 from pyrogram.types import InlineKeyboardMarkup as _IKM
                 from utils.cyber_font import BTN as _BTN
                 from pyrogram import enums as _enums
@@ -165,13 +165,8 @@ def register_command_handlers(cyber: Client):
                         ]),
                         parse_mode=_enums.ParseMode.HTML,
                     )
-                    async def _del_retry(m=retry_msg):
-                        await _asyncio.sleep(60)
-                        try:
-                            await m.delete()
-                        except Exception:
-                            pass
-                    _asyncio.create_task(_del_retry())
+                    # Use the existing APScheduler-based delete utility (60s)
+                    delete_message_later(cyber, uid, retry_msg.id, 60)
                 except Exception as _e:
                     logger.error(f"RETRY BTN ERROR: {_e}")
                 return
