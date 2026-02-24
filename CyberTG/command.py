@@ -1,17 +1,17 @@
 """
-command.py — FIXED
-====================
-BUG FIXES:
-  1. DOUBLE DELIVERY — root cause:
-     _try_auto_deliver() in fsub.py fires from join_request event and delivers files.
-     Then user clicks "Download Files" → /start fires → delivers AGAIN.
-     Fix: In /start, if is_sender_running(uid) → skip. Delivery already in progress.
+command.py — FIXED (works with new fsub.py)
+============================================
 
-  2. DOUBLE "Files sent!" + "RETRY DOWNLOAD":
-     Both fsub._try_auto_deliver AND /start sent a retry message.
-     Fix: /start returns early (see fix 1) so it never reaches the retry msg code.
+/start with send_ payload:
+  1. Get slot statuses
+  2. If ANY slot not satisfied → show gate message → register pending fsub
+  3. If ALL slots satisfied → check delivery lock
+       • Lock FREE  → deliver (first time or genuine retry after delivery done)
+       • Lock HELD  → silently skip (auto-deliver already running from join event)
 
-  3. Caption "@RickyChannel" junk — fixed in files.py caption_filename().
+  For invite-mode channels: get_slot_statuses() does the Telegram API check.
+  If the user just joined, it returns joined=True → all_slots_passed=True → deliver.
+  No join_request event needed for invite mode.
 """
 
 import io
@@ -20,9 +20,7 @@ import asyncio
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardMarkup
 
-from utils.cyber_filter import decode_payload_async
 from utils.cyber_font import BTN, UI
-
 from config import (
     logger,
     ADMIN_USERS,
@@ -30,7 +28,6 @@ from config import (
     LOG_FILE_PATH,
     MAX_LOG_SIZE,
 )
-
 from DB.database import (
     add_user,
     get_all_users,
@@ -39,22 +36,26 @@ from DB.database import (
     delete_all_files,
     delete_one_file,
 )
-
-from .files import deliver_files_direct, set_session, is_sender_running
 from utils.cyber_delete import delete_message_later
 from .fsub import (
-    check_fsub,
     get_slot_statuses,
+    all_slots_passed,
     build_fsub_keyboard,
     fsub_text,
     register_pending_fsub,
     clear_pending_fsub,
+    do_deliver,
+    is_delivery_locked,
     _PENDING_FSUB,
+    check_fsub,
 )
 
 
 def register_command_handlers(cyber: Client):
 
+    # ──────────────────────────────────────────────────────────
+    # /start
+    # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("start") & filters.private)
     async def start_command(_, message: Message):
         uid = message.from_user.id
@@ -65,27 +66,30 @@ def register_command_handlers(cyber: Client):
 
             if payload.startswith("send_"):
 
-                statuses     = await get_slot_statuses(cyber, uid)
-                active_slots = list(statuses)
-                passed       = all(s["joined"] or s["requested"] for s in active_slots)
-
-                logger.info(
-                    f"[FSUB] uid={uid} "
-                    f"statuses={[(s['slot'],s['joined'],s['requested']) for s in active_slots]} "
-                    f"passed={passed}"
-                )
-
+                # Delete the /start message immediately (clean UX)
                 try:
                     await message.delete()
                 except Exception:
                     pass
 
+                # Get real-time slot statuses
+                statuses = await get_slot_statuses(cyber, uid)
+                passed   = all_slots_passed(statuses)
+
+                logger.info(
+                    f"[START] uid={uid} passed={passed} "
+                    f"statuses={[(s['slot'],s['joined'],s['requested']) for s in statuses]}"
+                )
+
                 if not passed:
+                    # ── Show / refresh gate message ───────────
                     bot      = await cyber.get_me()
+                    kb       = build_fsub_keyboard(bot.username, payload, statuses)
+                    txt      = fsub_text(statuses)
                     existing = _PENDING_FSUB.get(uid)
+
                     if existing and existing["payload"] == payload:
-                        kb  = build_fsub_keyboard(bot.username, payload, statuses)
-                        txt = fsub_text(statuses)
+                        # Refresh existing gate message keyboard
                         try:
                             await existing["msg"].edit_text(
                                 txt, reply_markup=kb,
@@ -93,26 +97,18 @@ def register_command_handlers(cyber: Client):
                             )
                         except Exception:
                             pass
-                        return
-
-                    kb       = build_fsub_keyboard(bot.username, payload, statuses)
-                    txt      = fsub_text(statuses)
-                    gate_msg = await cyber.send_message(
-                        uid, txt, reply_markup=kb,
-                        parse_mode=enums.ParseMode.HTML,
-                    )
-                    register_pending_fsub(uid, gate_msg, payload)
+                    else:
+                        # Send fresh gate message
+                        gate_msg = await cyber.send_message(
+                            uid, txt, reply_markup=kb,
+                            parse_mode=enums.ParseMode.HTML,
+                        )
+                        register_pending_fsub(uid, gate_msg, payload)
                     return
 
-                # ── FIX 1 & 2: If fsub auto-deliver already started, skip entirely ──
-                if is_sender_running(uid):
-                    logger.info(
-                        f"[START] uid={uid} — sender already running "
-                        f"(fsub auto-deliver fired first). Skipping duplicate."
-                    )
-                    return
+                # ── FSub passed — deliver ─────────────────────
 
-                # Clean up gate message
+                # Clean up any lingering gate message
                 pending = _PENDING_FSUB.get(uid)
                 if pending:
                     try:
@@ -121,70 +117,20 @@ def register_command_handlers(cyber: Client):
                         pass
                     clear_pending_fsub(uid)
 
-                try:
-                    decoded = await decode_payload_async(payload)
-                except Exception as e:
-                    logger.error(f"PAYLOAD DECODE EXCEPTION uid={uid}: {e}")
-                    decoded = None
-
-                logger.info(
-                    f"[START] uid={uid} payload={payload} "
-                    f"decoded={'ok' if decoded else 'NONE'}"
-                )
-
-                if not decoded:
-                    await cyber.send_message(
-                        uid,
-                        "⚠️ This link has expired or is invalid.\n"
-                        "Please search for the series again to get a new link."
-                    )
-                    return
-
-                owner, series, season, lang, quality = decoded
-
-                if int(owner) != uid:
-                    await cyber.send_message(uid, "⚠️ This link is not for you.")
-                    return
-
-                set_session(uid, {
-                    "series":   series,
-                    "season":   int(season),
-                    "language": lang,
-                    "quality":  quality,
-                })
-
-                try:
-                    await deliver_files_direct(cyber, uid)
-                except Exception as e:
-                    logger.error(f"DELIVER ERROR uid={uid}: {e}")
-                    await cyber.send_message(
-                        uid,
-                        "⚠️ Something went wrong sending files. Please try the link again."
-                    )
-                    return
-
-                try:
-                    _bot      = await cyber.get_me()
-                    retry_msg = await cyber.send_message(
-                        uid,
-                        "✅ <b>Files sent!</b>\nIf anything is missing, tap below within 60 seconds.",
-                        reply_markup=InlineKeyboardMarkup([
-                            [BTN("☘️ RETRY DOWNLOAD ☘️",
-                                 url=f"https://t.me/{_bot.username}?start={payload}")]
-                        ]),
-                        parse_mode=enums.ParseMode.HTML,
-                    )
-                    delete_message_later(cyber, uid, retry_msg.id, 60)
-                except Exception as e:
-                    logger.error(f"RETRY BTN ERROR: {e}")
+                # do_deliver handles:
+                #   - delivery lock (prevents duplicate from concurrent auto-deliver)
+                #   - session set
+                #   - file delivery
+                #   - retry button send
+                # If locked → delivery is already running (auto-deliver beat us) → skip silently
+                await do_deliver(cyber, uid, payload, source="start")
                 return
 
-        # ── Normal /start ─────────────────────────────────────
+        # ── Normal /start (no payload) ────────────────────────
         bot       = await cyber.get_me()
-        user      = message.from_user
-        user_name = user.first_name
+        user_name = message.from_user.first_name
+        lets_dive = UI("Let's dive into entertainment 🌙")
 
-        lets_dive  = UI("Let's dive into entertainment 🌙")
         START_TEXT = (
             f"<b>{UI(f'Hey {user_name}!')}</b>\n\n"
             f"<b>{UI(f'Welcome to {bot.first_name}')}</b>\n\n"
@@ -217,7 +163,7 @@ def register_command_handlers(cyber: Client):
             FSUB_CHANNEL2, FSUB_LINK2, FSUB_MODE2,
             _join_reqs_db,
         )
-        lines = ["<b>🔍 FSub Debug Info</b>\n"]
+        lines = ["<b>🔍 FSub Debug</b>\n"]
         for slot, ch, mode, link in [
             (1, FSUB_CHANNEL1, FSUB_MODE1, FSUB_LINK1),
             (2, FSUB_CHANNEL2, FSUB_MODE2, FSUB_LINK2),
@@ -239,8 +185,6 @@ def register_command_handlers(cyber: Client):
                         lines.append(
                             f"    • uid=<code>{d.get('user_id')}</code>"
                             f"  name=<code>{d.get('first_name','?')}</code>"
-                            f"  @{d.get('username','?')}"
-                            f"  {d.get('date','')}"
                         )
                 else:
                     lines.append("  ⚠️ <b>DB is EMPTY</b>")
@@ -272,7 +216,7 @@ def register_command_handlers(cyber: Client):
         else:
             return await message.reply("Usage: /checkuser <user_id>")
 
-        lines = [f"<b>🔍 Checking uid={uid}</b>\n"]
+        lines = [f"<b>🔍 uid={uid}</b>\n"]
         for slot, ch, mode in [(1, FSUB_CHANNEL1, FSUB_MODE1), (2, FSUB_CHANNEL2, FSUB_MODE2)]:
             lines.append(f"<b>Slot {slot}</b> ch=<code>{ch}</code> mode=<code>{mode}</code>")
             if not ch:
@@ -283,13 +227,12 @@ def register_command_handlers(cyber: Client):
             lines.append(f"  MongoDB : <code>{'✅ FOUND' if doc else '❌ NOT FOUND'}</code>")
             try:
                 member = await cyber.get_chat_member(ch, uid)
-                lines.append(f"  Telegram: <code>✅ status={member.status}</code>")
+                lines.append(f"  Telegram: <code>✅ {member.status}</code>")
             except Exception as e:
                 lines.append(f"  Telegram: <code>❌ {e}</code>")
             lines.append("")
-
         passed = await check_fsub(cyber, uid)
-        lines.append(f"<b>Final: {'✅ PASS' if passed else '❌ FAIL'}</b>")
+        lines.append(f"<b>Result: {'✅ PASS' if passed else '❌ FAIL'}</b>")
         await message.reply("\n".join(lines), parse_mode=enums.ParseMode.HTML)
 
     # ──────────────────────────────────────────────────────────
@@ -305,11 +248,11 @@ def register_command_handlers(cyber: Client):
         for slot, ch in [(1, FSUB_CHANNEL1), (2, FSUB_CHANNEL2)]:
             if ch:
                 await _add_req(slot, uid, fn, un)
-                results.append(f"  Slot {slot} ch=<code>{ch}</code> → uid=<code>{uid}</code> added")
+                results.append(f"  Slot {slot} → uid=<code>{uid}</code> added")
         if results:
             await message.reply(
-                "✅ <b>Manually added to DB:</b>\n" + "\n".join(results) +
-                "\n\nNow try clicking your download link again.",
+                "✅ <b>Added to DB:</b>\n" + "\n".join(results) +
+                "\n\nTry clicking your download link again.",
                 parse_mode=enums.ParseMode.HTML
             )
         else:
@@ -329,7 +272,7 @@ def register_command_handlers(cyber: Client):
                 await asyncio.sleep(0.1)
             except Exception:
                 pass
-        await msg.reply("✅ Broadcast completed.")
+        await msg.reply("✅ Broadcast done.")
 
     # ──────────────────────────────────────────────────────────
     # /total
@@ -361,9 +304,7 @@ def register_command_handlers(cyber: Client):
                 "Usage: <code>/deletefile &lt;channel_id&gt; &lt;message_id&gt;</code>",
                 parse_mode=enums.ParseMode.HTML,
             )
-        cid = int(m.command[1])
-        mid = int(m.command[2])
-        await delete_one_file(cid, mid)
+        await delete_one_file(int(m.command[1]), int(m.command[2]))
         await m.reply("✅ File deleted.")
 
     # ──────────────────────────────────────────────────────────
