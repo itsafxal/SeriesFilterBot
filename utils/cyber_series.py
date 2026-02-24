@@ -2,6 +2,26 @@ import re
 from typing import List, Optional
 
 from DB.sqlite_db import search_series_sync
+
+# =================================================
+# SERIES REGEX
+# =================================================
+
+SERIES_RE = re.compile(
+    r"(?i)\b("
+    r"S\d{1,3}E\d{1,3}"
+    r"|Season\s?\d+\s?[-]?\s?Episode\s?\d+"
+    r"|\d{1,2}x\d{1,2}"
+    r"|E\d{1,3}(-E\d{1,3})?"
+    r"|EP\d{1,3}"
+    r"|(19|20)\d{2}.*S\d{1,3}E\d{1,3}"
+    r"|Combined"
+    r"|S\d{1,3}\s?EP\d{1,3}"
+    r"|S\d{1,3}E\d{1,3}E\d{1,3}"
+    r"|S\d{1,3}"
+    r"|Season\s?\d+"
+    r")\b"
+)
 from DB.database import search_series
 # -------------------------------------------------
 # RAPIDFUZZ (OPTIONAL BUT RECOMMENDED)
@@ -26,8 +46,7 @@ def clean_query(q: str) -> str:
     q = re.sub(r"[^a-z0-9\s]", " ", q)
 
     # remove season words
-    q = re.sub(r"\bseason\s*\d+\b", "", q)
-    q = re.sub(r"\bs\d+\b", "", q)
+    q = SERIES_RE.sub("", q)
 
     q = re.sub(r"\s+", " ", q).strip()
     return q
@@ -117,11 +136,34 @@ def parse_series_info(file_name: str):
     season = 0
     episode = 0
 
-    # Pattern: S01E02 / S1E2 / s01 e02
-    m = re.search(r"[sS](\d+)[^\d]?[eE](\d+)", name)
+    # Try various patterns for extraction
+    # 1. S01E01 / S01 EP01 / S01E01E02
+    m = re.search(r"(?i)S(\d{1,3})[^\d]?(?:EP|E)(\d{1,3})", name)
     if m:
         season = int(m.group(1))
         episode = int(m.group(2))
+    else:
+        # 2. Season 1 Episode 1
+        m = re.search(r"(?i)Season\s?(\d+)\s?[-]?\s?Episode\s?(\d+)", name)
+        if m:
+            season = int(m.group(1))
+            episode = int(m.group(2))
+        else:
+            # 3. 1x01
+            m = re.search(r"(?i)\b(\d{1,2})x(\d{1,2})\b", name)
+            if m:
+                season = int(m.group(1))
+                episode = int(m.group(2))
+            else:
+                # 4. S01
+                m = re.search(r"(?i)\bS(\d{1,3})\b", name)
+                if m:
+                    season = int(m.group(1))
+
+                # 5. EP01 / E01
+                m = re.search(r"(?i)\b(?:EP|E)(\d{1,3})\b", name)
+                if m:
+                    episode = int(m.group(1))
 
     # =================================================
     # QUALITY DETECTION
@@ -204,7 +246,9 @@ def _normalize_title(name: str):
     clean = re.sub(r"\[.*?\]|\(.*?\)", "", clean)
 
     # Remove season/episode and everything after
-    clean = re.sub(r"[sS]\d+[^\d]?[eE]\d+.*", "", clean)
+    match = SERIES_RE.search(clean)
+    if match:
+        clean = clean[:match.start()]
 
     # Remove quality + junk tags
     clean = re.sub(
