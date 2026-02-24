@@ -215,37 +215,45 @@ async def _is_member_via_api(cyber, channel_id: int, user_id: int) -> bool:
 #
 # Returns a list of dicts, one per configured slot:
 # {
-#   "slot":    1,
-#   "ch":      -100123,
-#   "link":    "https://t.me/+xxx",
-#   "mode":    "request",
-#   "joined":  True/False,    ← already member or in DB
-#   "requested": True/False,  ← sent join request (DB record exists, mode=request)
+#   "slot":      1,
+#   "ch":        -100123,
+#   "link":      "https://t.me/+xxx",
+#   "mode":      "request" | "invite",
+#   "joined":    True/False,   ← IS an actual member right now (Telegram API)
+#   "requested": True/False,   ← sent join request but NOT yet accepted
+#                                 (DB record exists AND not a member yet)
 # }
+#
+# ACCESS RULES (applied in check_fsub):
+#   mode=request → MUST be an actual member (joined=True)
+#                  "requested" only changes the UI button, not access.
+#                  The admin must APPROVE the request first.
+#   mode=invite  → MUST be an actual member (joined=True)
 
 async def get_slot_statuses(cyber, user_id: int) -> list[dict]:
     m = _m()
     result = []
 
     slots = [
-        (getattr(m, "FSUB_CHANNEL1", None), getattr(m, "FSUB_LINK1", None),    getattr(m, "FSUB_MODE1", "request"), 1),
-        (getattr(m, "FSUB_CHANNEL2", None), getattr(m, "FSUB_LINK2", None),    getattr(m, "FSUB_MODE2", "request"), 2),
+        (getattr(m, "FSUB_CHANNEL1", None), getattr(m, "FSUB_LINK1", None), getattr(m, "FSUB_MODE1", "request"), 1),
+        (getattr(m, "FSUB_CHANNEL2", None), getattr(m, "FSUB_LINK2", None), getattr(m, "FSUB_MODE2", "request"), 2),
     ]
 
     for ch, link, mode, slot in slots:
         if not ch:
             continue
 
-        in_db      = await _has_req(slot, user_id)
-        is_member  = await _is_member_via_api(cyber, ch, user_id)
+        is_member = await _is_member_via_api(cyber, ch, user_id)
+        in_db     = await _has_req(slot, user_id)
 
-        # If member and not in DB yet, record them for future fast lookups
+        # If they're a real member and we have no DB record yet, record them
+        # so future DB lookups are fast (avoids repeated API calls)
         if is_member and not in_db and mode == "request":
             await _add_req(slot, user_id)
             in_db = True
 
-        joined    = is_member
-        requested = in_db and not is_member  # sent request but not accepted yet
+        joined    = is_member                   # actually in the channel
+        requested = in_db and not is_member     # sent request, not approved yet
 
         result.append({
             "slot":      slot,
@@ -262,27 +270,32 @@ async def get_slot_statuses(cyber, user_id: int) -> list[dict]:
 # ── MAIN CHECK ────────────────────────────────────────────────
 
 async def check_fsub(cyber, user_id: int) -> bool:
-    """Returns True if user passes ALL active slots."""
+    """
+    Returns True ONLY if the user is an actual member of ALL configured slots.
+
+    For request-mode channels:
+      - joined=True  → pass (member, approved)
+      - requested=True → FAIL (sent request but not approved yet)
+      - neither       → FAIL (hasn't even requested)
+
+    For invite-mode channels:
+      - joined=True  → pass
+      - otherwise    → FAIL
+    """
     statuses = await get_slot_statuses(cyber, user_id)
 
     for s in statuses:
-        ch   = s["ch"]
-        mode = s["mode"]
+        if s["joined"]:
+            # Actual member — always passes regardless of mode
+            print(f"[FSUB] ✅ uid={user_id} slot={s['slot']}: pass (member)")
+            continue
 
-        if mode == "request":
-            # Pass if: member OR has DB record (join request sent)
-            if s["joined"] or s["requested"]:
-                continue
-            # Last chance: already in DB via _add_req above in get_slot_statuses
-            if await _has_req(s["slot"], user_id):
-                continue
-            print(f"[FSUB] ❌ uid={user_id} slot={s['slot']}: FAIL")
-            return False
+        # Not a member — always fails regardless of mode
+        if s["requested"]:
+            print(f"[FSUB] ❌ uid={user_id} slot={s['slot']}: FAIL (requested but not approved yet)")
         else:
-            if s["joined"]:
-                continue
-            print(f"[FSUB] ❌ uid={user_id} slot={s['slot']}: FAIL (invite)")
-            return False
+            print(f"[FSUB] ❌ uid={user_id} slot={s['slot']}: FAIL (not joined)")
+        return False
 
     return True
 
@@ -320,7 +333,8 @@ def build_fsub_keyboard(
         rows.append([BTN("☘️ RETRY DOWNLOAD ☘️", url=f"https://t.me/{bot_username}?start={payload}")])
         return InlineKeyboardMarkup(rows)
 
-    all_done = all(s["joined"] or s["requested"] for s in statuses)
+    # Only truly done when every slot is an actual member
+    all_done = all(s["joined"] for s in statuses)
 
     if all_done:
         # All channels satisfied → just show retry
@@ -372,8 +386,8 @@ def fsub_text(statuses: list[dict] | None = None) -> str:
 
     if requested:
         lines.append(
-            "Your join request has been sent. "
-            "Once approved, your files will be delivered automatically."
+            "Your join request is pending admin approval. "
+            "Once approved, tap RETRY DOWNLOAD to get your files."
         )
 
     return UI("\n".join(lines))
@@ -416,7 +430,8 @@ async def _try_auto_deliver(cyber, uid: int, slot_triggered: int):
     # Re-evaluate all slot statuses
     statuses = await get_slot_statuses(cyber, uid)
 
-    all_done = all(s["joined"] or s["requested"] for s in statuses)
+    # All slots must be actual members — requested alone is not enough
+    all_done = all(s["joined"] for s in statuses)
 
     bot = await cyber.get_me()
 
