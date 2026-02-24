@@ -61,10 +61,36 @@ def register_command_handlers(cyber: Client):
                 if not passed:
                     bot = await cyber.get_me()
 
+                    # ── Always delete the /start message silently ──
+                    try:
+                        await message.delete()
+                    except Exception:
+                        pass
+
+                    # ── If a gate message already exists for this user,
+                    #    just edit it in place — never send a duplicate. ──
+                    existing = _PENDING_FSUB.get(uid)
+                    if existing and existing["payload"] == payload:
+                        # Same link — update the existing gate message keyboard
+                        # to reflect latest slot statuses, then stop.
+                        kb = build_fsub_keyboard(bot.username, payload, statuses)
+                        txt = fsub_text(statuses)
+                        try:
+                            await existing["msg"].edit_text(
+                                txt,
+                                reply_markup=kb,
+                                parse_mode=enums.ParseMode.HTML,
+                            )
+                        except Exception:
+                            pass
+                        return
+
+                    # ── No existing gate message — send a fresh one ──
                     kb  = build_fsub_keyboard(bot.username, payload, statuses)
                     txt = fsub_text(statuses)
 
-                    gate_msg = await message.reply(
+                    gate_msg = await cyber.send_message(
+                        uid,
                         txt,
                         reply_markup=kb,
                         parse_mode=enums.ParseMode.HTML,
@@ -72,11 +98,6 @@ def register_command_handlers(cyber: Client):
 
                     # Register so join_request event can edit this message
                     register_pending_fsub(uid, gate_msg, payload)
-
-                    try:
-                        await message.delete()
-                    except Exception:
-                        pass
                     return
 
                 # ── User passed — clean up gate message then deliver ──
