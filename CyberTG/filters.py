@@ -153,7 +153,11 @@ def build_caption(series, year, genre, rating,
 # KEYBOARD HELPERS
 # =================================================
 
-def build_grid_keyboard(items, cb_builder, per_row=2):
+def build_grid_keyboard(items, cb_builder, per_row=2, back_btn=None):
+    """
+    Build a 2-column grid of buttons.
+    back_btn: optional InlineKeyboardButton appended as a full-width last row.
+    """
     rows, row = [], []
     for it in items:
         row.append(BTN(it, callback_data=cb_builder(it)))
@@ -162,6 +166,8 @@ def build_grid_keyboard(items, cb_builder, per_row=2):
             row = []
     if row:
         rows.append(row)
+    if back_btn:
+        rows.append([back_btn])
     return InlineKeyboardMarkup(rows)
 
 
@@ -315,7 +321,9 @@ def register_filters(cyber: Client):
             return
         langs = await get_unique_languages_by_season(series, int(season))
         poster, year, genre, rating = await get_series_info(series)
-        kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}")
+        # Back → Season select (page 0)
+        back = BTN("⬅️ Back", callback_data=f"bk_season|{uid}|{series}")
+        kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
         await safe_edit(
             q.message.edit_caption(
                 build_caption(series, year, genre, rating, languages=langs, step="language"),
@@ -336,7 +344,9 @@ def register_filters(cyber: Client):
             return
         qs = await get_unique_qualities_by_lang_season(series, lang, int(season))
         poster, year, genre, rating = await get_series_info(series)
-        kb = build_grid_keyboard(qs, lambda x: f"gqs|{uid}|{series}|{season}|{lang}|{x}")
+        # Back → Language select for this season
+        back = BTN("⬅️ Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
+        kb = build_grid_keyboard(qs, lambda x: f"gqs|{uid}|{series}|{season}|{lang}|{x}", back_btn=back)
         await safe_edit(
             q.message.edit_caption(
                 build_caption(series, year, genre, rating,
@@ -363,10 +373,76 @@ def register_filters(cyber: Client):
         bot  = await cyber.get_me()
         link = f"https://t.me/{bot.username}?start={payload}"
 
+        # Back → Quality select for this season+language
+        back = BTN("⬅️ Back", callback_data=f"bk_qual|{uid}|{series}|{season}|{lang}")
         await safe_edit(
             q.message.edit_caption(
                 UI("Your Files Are Ready. Tap Below To Download."),
-                reply_markup=InlineKeyboardMarkup([[BTN("Download Files", url=link)]])
+                reply_markup=InlineKeyboardMarkup([
+                    [BTN("📥 Download Files", url=link)],
+                    [back],
+                ])
+            ),
+            q
+        )
+
+    # -------------------------------------------------
+    # BACK NAVIGATION HANDLERS
+    # -------------------------------------------------
+
+    @cyber.on_callback_query(filters.regex("^bk_season\\|"))
+    async def bk_season(_, q):
+        """Back from Language → Season select (page 0)."""
+        _, uid, series = q.data.split("|")
+        if not await check_owner(q, uid):
+            return
+        poster, year, genre, rating = await get_series_info(series)
+        seasons = list((await get_series_summary(series))["seasons"])
+        kb = build_season_pages(seasons, uid, series, page=0)
+        await safe_edit(
+            q.message.edit_caption(
+                build_caption(series, year, genre, rating, seasons=seasons, step="season"),
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=kb
+            ),
+            q
+        )
+
+    @cyber.on_callback_query(filters.regex("^bk_lang\\|"))
+    async def bk_lang(_, q):
+        """Back from Quality → Language select."""
+        _, uid, series, season = q.data.split("|")
+        if not await check_owner(q, uid):
+            return
+        langs = await get_unique_languages_by_season(series, int(season))
+        poster, year, genre, rating = await get_series_info(series)
+        back = BTN("⬅️ Back", callback_data=f"bk_season|{uid}|{series}")
+        kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
+        await safe_edit(
+            q.message.edit_caption(
+                build_caption(series, year, genre, rating, languages=langs, step="language"),
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=kb
+            ),
+            q
+        )
+
+    @cyber.on_callback_query(filters.regex("^bk_qual\\|"))
+    async def bk_qual(_, q):
+        """Back from Download → Quality select."""
+        _, uid, series, season, lang = q.data.split("|")
+        if not await check_owner(q, uid):
+            return
+        qs = await get_unique_qualities_by_lang_season(series, lang, int(season))
+        poster, year, genre, rating = await get_series_info(series)
+        back = BTN("⬅️ Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
+        kb = build_grid_keyboard(qs, lambda x: f"gqs|{uid}|{series}|{season}|{lang}|{x}", back_btn=back)
+        await safe_edit(
+            q.message.edit_caption(
+                build_caption(series, year, genre, rating,
+                              languages=[lang], qualities=qs, step="quality"),
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=kb
             ),
             q
         )
