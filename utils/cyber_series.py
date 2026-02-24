@@ -218,7 +218,7 @@ def parse_series_info(file_name: str):
     if len(langs) == 1:
         language = next(iter(langs))
     elif len(langs) > 1:
-        language = "-".join(sorted(langs))
+        language = " + ".join(sorted(langs))
     else:
         language = "Unknown"
 
