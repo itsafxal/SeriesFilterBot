@@ -56,7 +56,11 @@ def register_command_handlers(cyber: Client):
                 active_slots = [s for s in statuses]  # all configured slots
 
                 # User passes only when actually joined ALL slots (not just requested)
+                # NOTE: if no slots configured, active_slots is empty → all() = True → pass
+                # This is correct: if FSub is disabled, everyone passes.
                 passed = all(s["joined"] for s in active_slots)
+
+                logger.info(f"[FSUB] uid={uid} statuses={[(s['slot'],s['joined'],s['requested']) for s in active_slots]} passed={passed}")
 
                 if not passed:
                     bot = await cyber.get_me()
@@ -111,39 +115,44 @@ def register_command_handlers(cyber: Client):
                         pass
                     clear_pending_fsub(uid)
 
+                # Decode the payload — checks memory first, then MongoDB fallback
                 try:
                     decoded = await decode_payload_async(payload)
-                    if not decoded:
-                        await message.reply(
-                            "⚠️ This link has expired or is invalid.\n"
-                            "Please search for the series again to get a new link."
-                        )
-                        try:
-                            await message.delete()
-                        except Exception:
-                            pass
-                        return
-
-                    owner, series, season, lang, quality = decoded
-
-                    if int(owner) != uid:
-                        await message.reply("⚠️ This link is not for you.")
-                        try:
-                            await message.delete()
-                        except Exception:
-                            pass
-                        return
-
-                    season = int(season)
-
                 except Exception as e:
-                    logger.error(f"PAYLOAD ERROR: {e}")
-                    await message.reply("⚠️ Invalid link. Please try again.")
+                    logger.error(f"PAYLOAD DECODE EXCEPTION uid={uid}: {e}")
+                    decoded = None
+
+                logger.info(f"[START] uid={uid} payload={payload} decoded={'ok' if decoded else 'NONE'}")
+
+                if not decoded:
                     try:
                         await message.delete()
                     except Exception:
                         pass
+                    await cyber.send_message(
+                        uid,
+                        "⚠️ This link has expired or is invalid.\n"
+                        "Please search for the series again to get a new link."
+                    )
                     return
+
+                owner, series, season, lang, quality = decoded
+
+                if int(owner) != uid:
+                    try:
+                        await message.delete()
+                    except Exception:
+                        pass
+                    await cyber.send_message(uid, "⚠️ This link is not for you.")
+                    return
+
+                season = int(season)
+
+                # Delete the /start message before delivery so UI is clean
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
 
                 set_session(uid, {
                     "series":   series,
@@ -151,12 +160,12 @@ def register_command_handlers(cyber: Client):
                     "language": lang,
                     "quality":  quality,
                 })
-                await deliver_files_direct(cyber, uid)
 
                 try:
-                    await message.delete()
-                except Exception:
-                    pass
+                    await deliver_files_direct(cyber, uid)
+                except Exception as e:
+                    logger.error(f"DELIVER ERROR uid={uid}: {e}")
+                    await cyber.send_message(uid, "⚠️ Something went wrong sending files. Please try the link again.")
                 return
 
         # ── normal /start ─────────────────────────────────────
