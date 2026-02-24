@@ -351,18 +351,37 @@ def register_index_handlers(cyber: Client):
     async def start_index(bot, query):
         global index_task
 
+        # ✅ ALWAYS answer immediately — prevents Telegram timeout spinner
+        await query.answer()
+
         if index_task and not index_task.done():
-            return await query.answer("Index already running.", show_alert=True)
+            await query.answer("Index already running.", show_alert=True)
+            return
 
         # format: index|chat_id|start_id|last_id|target
         try:
-            parts = query.data.split("|")
-            # parts: ['index', chat_id, start_id, last_id, target]
-            _, chat_id, start_id, last_id, target = parts[0], parts[1], parts[2], parts[3], parts[4]
-            chat_id, start_id, last_id = int(chat_id), int(start_id), int(last_id)
+            parts    = query.data.split("|")
+            chat_id  = int(parts[1])
+            start_id = int(parts[2])
+            last_id  = int(parts[3])
+            target   = parts[4]
         except Exception as e:
-            logger.error(f"[INDEX] start_index parse error: {e} data={query.data!r}")
-            return await query.answer("Invalid data. Try again.", show_alert=True)
+            logger.error(f"[INDEX] start_index parse error: {e} | data={query.data!r}")
+            try:
+                await query.message.edit_text(f"❌ Failed to parse index data.\n`{query.data}`",
+                                              parse_mode=enums.ParseMode.MARKDOWN)
+            except Exception:
+                pass
+            return
+
+        label = {"db1": "DB1 only", "db2": "DB2 only", "both": "DB1 + DB2"}.get(target, target)
+        logger.info(f"[INDEX] Proceed clicked — chat={chat_id} {start_id}→{last_id} target={target}")
+
+        try:
+            await query.message.edit_text(f"⏳ Starting index...\nTarget: **{label}**",
+                                          parse_mode=enums.ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.warning(f"[INDEX] Could not edit confirm message: {e}")
 
         skip_raw = await get_global_setting(INDEX_SKIP_ID_KEY, None)
         try:
@@ -376,17 +395,15 @@ def register_index_handlers(cyber: Client):
             await set_global_setting(INDEX_SKIP_ID_KEY, preserved_skip)
 
         await save_bot_state(f"index_{chat_id}", start_id)
-        await query.message.edit_text("⏳ Indexing started...")
 
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("⛔ Cancel Indexing", callback_data="cancel_index")
         ]])
 
-        label = {"db1": "DB1 only", "db2": "DB2 only", "both": "DB1 + DB2"}.get(target, target)
         status_msg = await safe_send(
             bot,
             query.from_user.id,
-            f"Indexing `{chat_id}`...\nTarget: **{label}**",
+            f"📦 Indexing `{chat_id}`...\nTarget: **{label}**\nStarting from: **{start_id}**",
             parse_mode=enums.ParseMode.MARKDOWN,
             reply_markup=kb,
         )
@@ -394,7 +411,7 @@ def register_index_handlers(cyber: Client):
         index_task = asyncio.create_task(
             index_files_task(bot, status_msg, chat_id, start_id, last_id, target=target)
         )
-        await query.answer("Started.")
+        logger.info(f"[INDEX] Task created — chat={chat_id} target={target}")
 
     # ── CANCEL INDEX ──────────────────────────────────────────────────────
     @cyber.on_callback_query(filters.regex("cancel_index"))
