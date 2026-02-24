@@ -1,6 +1,6 @@
 """
-utils/cyber_index.py — MULTI-DB EDITION
-=========================================
+utils/cyber_index.py — MULTI-DB EDITION + TMDB LANGUAGE FALLBACK
+==================================================================
 Parses a Pyrogram Message (document / video / audio) and saves it
 as a structured file_doc into:
   • Selected MongoDB file DB(s)  (target = "db1" | "db2" | "both")
@@ -17,9 +17,16 @@ File-doc fields:
   language        str   — detected language string
   file_id         str   — Telegram file_id for re-sending
   media_type      str   — "video" | "audio" | "document"
+
+LANGUAGE DETECTION PRIORITY:
+  1. Filename tags     (e.g. "Hindi", "HIN", "[Tamil]")
+  2. Caption text      (e.g. "Language: Hindi", "Audio: Tamil")
+  3. TMDB/OMDB lookup  (original_language of the series — cached in SQLite)
+  4. "Unknown"         (only if all above fail — never assumes English)
 """
 
 import re
+import asyncio
 from DB.database import save_file_to_db
 from config import logger
 
@@ -220,6 +227,95 @@ def _parse_language(name: str, caption: str = "") -> str:
     return " + ".join(found)   # e.g. "Hindi + English"
 
 
+# ─────────────────────────────────────────────────────────────
+# TMDB / OMDB LANGUAGE FALLBACK  (called only when filename
+# and caption both fail to identify a language)
+#
+# Design:
+#   • Uses the SAME SQLite cache as poster.py — zero extra DB calls
+#     if the series was already looked up during a search/browse.
+#   • If not cached: queries TMDB first, then OMDB as fallback.
+#   • Result is cached so subsequent files of the same series
+#     (bulk index) cost 0 API calls after the first one.
+#   • Runs in asyncio.to_thread for the sync SQLite reads so it
+#     doesn't block the event loop in RTI.
+#   • Returns "Unknown" (never crashes) if both APIs fail.
+# ─────────────────────────────────────────────────────────────
+
+# In-process memory cache: normalized_name → language string
+# Prevents repeated SQLite lookups for the same series during
+# a single bulk-index run (e.g. 500 episodes of Mirzapur).
+_LANG_CACHE: dict[str, str] = {}
+
+
+async def _get_language_from_api(normalized_name: str) -> str:
+    """
+    Resolve language for `normalized_name` via:
+      memory cache → SQLite cache → TMDB API → OMDB API → "Unknown"
+
+    This is intentionally a module-level async function so both
+    save_series_file_for_bulk_index() and external callers can use it.
+    """
+    if not normalized_name:
+        return "Unknown"
+
+    key = normalized_name.lower().strip()
+
+    # ── 1. Memory (fastest — no I/O at all) ──────────────────
+    if key in _LANG_CACHE:
+        return _LANG_CACHE[key]
+
+    # ── 2. SQLite cache (same DB used by poster.py) ──────────
+    try:
+        from utils.cyber_poster import get_cached
+        cached = await asyncio.to_thread(get_cached, key)
+        if cached:
+            # cached tuple: (poster, year, genre, rating, source, language)
+            lang = cached[5] if cached[5] else None
+            if lang and lang not in ("Original Language", "Unknown", ""):
+                _LANG_CACHE[key] = lang
+                logger.debug(f"[LANG] SQLite cache hit: {key!r} → {lang}")
+                return lang
+    except Exception as e:
+        logger.debug(f"[LANG] SQLite lookup failed for {key!r}: {e}")
+
+    # ── 3. TMDB API ───────────────────────────────────────────
+    try:
+        from CyberTG.poster import fetch_tmdb, fetch_omdb
+        from utils.cyber_poster import save_cache
+
+        tmdb = await fetch_tmdb(key)
+        if tmdb:
+            poster, year, genre, rating, lang = tmdb
+            if lang and lang not in ("Original Language", "Unknown", ""):
+                # Persist to SQLite so future lookups are instant
+                await asyncio.to_thread(
+                    save_cache, key, poster, year, genre, rating, "tmdb", lang
+                )
+                _LANG_CACHE[key] = lang
+                logger.debug(f"[LANG] TMDB resolved: {key!r} → {lang}")
+                return lang
+
+        # ── 4. OMDB API (fallback) ────────────────────────────
+        omdb = await fetch_omdb(key)
+        if omdb:
+            poster, year, genre, rating, lang = omdb
+            if lang and lang not in ("Original Language", "Unknown", ""):
+                await asyncio.to_thread(
+                    save_cache, key, poster, year, genre, rating, "omdb", lang
+                )
+                _LANG_CACHE[key] = lang
+                logger.debug(f"[LANG] OMDB resolved: {key!r} → {lang}")
+                return lang
+
+    except Exception as e:
+        logger.debug(f"[LANG] API lookup failed for {key!r}: {e}")
+
+    # ── 5. Truly unknown ─────────────────────────────────────
+    _LANG_CACHE[key] = "Unknown"
+    return "Unknown"
+
+
 def _normalized_series_name(file_name: str) -> str:
     """
     Strips everything AFTER the SxxExx marker, then cleans junk
@@ -346,6 +442,18 @@ async def save_series_file_for_bulk_index(
         if not normalized_name:
             logger.debug(f"[cyber_index] Skipped (no series name): {file_name}")
             return False, 0
+
+        # ── TMDB / OMDB language fallback ──────────────────────
+        # If filename + caption both failed to detect language,
+        # resolve via TMDB/OMDB using the series title.
+        # Result is SQLite-cached so bulk index costs 1 API call
+        # per unique series, not 1 per file.
+        if language == "Unknown":
+            language = await _get_language_from_api(normalized_name)
+            if language != "Unknown":
+                logger.debug(
+                    f"[cyber_index] API resolved lang: {normalized_name!r} → {language}"
+                )
 
         # ── Build document ─────────────────────────────────────
         file_doc = {
