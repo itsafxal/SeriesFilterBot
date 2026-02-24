@@ -53,8 +53,8 @@ def register_command_handlers(cyber: Client):
                 statuses = await get_slot_statuses(cyber, uid)
                 active_slots = [s for s in statuses]  # all configured slots
 
-                # Check if user passes all slots
-                passed = all(s["joined"] or s["requested"] for s in active_slots)
+                # User passes only when actually joined ALL slots (not just requested)
+                passed = all(s["joined"] for s in active_slots)
 
                 if not passed:
                     bot = await cyber.get_me()
