@@ -60,15 +60,24 @@ async def fetch_tmdb(series_name: str):
         "ta": "Tamil",
         "te": "Telugu",
         "kn": "Kannada",
+        "bn": "Bengali",
+        "mr": "Marathi",
+        "pa": "Punjabi",
         "es": "Spanish",
         "fr": "French",
         "ko": "Korean",
         "ja": "Japanese",
         "zh": "Chinese",
-        "de": "German"
+        "de": "German",
+        "ar": "Arabic",
+        "tr": "Turkish",
+        "it": "Italian",
+        "pt": "Portuguese",
+        "ru": "Russian",
+        "th": "Thai",
     }
 
-    language = LANG_MAP.get(lang_code, "Original Language")
+    language = LANG_MAP.get(lang_code, "Unknown")
 
     if not poster:
         return None
@@ -108,9 +117,23 @@ async def fetch_omdb(series_name: str):
     genre = data.get("Genre", "N/A")
     rating = data.get("imdbRating", "N/A")
 
-    language = data.get("Language", "Original Language")
-    if "," in language:
-        language = language.split(",")[0].strip()
+    # OMDB returns e.g. "Hindi, English" or "English, Hindi, Tamil"
+    # Take all recognized languages, not just the first
+    raw_langs = [l.strip() for l in data.get("Language", "").split(",") if l.strip()]
+    KNOWN = {
+        "Hindi","English","Tamil","Telugu","Malayalam","Kannada",
+        "Bengali","Marathi","Punjabi","Korean","Japanese","Chinese",
+        "Spanish","French","German","Arabic","Turkish","Italian",
+        "Portuguese","Russian","Thai"
+    }
+    found_langs = [l for l in raw_langs if l in KNOWN]
+    if not found_langs:
+        # Take first word as-is if nothing recognized
+        language = raw_langs[0] if raw_langs else "Unknown"
+    elif len(found_langs) == 1:
+        language = found_langs[0]
+    else:
+        language = " + ".join(found_langs)
 
     return poster, year, genre, rating, language
 
@@ -193,7 +216,7 @@ async def get_series_language(series_name: str):
     if omdb:
         return omdb[4]
 
-    return "Original Language"
+    return "Unknown"
 
 
 # =========================================================
@@ -203,4 +226,3 @@ async def get_series_language(series_name: str):
 async def get_series_poster_async(series_name: str):
     poster, _, _, _ = await get_series_info(series_name)
     return poster
-    
