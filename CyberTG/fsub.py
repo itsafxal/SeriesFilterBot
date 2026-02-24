@@ -309,14 +309,16 @@ def build_fsub_keyboard(
     statuses: list[dict] | None = None,
 ) -> InlineKeyboardMarkup:
     """
-    statuses: output of get_slot_statuses(). If None, shows all buttons
-    (backward compat for cases where we can't await).
+    CLEAN BUTTON LOGIC:
+    - Joined OR requested slot  → button completely hidden (no ✅/⏳ noise).
+    - Slots still needing action → show join/request button.
+    - ALL slots done → only show RETRY button (gate msg auto-deletes in 60s).
+    - statuses=None fallback shows all buttons (status unknown).
     """
     m = _m()
     rows = []
 
     if statuses is None:
-        # Fallback: show all configured slots with no status info
         raw_slots = [
             (getattr(m, "FSUB_LINK1", None), getattr(m, "FSUB_MODE1", "request"), "CHANNEL 1"),
             (getattr(m, "FSUB_LINK2", None), getattr(m, "FSUB_MODE2", "request"), "CHANNEL 2"),
@@ -330,38 +332,26 @@ def build_fsub_keyboard(
         rows.append([BTN("☘️ RETRY DOWNLOAD ☘️", url=f"https://t.me/{bot_username}?start={payload}")])
         return InlineKeyboardMarkup(rows)
 
-    # Only truly done when every slot is joined OR requested
     all_done = all(s["joined"] or s["requested"] for s in statuses)
 
     if all_done:
-        # All channels satisfied → just show retry
+        # All done → only show TAP TO GET FILES, gate msg will auto-delete in 60s
         rows.append([BTN("☘️ TAP TO GET FILES ☘️", url=f"https://t.me/{bot_username}?start={payload}")])
         return InlineKeyboardMarkup(rows)
 
     for s in statuses:
+        # HIDE button entirely if already joined or requested
+        if s["joined"] or s["requested"]:
+            continue
+        link = s["link"]
+        mode = s["mode"]
         slot_label = f"CHANNEL {s['slot']}"
+        if link:
+            emoji  = "📢" if mode == "request" else "🔗"
+            action = "REQUEST TO JOIN" if mode == "request" else "JOIN"
+            rows.append([BTN(f"{emoji} {action} {slot_label} {emoji}", url=link)])
 
-        if s["joined"]:
-            # Already a member — show a disabled-style done button (callback noop)
-            rows.append([BTN(f"✅ JOINED {slot_label}", callback_data="fsub_done_noop")])
-
-        elif s["requested"]:
-            # Sent join request — show pending state
-            rows.append([BTN(f"⏳ REQUESTED {slot_label}", callback_data="fsub_done_noop")])
-
-        else:
-            # Not joined yet — show the action button
-            link = s["link"]
-            mode = s["mode"]
-            if link:
-                emoji  = "📢" if mode == "request" else "🔗"
-                action = "REQUEST TO JOIN" if mode == "request" else "JOIN"
-                rows.append([BTN(f"{emoji} {action} {slot_label} {emoji}", url=link)])
-
-    # Only show retry if at least one slot still needs action
-    # (once all are requested/joined, handled by all_done above)
     rows.append([BTN("☘️ RETRY DOWNLOAD ☘️", url=f"https://t.me/{bot_username}?start={payload}")])
-
     return InlineKeyboardMarkup(rows)
 
 
@@ -451,18 +441,14 @@ async def _try_auto_deliver(cyber, uid: int, slot_triggered: int):
     bot = await cyber.get_me()
 
     if all_done:
-        # Edit keyboard to just the delivery button
+        # ── Delete the fsub gate message entirely ──
         try:
-            await msg.edit_reply_markup(
-                InlineKeyboardMarkup([
-                    [BTN("✅ ALL DONE — TAP TO GET FILES ✅",
-                         url=f"https://t.me/{bot.username}?start={payload}")]
-                ])
-            )
+            await msg.delete()
         except Exception:
             pass
+        clear_pending_fsub(uid)
 
-        # Auto-deliver: set session and deliver
+        # ── Auto-deliver files ──
         try:
             from utils.cyber_filter import decode_payload_async
             decoded = await decode_payload_async(payload)
@@ -470,6 +456,7 @@ async def _try_auto_deliver(cyber, uid: int, slot_triggered: int):
                 owner, series, season, lang, quality = decoded
                 if int(owner) == uid:
                     from CyberTG.files import set_session, deliver_files_direct
+                    from pyrogram import enums as _enums
                     set_session(uid, {
                         "series":   series,
                         "season":   season,
@@ -477,13 +464,36 @@ async def _try_auto_deliver(cyber, uid: int, slot_triggered: int):
                         "quality":  quality,
                     })
                     await deliver_files_direct(cyber, uid)
-                    clear_pending_fsub(uid)
                     print(f"[FSUB] ✅ Auto-delivered to uid={uid} after all slots satisfied")
+
+                    # ── Send fallback RETRY button, auto-deletes after 60s ──
+                    try:
+                        retry_msg = await cyber.send_message(
+                            uid,
+                            "✅ <b>Files sent!</b>
+"
+                            "If anything is missing, tap below within 60 seconds.",
+                            reply_markup=InlineKeyboardMarkup([
+                                [BTN("☘️ RETRY DOWNLOAD ☘️",
+                                     url=f"https://t.me/{bot.username}?start={payload}")]
+                            ]),
+                            parse_mode=_enums.ParseMode.HTML,
+                        )
+                        async def _delete_retry(m=retry_msg):
+                            await asyncio.sleep(60)
+                            try:
+                                await m.delete()
+                            except Exception:
+                                pass
+                        asyncio.create_task(_delete_retry())
+                    except Exception as e:
+                        print(f"[FSUB] Retry msg send error: {e}")
+
         except Exception as e:
             print(f"[FSUB] Auto-deliver error: {e}")
 
     else:
-        # Some slots still pending — update keyboard to show new state
+        # Some slots still pending — remove done buttons, keep only pending ones
         new_kb = build_fsub_keyboard(bot.username, payload, statuses)
         try:
             await msg.edit_reply_markup(new_kb)
