@@ -6,7 +6,11 @@ from pymongo import TEXT
 API_ID = 28643132
 API_HASH = "510c3009ea589830a89e045bf8aae656"
 BOT_TOKEN = "8333630020:AAE4ZBaAjzU_Qs5CyxHpkLs6vwn1jJxoXco"
-MONGO_URI = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
+
+#MONGO DB 
+MONGO_URI_CONFIG = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
+MONGO_URI_DB1    = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
+MONGO_URI_DB2    = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
 
 # ADMIN ID
 ADMIN_USERS = [5794562450]
