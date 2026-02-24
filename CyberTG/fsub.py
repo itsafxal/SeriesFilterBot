@@ -1,31 +1,38 @@
 """
-fsub.py — FIXED VERSION
+fsub.py — SMART FSUB v3
 
-ROOT CAUSE OF 0 DB RECORDS:
-  @Client.on_chat_join_request() is a CLASS-LEVEL decorator.
-  It attaches the handler to ALL Client instances globally,
-  but only BEFORE the client starts. When used inside a module
-  that is imported after the client is created, it is silently
-  ignored — Pyrogram never routes the update to it.
+NEW FEATURES:
+  1. Already-joined members never see the join button for channels they're in.
+     Each slot button is shown only if the user hasn't joined that slot yet.
 
-FIX:
-  Removed @Client.on_chat_join_request() decorator entirely.
-  Added register_fsub_handlers(cyber) function that must be
-  called in main.py AFTER the client is created but BEFORE start().
-  This uses cyber.on_chat_join_request() (instance-level),
-  which is guaranteed to work.
+  2. When a user clicks a "Request to Join" link, the join_request event
+     saves them to DB AND immediately removes that slot's button from the
+     message, replacing it with ✅ Requested.
 
-  Also added /debugjoin command logic and extra print logs
-  so you can confirm events are arriving.
+  3. When ALL slots are satisfied (joined or requested), the keyboard
+     automatically replaces itself with just the RETRY DOWNLOAD button —
+     no manual retry needed.
+
+  4. Auto-retry: after the join_request event fires and all slots are done,
+     the bot silently delivers the files automatically (zero clicks needed).
+
+HOW IT WORKS:
+  - build_fsub_keyboard() now takes per_slot_status dict so it can
+    hide buttons for already-joined slots.
+  - get_slot_status(cyber, uid) returns per-slot join state for a user.
+  - On join_request event: update DB, then call _try_auto_deliver() which
+    checks if all slots are now satisfied and delivers files if so.
+  - command.py passes the fsub message_id so we can edit it later.
 """
 
 from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from typing import Optional
 
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, ChatJoinRequest
+from pyrogram import Client
+from pyrogram.types import InlineKeyboardMarkup, ChatJoinRequest, Message
 from pyrogram.enums import ChatMemberStatus
 
 from utils.cyber_font import BTN, UI
@@ -35,15 +42,15 @@ from DB.database import get_global_setting, set_global_setting, mongo_client
 _join_reqs_db = mongo_client["JoinReqs"]
 
 # ── module globals ────────────────────────────────────────────
-FSUB_CHANNEL1: int | None = None
-FSUB_LINK1:    str | None = None
-FSUB_MODE1:    str        = "request"
+FSUB_CHANNEL1:   int | None = None
+FSUB_LINK1:      str | None = None
+FSUB_MODE1:      str        = "request"
 FSUB_CHANNEL1_2: int | None = None
 FSUB_LINK1_2:    str | None = None
 
-FSUB_CHANNEL2: int | None = None
-FSUB_LINK2:    str | None = None
-FSUB_MODE2:    str        = "request"
+FSUB_CHANNEL2:   int | None = None
+FSUB_LINK2:      str | None = None
+FSUB_MODE2:      str        = "request"
 FSUB_CHANNEL2_2: int | None = None
 FSUB_LINK2_2:    str | None = None
 
@@ -51,6 +58,10 @@ COUNT_THRESHOLD1: int | None = None
 COUNT_THRESHOLD2: int | None = None
 _req_count1: int = 0
 _req_count2: int = 0
+
+# ── pending fsub messages: uid → {msg, payload, chat_id} ─────
+# Stored so join_request event can edit the message and auto-deliver
+_PENDING_FSUB: dict[int, dict] = {}
 
 
 def _m():
@@ -95,11 +106,9 @@ async def _add_req(slot: int, user_id: int, first_name: str = "", username: str 
 async def _has_req(slot: int, user_id: int) -> bool:
     col = _col(slot)
     if col is None:
-        print(f"[FSUB] _has_req: col=None slot={slot} ch={_get_ch(slot)}")
         return False
     def _sync():
         doc = col.find_one({"user_id": int(user_id)})
-        print(f"[FSUB] _has_req: uid={user_id} slot={slot} col={col.name} found={doc is not None}")
         return doc is not None
     return await asyncio.to_thread(_sync)
 
@@ -202,71 +211,254 @@ async def _is_member_via_api(cyber, channel_id: int, user_id: int) -> bool:
         return False
 
 
-# ── MAIN CHECK — DUAL CHECK ───────────────────────────────────
+# ── PER-SLOT STATUS ───────────────────────────────────────────
+#
+# Returns a list of dicts, one per configured slot:
+# {
+#   "slot":    1,
+#   "ch":      -100123,
+#   "link":    "https://t.me/+xxx",
+#   "mode":    "request",
+#   "joined":  True/False,    ← already member or in DB
+#   "requested": True/False,  ← sent join request (DB record exists, mode=request)
+# }
 
-async def check_fsub(cyber, user_id: int) -> bool:
+async def get_slot_statuses(cyber, user_id: int) -> list[dict]:
     m = _m()
+    result = []
+
     slots = [
-        (getattr(m, "FSUB_CHANNEL1", None), getattr(m, "FSUB_MODE1", "request"), 1),
-        (getattr(m, "FSUB_CHANNEL2", None), getattr(m, "FSUB_MODE2", "request"), 2),
+        (getattr(m, "FSUB_CHANNEL1", None), getattr(m, "FSUB_LINK1", None),    getattr(m, "FSUB_MODE1", "request"), 1),
+        (getattr(m, "FSUB_CHANNEL2", None), getattr(m, "FSUB_LINK2", None),    getattr(m, "FSUB_MODE2", "request"), 2),
     ]
 
-    for ch, mode, slot in slots:
+    for ch, link, mode, slot in slots:
         if not ch:
-            print(f"[FSUB] Slot {slot} not configured — skip")
             continue
 
-        print(f"[FSUB] check_fsub: uid={user_id} slot={slot} ch={ch} mode={mode}")
+        in_db      = await _has_req(slot, user_id)
+        is_member  = await _is_member_via_api(cyber, ch, user_id)
+
+        # If member and not in DB yet, record them for future fast lookups
+        if is_member and not in_db and mode == "request":
+            await _add_req(slot, user_id)
+            in_db = True
+
+        joined    = is_member
+        requested = in_db and not is_member  # sent request but not accepted yet
+
+        result.append({
+            "slot":      slot,
+            "ch":        ch,
+            "link":      link,
+            "mode":      mode,
+            "joined":    joined,
+            "requested": requested,
+        })
+
+    return result
+
+
+# ── MAIN CHECK ────────────────────────────────────────────────
+
+async def check_fsub(cyber, user_id: int) -> bool:
+    """Returns True if user passes ALL active slots."""
+    statuses = await get_slot_statuses(cyber, user_id)
+
+    for s in statuses:
+        ch   = s["ch"]
+        mode = s["mode"]
 
         if mode == "request":
-            if await _has_req(slot, user_id):
-                print(f"[FSUB] ✅ uid={user_id} slot={slot}: pass (DB record)")
+            # Pass if: member OR has DB record (join request sent)
+            if s["joined"] or s["requested"]:
                 continue
-
-            print(f"[FSUB] uid={user_id} not in DB, trying API fallback...")
-            if await _is_member_via_api(cyber, ch, user_id):
-                print(f"[FSUB] ✅ uid={user_id} slot={slot}: pass (API), recording in DB")
-                await _add_req(slot, user_id)
+            # Last chance: already in DB via _add_req above in get_slot_statuses
+            if await _has_req(s["slot"], user_id):
                 continue
-
-            print(f"[FSUB] ❌ uid={user_id} slot={slot}: FAIL")
+            print(f"[FSUB] ❌ uid={user_id} slot={s['slot']}: FAIL")
             return False
-
-        else:  # invite mode
-            if await _is_member_via_api(cyber, ch, user_id):
-                print(f"[FSUB] ✅ uid={user_id} slot={slot}: pass (invite API)")
+        else:
+            if s["joined"]:
                 continue
-            print(f"[FSUB] ❌ uid={user_id} slot={slot}: FAIL (invite mode)")
+            print(f"[FSUB] ❌ uid={user_id} slot={s['slot']}: FAIL (invite)")
             return False
 
     return True
 
 
-# ── UI ────────────────────────────────────────────────────────
+# ── SMART KEYBOARD BUILDER ────────────────────────────────────
+#
+# Shows a button ONLY for slots the user hasn't joined/requested yet.
+# For slots already done → shows ✅ Done (no URL, just info).
+# When all done → shows only RETRY DOWNLOAD.
 
-def fsub_text() -> str:
-    return UI(
-        "⚠️ Access restricted.\n\n"
-        "Please join the required channel(s) first.\n"
-        "After joining, press ☘️ RETRY DOWNLOAD ☘️"
-    )
-
-
-def build_fsub_keyboard(bot_username: str, payload: str) -> InlineKeyboardMarkup:
+def build_fsub_keyboard(
+    bot_username: str,
+    payload: str,
+    statuses: list[dict] | None = None,
+) -> InlineKeyboardMarkup:
+    """
+    statuses: output of get_slot_statuses(). If None, shows all buttons
+    (backward compat for cases where we can't await).
+    """
     m = _m()
     rows = []
-    slots = [
-        (getattr(m, "FSUB_LINK1", None), getattr(m, "FSUB_MODE1", "request"), "CHANNEL 1"),
-        (getattr(m, "FSUB_LINK2", None), getattr(m, "FSUB_MODE2", "request"), "CHANNEL 2"),
-    ]
-    for link, mode, label in slots:
-        if not link:
-            continue
-        emoji  = "📢" if mode == "request" else "🔗"
-        action = "REQUEST TO JOIN" if mode == "request" else "JOIN"
-        rows.append([BTN(f"{emoji} {action} {label} {emoji}", url=link)])
+
+    if statuses is None:
+        # Fallback: show all configured slots with no status info
+        raw_slots = [
+            (getattr(m, "FSUB_LINK1", None), getattr(m, "FSUB_MODE1", "request"), "CHANNEL 1"),
+            (getattr(m, "FSUB_LINK2", None), getattr(m, "FSUB_MODE2", "request"), "CHANNEL 2"),
+        ]
+        for link, mode, label in raw_slots:
+            if not link:
+                continue
+            emoji  = "📢" if mode == "request" else "🔗"
+            action = "REQUEST TO JOIN" if mode == "request" else "JOIN"
+            rows.append([BTN(f"{emoji} {action} {label} {emoji}", url=link)])
+        rows.append([BTN("☘️ RETRY DOWNLOAD ☘️", url=f"https://t.me/{bot_username}?start={payload}")])
+        return InlineKeyboardMarkup(rows)
+
+    all_done = all(s["joined"] or s["requested"] for s in statuses)
+
+    if all_done:
+        # All channels satisfied → just show retry
+        rows.append([BTN("☘️ TAP TO GET FILES ☘️", url=f"https://t.me/{bot_username}?start={payload}")])
+        return InlineKeyboardMarkup(rows)
+
+    for s in statuses:
+        slot_label = f"CHANNEL {s['slot']}"
+
+        if s["joined"]:
+            # Already a member — show a disabled-style done button (callback noop)
+            rows.append([BTN(f"✅ JOINED {slot_label}", callback_data="fsub_done_noop")])
+
+        elif s["requested"]:
+            # Sent join request — show pending state
+            rows.append([BTN(f"⏳ REQUESTED {slot_label}", callback_data="fsub_done_noop")])
+
+        else:
+            # Not joined yet — show the action button
+            link = s["link"]
+            mode = s["mode"]
+            if link:
+                emoji  = "📢" if mode == "request" else "🔗"
+                action = "REQUEST TO JOIN" if mode == "request" else "JOIN"
+                rows.append([BTN(f"{emoji} {action} {slot_label} {emoji}", url=link)])
+
+    # Only show retry if at least one slot still needs action
+    # (once all are requested/joined, handled by all_done above)
     rows.append([BTN("☘️ RETRY DOWNLOAD ☘️", url=f"https://t.me/{bot_username}?start={payload}")])
+
     return InlineKeyboardMarkup(rows)
+
+
+def fsub_text(statuses: list[dict] | None = None) -> str:
+    if not statuses:
+        return UI(
+            "⚠️ Access restricted.\n\n"
+            "Please join the required channel(s) first.\n"
+            "After joining, press ☘️ RETRY DOWNLOAD ☘️"
+        )
+
+    pending = [s for s in statuses if not s["joined"] and not s["requested"]]
+    requested = [s for s in statuses if s["requested"]]
+
+    lines = ["⚠️ Access Restricted\n"]
+
+    if pending:
+        lines.append("Please join the channel(s) below to continue.")
+
+    if requested:
+        lines.append(
+            "Your join request has been sent. "
+            "Once approved, your files will be delivered automatically."
+        )
+
+    return UI("\n".join(lines))
+
+
+# ── PENDING FSUB REGISTRY ─────────────────────────────────────
+# Stores the fsub gate message so we can edit it when join_request fires.
+
+def register_pending_fsub(uid: int, msg: Message, payload: str):
+    """
+    Call this in command.py after sending the fsub gate message.
+    Stores the message so the join_request handler can edit it later.
+    """
+    _PENDING_FSUB[uid] = {
+        "msg":     msg,
+        "payload": payload,
+    }
+
+
+def clear_pending_fsub(uid: int):
+    _PENDING_FSUB.pop(uid, None)
+
+
+# ── AUTO DELIVER after join_request ──────────────────────────
+
+async def _try_auto_deliver(cyber, uid: int, slot_triggered: int):
+    """
+    Called after a join_request is recorded.
+    1. Edits the pending fsub message keyboard to reflect new status.
+    2. If ALL slots are now satisfied → edit to "TAP TO GET FILES" only,
+       then auto-deliver files silently.
+    """
+    pending = _PENDING_FSUB.get(uid)
+    if not pending:
+        return
+
+    msg     = pending["msg"]
+    payload = pending["payload"]
+
+    # Re-evaluate all slot statuses
+    statuses = await get_slot_statuses(cyber, uid)
+
+    all_done = all(s["joined"] or s["requested"] for s in statuses)
+
+    bot = await cyber.get_me()
+
+    if all_done:
+        # Edit keyboard to just the delivery button
+        try:
+            await msg.edit_reply_markup(
+                InlineKeyboardMarkup([
+                    [BTN("✅ ALL DONE — TAP TO GET FILES ✅",
+                         url=f"https://t.me/{bot.username}?start={payload}")]
+                ])
+            )
+        except Exception:
+            pass
+
+        # Auto-deliver: set session and deliver
+        try:
+            from utils.cyber_filter import decode_payload_async
+            decoded = await decode_payload_async(payload)
+            if decoded:
+                owner, series, season, lang, quality = decoded
+                if int(owner) == uid:
+                    from CyberTG.files import set_session, deliver_files_direct
+                    set_session(uid, {
+                        "series":   series,
+                        "season":   season,
+                        "language": lang,
+                        "quality":  quality,
+                    })
+                    await deliver_files_direct(cyber, uid)
+                    clear_pending_fsub(uid)
+                    print(f"[FSUB] ✅ Auto-delivered to uid={uid} after all slots satisfied")
+        except Exception as e:
+            print(f"[FSUB] Auto-deliver error: {e}")
+
+    else:
+        # Some slots still pending — update keyboard to show new state
+        new_kb = build_fsub_keyboard(bot.username, payload, statuses)
+        try:
+            await msg.edit_reply_markup(new_kb)
+        except Exception:
+            pass
 
 
 # ── rotation ──────────────────────────────────────────────────
@@ -292,25 +484,11 @@ async def _rotate_slot(slot: int):
     await save_fsub_settings()
 
 
-# ── JOIN REQUEST HANDLER (instance-level, registered via register_fsub_handlers) ──
-#
-# ❌ OLD BROKEN WAY:
-#     @Client.on_chat_join_request()           ← class-level, silently ignored
-#     async def _on_join_request(bot, join_req): ...
-#
-# ✅ NEW CORRECT WAY:
-#     def register_fsub_handlers(cyber: Client):
-#         @cyber.on_chat_join_request()        ← instance-level, always works
-#         async def _on_join_request(bot, join_req): ...
-#
-# You MUST call register_fsub_handlers(cyber) in main.py.
-# ─────────────────────────────────────────────────────────────
+# ── REGISTER HANDLERS ─────────────────────────────────────────
 
 def register_fsub_handlers(cyber: Client):
     """
     Call this in main.py AFTER the Client is created but BEFORE cyber.start().
-    This is the ONLY correct way to register chat_join_request handlers
-    on a named Pyrogram client instance.
     """
 
     @cyber.on_chat_join_request()
@@ -325,29 +503,42 @@ def register_fsub_handlers(cyber: Client):
             ch1 = getattr(m, "FSUB_CHANNEL1", None)
             ch2 = getattr(m, "FSUB_CHANNEL2", None)
 
-            print(f"[FSUB] ⚡ JoinRequest RECEIVED: uid={uid} chat={chat_id} "
-                  f"ch1={ch1} ch2={ch2}")
+            print(f"[FSUB] ⚡ JoinRequest: uid={uid} chat={chat_id} ch1={ch1} ch2={ch2}")
+
+            slot_triggered = None
 
             if ch1 and chat_id == ch1 and getattr(m, "FSUB_MODE1", "request") == "request":
                 await _add_req(1, uid, first_name, username)
                 m._req_count1 += 1
                 await _rotate_slot(1)
+                slot_triggered = 1
                 print(f"[FSUB] ✅ Recorded slot=1 uid={uid}")
 
             elif ch2 and chat_id == ch2 and getattr(m, "FSUB_MODE2", "request") == "request":
                 await _add_req(2, uid, first_name, username)
                 m._req_count2 += 1
                 await _rotate_slot(2)
+                slot_triggered = 2
                 print(f"[FSUB] ✅ Recorded slot=2 uid={uid}")
 
             else:
-                print(f"[FSUB] ⚠️ JoinRequest from unregistered chat {chat_id} "
-                      f"(expected ch1={ch1} or ch2={ch2})")
+                print(f"[FSUB] ⚠️ JoinRequest from unregistered chat {chat_id}")
+                return
+
+            # Update keyboard and auto-deliver if all slots satisfied
+            asyncio.create_task(_try_auto_deliver(cyber, uid, slot_triggered))
 
         except Exception as e:
             print(f"[FSUB] ❌ JOIN REQUEST ERROR: {e}")
 
-    print("[FSUB] ✅ chat_join_request handler registered on client instance.")
+    # Noop handler for the "✅ JOINED" / "⏳ REQUESTED" buttons
+    from pyrogram import filters as pyro_filters
+
+    @cyber.on_callback_query(pyro_filters.regex("^fsub_done_noop$"))
+    async def _fsub_noop(_, q):
+        await q.answer("✅ Already done for this channel!", show_alert=False)
+
+    print("[FSUB] ✅ FSub handlers registered on client instance.")
 
 
 # ── public helpers ────────────────────────────────────────────
