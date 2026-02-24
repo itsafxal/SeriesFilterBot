@@ -139,13 +139,23 @@ def clear_session(user_id: int):
 def caption_filename(name: str):
     if not name:
         return "Episode"
+    # Remove file extension
     name = re.sub(r"\.(mkv|mp4|avi|mov)$", "", name, flags=re.IGNORECASE)
+    # FIX: Remove @mentions (e.g. @RickyChannel) before anything else
+    name = re.sub(r"@\S+", "", name)
+    # Remove brackets and their contents
+    name = re.sub(r"\[.*?\]|\(.*?\)", "", name)
+    # Normalize separators
     name = re.sub(r"[._\-]+", " ", name)
-    JUNK = r"\b(bluray|webrip|webdl|hdrip|x264|x265|hevc|aac|10bit|ddp5\.1)\b"
+    # Remove codec/quality junk
+    JUNK = r"\b(bluray|webrip|webdl|web|hdrip|x264|x265|hevc|aac|10bit|ddp5\.1|strife|yts|tgx|rip|hq)\b"
     name = re.sub(JUNK, "", name, flags=re.IGNORECASE)
     name = re.sub(r"\b(4k|1080p|720p|480p|360p)\b", "", name, flags=re.IGNORECASE)
+    # Remove S01E08 style markers
+    name = re.sub(r"\bS\d{1,3}E\d{1,3}\b", "", name, flags=re.IGNORECASE)
+    # Collapse spaces
     name = re.sub(r"\s+", " ", name).strip()
-    return name
+    return name if name else "Episode"
 
 
 def clean_series_name(series: str):
