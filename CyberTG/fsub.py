@@ -465,26 +465,11 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
             "quality":  quality,
         })
 
-        # Build the on_complete callback — sent AFTER all files delivered
+        # Release lock after delivery completes — allows genuine retry to re-deliver
         async def _after_delivery():
             """Called by sender_worker when the last file is sent."""
             release_delivery_lock(uid)
-            print(f"[FSUB] delivery done uid={uid} — sending retry button")
-            try:
-                bot       = await cyber.get_me()
-                retry_msg = await cyber.send_message(
-                    uid,
-                    "✅ <b>Files sent!</b>\n"
-                    "If anything is missing, tap below within 60 seconds.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [BTN("☘️ RETRY DOWNLOAD ☘️",
-                             url=f"https://t.me/{bot.username}?start={payload}")]
-                    ]),
-                    parse_mode=_enums.ParseMode.HTML,
-                )
-                delete_message_later(cyber, uid, retry_msg.id, 60)
-            except Exception as e:
-                print(f"[FSUB] retry button error uid={uid}: {e}")
+            print(f"[FSUB] delivery done uid={uid} — lock released")
 
         # Pass callback into deliver — sender_worker fires it when done
         await deliver_files_direct(cyber, uid, on_complete=_after_delivery)
