@@ -498,3 +498,20 @@ def get_total_series_sync() -> int:
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(DISTINCT normalized_name) FROM files")
     return cursor.fetchone()[0]
+
+
+def get_all_series_sync() -> list:
+    """
+    Returns all distinct normalized_name values sorted alphabetically.
+    Used by /listbatch command.
+    """
+    conn   = _get_conn()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT DISTINCT normalized_name, COUNT(*) as file_count
+        FROM files
+        WHERE normalized_name != ''
+        GROUP BY normalized_name
+        ORDER BY normalized_name ASC
+    """)
+    return [(row[0], row[1]) for row in cursor.fetchall()]
