@@ -37,6 +37,7 @@ from pyrogram.enums import ChatMemberStatus
 
 from utils.cyber_font import BTN, UI
 from DB.database import get_global_setting, set_global_setting, mongo_client
+from utils.cyber_delete import delete_message_later
 
 
 _join_reqs_db = mongo_client["JoinReqs"]
@@ -329,14 +330,13 @@ def build_fsub_keyboard(
             emoji  = "📢" if mode == "request" else "🔗"
             action = "REQUEST TO JOIN" if mode == "request" else "JOIN"
             rows.append([BTN(f"{emoji} {action} {label} {emoji}", url=link)])
-        rows.append([BTN("☘️ RETRY DOWNLOAD ☘️", url=f"https://t.me/{bot_username}?start={payload}")])
+        # No RETRY button during initial join flow
         return InlineKeyboardMarkup(rows)
 
     all_done = all(s["joined"] or s["requested"] for s in statuses)
 
     if all_done:
-        # All done → only show TAP TO GET FILES, gate msg will auto-delete in 60s
-        rows.append([BTN("☘️ TAP TO GET FILES ☘️", url=f"https://t.me/{bot_username}?start={payload}")])
+        # All done → return empty keyboard, gate msg deleted, files auto-sent, retry shown separately
         return InlineKeyboardMarkup(rows)
 
     for s in statuses:
@@ -351,7 +351,7 @@ def build_fsub_keyboard(
             action = "REQUEST TO JOIN" if mode == "request" else "JOIN"
             rows.append([BTN(f"{emoji} {action} {slot_label} {emoji}", url=link)])
 
-    rows.append([BTN("☘️ RETRY DOWNLOAD ☘️", url=f"https://t.me/{bot_username}?start={payload}")])
+    # No RETRY during join flow — only show channel buttons
     return InlineKeyboardMarkup(rows)
 
 
@@ -466,7 +466,7 @@ async def _try_auto_deliver(cyber, uid: int, slot_triggered: int):
                     await deliver_files_direct(cyber, uid)
                     print(f"[FSUB] ✅ Auto-delivered to uid={uid} after all slots satisfied")
 
-                    # ── Send fallback RETRY button, auto-deletes after 60s ──
+                    # ── Send fallback RETRY button, auto-deletes after 60s via APScheduler ──
                     try:
                         retry_msg = await cyber.send_message(
                             uid,
@@ -477,13 +477,8 @@ async def _try_auto_deliver(cyber, uid: int, slot_triggered: int):
                             ]),
                             parse_mode=_enums.ParseMode.HTML,
                         )
-                        async def _delete_retry(m=retry_msg):
-                            await asyncio.sleep(60)
-                            try:
-                                await m.delete()
-                            except Exception:
-                                pass
-                        asyncio.create_task(_delete_retry())
+                        # Use the existing APScheduler-based delete utility (60s)
+                        delete_message_later(cyber, uid, retry_msg.id, 60)
                     except Exception as e:
                         print(f"[FSUB] Retry msg send error: {e}")
 
