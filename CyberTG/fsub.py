@@ -35,8 +35,8 @@ import asyncio
 from datetime import datetime
 from typing import Optional
 
-from pyrogram import Client
-from pyrogram.types import InlineKeyboardMarkup, ChatJoinRequest, Message
+from pyrogram import Client, filters as pyro_filters
+from pyrogram.types import InlineKeyboardMarkup, ChatJoinRequest, ChatMemberUpdated, Message
 from pyrogram.enums import ChatMemberStatus
 
 from utils.cyber_font import BTN, UI
@@ -600,13 +600,90 @@ def register_fsub_handlers(cyber: Client):
         except Exception as e:
             print(f"[FSUB] JOIN REQUEST ERROR: {e}")
 
+    @cyber.on_chat_member_updated()
+    async def _on_member_joined(bot, update: ChatMemberUpdated):
+        """
+        Fires when a user's membership status changes in a channel.
+        Used to auto-deliver for INVITE-mode channels.
+
+        When user joins an invite-mode FSub channel:
+          1. Check if the channel matches any invite-mode slot.
+          2. If yes, check if this user has a pending gate message.
+          3. If yes, call _try_auto_deliver -> re-evaluates all slots -> delivers if all passed.
+
+        This fixes the bug where:
+          - User leaves invite-mode channel
+          - Searches again -> gate msg shown
+          - User joins via invite link
+          - No event was caught -> no auto-deliver -> no retry button
+        """
+        m = _m()
+
+        # Only care about new members (joined event, not left/banned/etc.)
+        new_status = update.new_chat_member
+        if not new_status:
+            return
+
+        joined_statuses = (
+            ChatMemberStatus.MEMBER,
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.OWNER,
+        )
+        if new_status.status not in joined_statuses:
+            return
+
+        # Get user and chat info safely
+        try:
+            uid     = new_status.user.id if new_status.user else None
+            chat_id = update.chat.id     if update.chat     else None
+        except Exception:
+            return
+
+        if not uid or not chat_id:
+            return
+
+        # Skip bot's own events
+        try:
+            me = await bot.get_me()
+            if uid == me.id:
+                return
+        except Exception:
+            pass
+
+        print(f"[FSUB] MemberJoined uid={uid} chat={chat_id}")
+
+        ch1   = getattr(m, "FSUB_CHANNEL1", None)
+        mode1 = getattr(m, "FSUB_MODE1",    "request")
+        ch2   = getattr(m, "FSUB_CHANNEL2", None)
+        mode2 = getattr(m, "FSUB_MODE2",    "request")
+
+        matched = False
+
+        if ch1 and chat_id == ch1 and mode1 == "invite":
+            print(f"[FSUB] uid={uid} joined invite-mode slot=1")
+            matched = True
+        elif ch2 and chat_id == ch2 and mode2 == "invite":
+            print(f"[FSUB] uid={uid} joined invite-mode slot=2")
+            matched = True
+
+        if not matched:
+            return
+
+        # Only auto-deliver if user has a pending gate message
+        # (i.e. they came through the FSub gate, not a random join)
+        if uid not in _PENDING_FSUB:
+            print(f"[FSUB] uid={uid} joined invite-mode but no pending gate -- skipping")
+            return
+
+        asyncio.create_task(_try_auto_deliver(cyber, uid))
+
     from pyrogram import filters as pyro_filters
 
     @cyber.on_callback_query(pyro_filters.regex("^fsub_done_noop$"))
     async def _fsub_noop(_, q):
-        await q.answer("✅ Already done!", show_alert=False)
+        await q.answer("Already done!", show_alert=False)
 
-    print("[FSUB] ✅ FSub handlers registered.")
+    print("[FSUB] FSub handlers registered.")
 
 
 # ═══════════════════════════════════════════════════════════════
