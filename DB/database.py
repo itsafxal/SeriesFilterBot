@@ -114,6 +114,7 @@ from .sqlite_db import (
     delete_one_file_sync,
     get_total_files_sync,
     get_total_series_sync,
+    get_all_series_sync,
     _normalized_series_from_filename,
     save_file_to_sql_sync,
     clear_all_caches,
@@ -433,6 +434,15 @@ async def get_total_series() -> int:
     """
     async with sql_db_lock:
         return await asyncio.to_thread(get_total_series_sync)
+
+
+async def get_all_series() -> list:
+    """
+    Returns list of (normalized_name, file_count) tuples sorted alphabetically.
+    Used by /listbatch command.
+    """
+    async with sql_db_lock:
+        return await asyncio.to_thread(get_all_series_sync)
 
 
 # Convenience: total docs in each Mongo file DB
