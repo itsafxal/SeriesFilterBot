@@ -113,6 +113,7 @@ from .sqlite_db import (
     delete_all_files_sync,
     delete_one_file_sync,
     get_total_files_sync,
+    get_total_series_sync,
     _normalized_series_from_filename,
     save_file_to_sql_sync,
     clear_all_caches,
@@ -423,6 +424,15 @@ async def delete_one_file(channel_id: int, msg_id: int):
 async def get_total_files() -> int:
     async with sql_db_lock:
         return await asyncio.to_thread(get_total_files_sync)
+
+
+async def get_total_series() -> int:
+    """
+    Returns count of distinct normalized_name values = unique series titles.
+    This is the "batched series" count shown in /total.
+    """
+    async with sql_db_lock:
+        return await asyncio.to_thread(get_total_series_sync)
 
 
 # Convenience: total docs in each Mongo file DB
