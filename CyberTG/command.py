@@ -33,6 +33,8 @@ from DB.database import (
     get_all_users,
     get_total_users,
     get_total_files,
+    get_total_series,
+    get_total_files_per_db,
     delete_all_files,
     delete_one_file,
 )
@@ -279,10 +281,22 @@ def register_command_handlers(cyber: Client):
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("total") & filters.user(ADMIN_USERS))
     async def total(_, m: Message):
-        users = await get_total_users()
-        files = await get_total_files()
+        users  = await get_total_users()
+        files  = await get_total_files()
+        series = await get_total_series()
+        per_db = await get_total_files_per_db()
+
+        db1 = per_db.get("db1", "?")
+        db2 = per_db.get("db2", "?")
+
         await m.reply(
-            f"👤 Users: <code>{users}</code>\n📂 Files: <code>{files}</code>",
+            f"<b>📊 Bot Statistics</b>\n\n"
+            f"👤 <b>Users</b>          : <code>{users}</code>\n"
+            f"📂 <b>Total Files</b>    : <code>{files}</code>\n"
+            f"🎬 <b>Batched Series</b> : <code>{series}</code>\n\n"
+            f"<b>📁 MongoDB File DBs</b>\n"
+            f"  DB1 : <code>{db1}</code> files\n"
+            f"  DB2 : <code>{db2}</code> files",
             parse_mode=enums.ParseMode.HTML,
         )
 
