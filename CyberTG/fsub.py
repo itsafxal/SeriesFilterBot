@@ -271,12 +271,12 @@ async def get_slot_statuses(cyber, user_id: int) -> list[dict]:
 
 async def check_fsub(cyber, user_id: int) -> bool:
     """
-    Returns True ONLY if the user is an actual member of ALL configured slots.
+    Returns True if the user is a member OR has sent a join request for ALL slots.
 
     For request-mode channels:
-      - joined=True  → pass (member, approved)
-      - requested=True → FAIL (sent request but not approved yet)
-      - neither       → FAIL (hasn't even requested)
+      - joined=True    → pass (actual member)
+      - requested=True → pass (sent join request — files delivered immediately)
+      - neither        → FAIL (hasn't requested yet)
 
     For invite-mode channels:
       - joined=True  → pass
@@ -285,16 +285,13 @@ async def check_fsub(cyber, user_id: int) -> bool:
     statuses = await get_slot_statuses(cyber, user_id)
 
     for s in statuses:
-        if s["joined"]:
-            # Actual member — always passes regardless of mode
-            print(f"[FSUB] ✅ uid={user_id} slot={s['slot']}: pass (member)")
+        if s["joined"] or s["requested"]:
+            # Joined OR requested — pass
+            print(f"[FSUB] ✅ uid={user_id} slot={s['slot']}: pass (joined={s['joined']} requested={s['requested']})")
             continue
 
-        # Not a member — always fails regardless of mode
-        if s["requested"]:
-            print(f"[FSUB] ❌ uid={user_id} slot={s['slot']}: FAIL (requested but not approved yet)")
-        else:
-            print(f"[FSUB] ❌ uid={user_id} slot={s['slot']}: FAIL (not joined)")
+        # Neither joined nor requested — fail
+        print(f"[FSUB] ❌ uid={user_id} slot={s['slot']}: FAIL (not joined / not requested)")
         return False
 
     return True
@@ -333,8 +330,8 @@ def build_fsub_keyboard(
         rows.append([BTN("☘️ RETRY DOWNLOAD ☘️", url=f"https://t.me/{bot_username}?start={payload}")])
         return InlineKeyboardMarkup(rows)
 
-    # Only truly done when every slot is an actual member
-    all_done = all(s["joined"] for s in statuses)
+    # Only truly done when every slot is joined OR requested
+    all_done = all(s["joined"] or s["requested"] for s in statuses)
 
     if all_done:
         # All channels satisfied → just show retry
@@ -370,8 +367,8 @@ def build_fsub_keyboard(
 
 def fsub_text(statuses: list[dict] | None = None) -> str:
     if not statuses:
-        return UI(
-            "⚠️ Access restricted.\n\n"
+        return (
+            "⚠️ <b>Access Restricted</b>\n\n"
             "Please join the required channel(s) first.\n"
             "After joining, press ☘️ RETRY DOWNLOAD ☘️"
         )
@@ -388,18 +385,18 @@ def fsub_text(statuses: list[dict] | None = None) -> str:
     if requested and not pending:
         # All remaining channels have been requested — waiting for approval
         lines.append(
-            "⏳ Your join request is pending admin approval.\n"
-            "Once approved, tap <b>☘️ RETRY DOWNLOAD ☘️</b> to get your files."
+            "⏳ Your join request has been sent!\n"
+            "Tap <b>☘️ RETRY DOWNLOAD ☘️</b> to get your files now."
         )
     elif requested:
         lines.append(
-            "⏳ Some channels are pending admin approval."
+            "⏳ Some channels are pending — please request to join them too."
         )
 
     if joined and (pending or requested):
         lines.append(f"\n✅ {len(joined)} channel(s) already satisfied.")
 
-    return UI("\n".join(lines))
+    return "\n".join(lines)
 
 
 # ── PENDING FSUB REGISTRY ─────────────────────────────────────
@@ -448,8 +445,8 @@ async def _try_auto_deliver(cyber, uid: int, slot_triggered: int):
     # Re-evaluate all slot statuses
     statuses = await get_slot_statuses(cyber, uid)
 
-    # All slots must be actual members — requested alone is not enough
-    all_done = all(s["joined"] for s in statuses)
+    # All slots satisfied when joined OR requested (files delivered on request, not just approval)
+    all_done = all(s["joined"] or s["requested"] for s in statuses)
 
     bot = await cyber.get_me()
 
