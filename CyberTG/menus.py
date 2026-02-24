@@ -1,5 +1,6 @@
 import logging
 from pyrogram import Client, filters, enums
+from pyrogram.handlers.handler import ContinuePropagation
 from pyrogram.types import (
     InlineKeyboardMarkup,
     CallbackQuery,
@@ -584,8 +585,11 @@ async def admin_input_handler(bot, message: Message):
         return
 
     # ── Existing settings input ───────────────────────────────
+    # FIX: if admin has no pending input state, this message is a normal
+    # search query — raise ContinuePropagation so Pyrogram passes it to
+    # the next matching handler (search_handler in filters.py)
     if uid not in admin_temp:
-        return
+        raise ContinuePropagation
 
     entry   = admin_temp[uid]
     state   = entry["state"]
