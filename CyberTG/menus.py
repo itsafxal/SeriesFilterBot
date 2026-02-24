@@ -1,6 +1,5 @@
 import logging
 from pyrogram import Client, filters, enums
-from pyrogram.handlers.handler import ContinuePropagation
 from pyrogram.types import (
     InlineKeyboardMarkup,
     CallbackQuery,
@@ -585,11 +584,10 @@ async def admin_input_handler(bot, message: Message):
         return
 
     # ── Existing settings input ───────────────────────────────
-    # FIX: if admin has no pending input state, this message is a normal
-    # search query — raise ContinuePropagation so Pyrogram passes it to
-    # the next matching handler (search_handler in filters.py)
+    # If admin has no pending input state, this is a normal search —
+    # return without consuming the message (handled by search_handler)
     if uid not in admin_temp:
-        raise ContinuePropagation
+        return
 
     entry   = admin_temp[uid]
     state   = entry["state"]
@@ -702,12 +700,21 @@ def register_menu_handlers(cyber: Client):
             pass
         await q.answer()
 
-    # ✅ FIX: Exclude ALL bot commands so /start and others are never
-    # intercepted by this handler when sent by an admin user.
+    # Custom filter: only intercept admin text when they have a pending input state
+    # This prevents the handler from swallowing normal admin search queries
+    async def _has_admin_state(_, __, m):
+        if not m.from_user:
+            return False
+        uid = m.from_user.id
+        return uid in _fsub_state or uid in admin_temp
+
+    has_admin_state = filters.create(_has_admin_state)
+
     @cyber.on_message(
         filters.private
         & filters.user(ADMIN_USERS)
         & filters.text
-        & ~filters.command(_ALL_COMMANDS)   # ← THIS IS THE KEY FIX
+        & ~filters.command(_ALL_COMMANDS)
+        & has_admin_state   # ← ONLY fires when admin has pending input
     )
     async def _(c, m): await admin_input_handler(c, m)
