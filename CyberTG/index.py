@@ -144,6 +144,19 @@ async def index_files_task(
                     ok, count = await save_series_file_for_bulk_index(msg, target=target)
                     if ok:
                         saved += count or 0
+                        from utils.cyber_index import parse_file_name
+                        file_obj  = msg.video or msg.audio or msg.document
+                        file_name = getattr(file_obj, "file_name", None) or "No_Name"
+                        meta      = parse_file_name(file_name)
+                        logger.info(
+                            f"[BULK INDEX] ✅ Saved │ "
+                            f"Series: {meta['normalized_name']!r} │ "
+                            f"S{meta['season']:02d}E{meta['episode']:02d} │ "
+                            f"{meta['quality']} │ "
+                            f"{meta['language']} │ "
+                            f"MsgID: {current} │ "
+                            f"File: {file_name}"
+                        )
                 except Exception:
                     pass
 
@@ -209,11 +222,25 @@ def register_index_handlers(cyber: Client):
             file = msg.document or msg.video or msg.audio or msg.photo
             if not file:
                 return
-            file_name = getattr(file, "file_name", None) or "No_Name"
-            # RTI always writes to both DBs
+
             ok, cnt = await save_series_file_for_bulk_index(msg, target="both")
+
             if ok:
-                logger.info(f"[RTI] Saved to DB1+DB2+SQL: {file_name}")
+                from utils.cyber_index import parse_file_name
+                file_name = getattr(file, "file_name", None) or "No_Name"
+                meta      = parse_file_name(file_name)
+                logger.info(
+                    f"[RTI] ✅ Saved │ "
+                    f"Series: {meta['normalized_name']!r} │ "
+                    f"S{meta['season']:02d}E{meta['episode']:02d} │ "
+                    f"{meta['quality']} │ "
+                    f"{meta['language']} │ "
+                    f"File: {file_name}"
+                )
+            else:
+                file_name = getattr(file, "file_name", None) or "No_Name"
+                logger.debug(f"[RTI] ⏭ Skipped (duplicate or no name): {file_name}")
+
         except Exception as e:
             logger.error(f"[RTI] error: {e}")
 
