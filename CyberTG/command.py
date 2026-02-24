@@ -55,9 +55,9 @@ def register_command_handlers(cyber: Client):
                 statuses = await get_slot_statuses(cyber, uid)
                 active_slots = [s for s in statuses]
 
-                # User passes only when actually joined ALL slots (not just requested)
+                # User passes when joined OR requested on ALL slots
                 # If no slots configured → active_slots empty → all() = True → pass
-                passed = all(s["joined"] for s in active_slots)
+                passed = all(s["joined"] or s["requested"] for s in active_slots)
 
                 logger.info(f"[FSUB] uid={uid} statuses={[(s['slot'],s['joined'],s['requested']) for s in active_slots]} passed={passed}")
 
