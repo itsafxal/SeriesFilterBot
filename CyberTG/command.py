@@ -25,7 +25,13 @@ from DB.database import (
 )
 
 from .files import deliver_files_direct, set_session
-from .fsub import check_fsub, fsub_text, build_fsub_keyboard
+from .fsub import (
+    check_fsub,
+    get_slot_statuses,
+    build_fsub_keyboard,
+    fsub_text,
+    register_pending_fsub,
+)
 
 
 def register_command_handlers(cyber: Client):
@@ -42,20 +48,36 @@ def register_command_handlers(cyber: Client):
             payload = message.command[1]
 
             if payload.startswith("send_"):
-                joined = await check_fsub(cyber, uid)
 
-                if not joined:
+                # ── Get per-slot status for this user ──────────
+                statuses = await get_slot_statuses(cyber, uid)
+                active_slots = [s for s in statuses]  # all configured slots
+
+                # Check if user passes all slots
+                passed = all(s["joined"] or s["requested"] for s in active_slots)
+
+                if not passed:
                     bot = await cyber.get_me()
-                    await message.reply(
-                        fsub_text(),
-                        reply_markup=build_fsub_keyboard(bot.username, payload),
+
+                    kb  = build_fsub_keyboard(bot.username, payload, statuses)
+                    txt = fsub_text(statuses)
+
+                    gate_msg = await message.reply(
+                        txt,
+                        reply_markup=kb,
+                        parse_mode=enums.ParseMode.HTML,
                     )
+
+                    # Register so join_request event can edit this message
+                    register_pending_fsub(uid, gate_msg, payload)
+
                     try:
                         await message.delete()
                     except Exception:
                         pass
                     return
 
+                # ── User passed — decode and deliver ──────────
                 try:
                     decoded = await decode_payload_async(payload)
                     if not decoded:
@@ -133,7 +155,7 @@ def register_command_handlers(cyber: Client):
         )
 
     # ──────────────────────────────────────────────────────────
-    # /debugfsub — shows live FSub state + DB records
+    # /debugfsub
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("debugfsub") & filters.user(ADMIN_USERS))
     async def debug_fsub(_, message: Message):
@@ -173,11 +195,7 @@ def register_command_handlers(cyber: Client):
                             f"  {d.get('date','')}"
                         )
                 else:
-                    lines.append("  ⚠️ <b>DB is EMPTY — no join requests recorded</b>")
-                    lines.append("  Possible causes:")
-                    lines.append("  1. Bot not admin in channel")
-                    lines.append("  2. Bot lacks 'Manage Invite Links' permission")
-                    lines.append("  3. Invite link not created by this bot")
+                    lines.append("  ⚠️ <b>DB is EMPTY</b>")
             else:
                 lines.append("  <i>Not configured</i>")
 
@@ -190,7 +208,7 @@ def register_command_handlers(cyber: Client):
         )
 
     # ──────────────────────────────────────────────────────────
-    # /checkuser <user_id>  — full check for one user
+    # /checkuser <user_id>
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("checkuser") & filters.user(ADMIN_USERS))
     async def check_user_fsub(_, message: Message):
@@ -236,13 +254,13 @@ def register_command_handlers(cyber: Client):
 
         passed = await check_fsub(cyber, uid)
         lines.append(
-            f"<b>Final check_fsub result: {'✅ PASS — would get files' if passed else '❌ FAIL — would see Access Restricted'}</b>"
+            f"<b>Final check_fsub result: {'✅ PASS' if passed else '❌ FAIL'}</b>"
         )
 
         await message.reply("\n".join(lines), parse_mode=enums.ParseMode.HTML)
 
     # ──────────────────────────────────────────────────────────
-    # /testjoin — manually add yourself to DB to test delivery
+    # /testjoin
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("testjoin") & filters.user(ADMIN_USERS))
     async def test_join(_, message: Message):
@@ -351,29 +369,4 @@ def register_command_handlers(cyber: Client):
             "<b>🛠 Admin Panel</b>",
             parse_mode=enums.ParseMode.HTML,
             reply_markup=keyboard,
-        )
-
-
-
-    @cyber.on_message(filters.command("debugdb") & filters.user(ADMIN_USERS))
-    async def debug_db(_, message: Message):
-        from DB.database import mongo_client
-        jrdb = mongo_client["JoinReqs"]
-
-        lines = ["<b>🔍 JoinReqs DB — All Collections</b>\n"]
-
-        for col_name in jrdb.list_collection_names():
-            count = jrdb[col_name].count_documents({})
-            lines.append(f"Collection: <code>{col_name}</code> → <b>{count}</b> docs")
-
-            # Show sample docs
-            for doc in jrdb[col_name].find().limit(3):
-                lines.append(
-                    f"  • uid=<code>{doc.get('user_id')}</code> "
-                    f"name={doc.get('first_name','?')}"
-                )
-
-        await message.reply(
-            "\n".join(lines),
-            parse_mode=enums.ParseMode.HTML
         )
