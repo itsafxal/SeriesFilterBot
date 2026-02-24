@@ -118,12 +118,6 @@ async def run_bot_async(cyber: Client):
         logger.exception(f"[STARTUP] ❌ Failed to load FSub settings: {e}")
 
     try:
-        register_index_handlers(cyber)
-        logger.info("[STARTUP] ✅ Index handlers registered.")
-    except Exception as e:
-        logger.exception(f"[STARTUP] ❌ Failed to register index handlers: {e}")
-
-    try:
         asyncio.create_task(check_and_resume_index(cyber))
         logger.info("[STARTUP] ✅ Index resume check scheduled.")
     except Exception as e:
@@ -178,7 +172,8 @@ def main():
     register_command_handlers(cyber)
     register_menu_handlers(cyber)
     register_filters(cyber)
-    register_fsub_handlers(cyber)  # MUST be before cyber.start()
+    register_fsub_handlers(cyber)   # MUST be before cyber.start()
+    register_index_handlers(cyber)  # MUST be before cyber.start()
     logger.info("[INIT] ✅ All handlers registered.")
 
     logger.info("[INIT] Starting bot event loop...")
