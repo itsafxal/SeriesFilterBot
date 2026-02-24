@@ -39,13 +39,28 @@ DEFAULT_CAPTION = (
 
 
 # =========================================================
-# SESSION STORE  →  MongoDB  (survives bot restarts)
+# SESSION STORE
+# Strategy:
+#   - PRIMARY:  In-memory dict  (instant, zero latency, zero race condition)
+#   - BACKUP:   MongoDB         (survives bot restarts, TTL auto-cleanup)
+#
+# set_session()      → writes memory FIRST (sync, instant), then persists to
+#                      MongoDB in background (fire-and-forget is safe here
+#                      because memory is always the read source during the
+#                      same process lifetime)
+#
+# get_session_async() → reads memory first, falls back to MongoDB only if
+#                       not found (handles restart recovery)
+#
+# This eliminates the race condition completely:
+#   set_session() → memory written synchronously
+#   deliver_files_direct() → get_session_async() → reads from memory → always found
 # =========================================================
 
-SESSION_TTL = 600  # 10 minutes
-_sessions_col = mongo_client["SeriesBotDB"]["user_sessions"]
+SESSION_TTL  = 600   # 10 minutes
+_SESSION_MEM: dict[int, dict] = {}   # uid → {data, expires}
 
-# Ensure TTL index exists (MongoDB auto-deletes expired docs)
+_sessions_col = mongo_client["SeriesBotDB"]["user_sessions"]
 try:
     _sessions_col.create_index("expires_at", expireAfterSeconds=0)
 except Exception:
@@ -53,83 +68,93 @@ except Exception:
 
 
 def set_session(user_id: int, data: dict):
-    """Store session in MongoDB with TTL."""
-    import asyncio as _asyncio
+    """
+    Write to in-memory store SYNCHRONOUSLY (instant, no race).
+    Persist to MongoDB in background (for restart recovery).
+    """
     from datetime import datetime, timedelta
 
+    uid     = int(user_id)
+    expires = time.time() + SESSION_TTL
+
+    # 1. Write memory immediately — this is what deliver_files_direct() reads
+    _SESSION_MEM[uid] = {"data": data, "expires": expires}
+
+    # 2. Persist to MongoDB in background (safe fire-and-forget — memory is primary)
     doc = {
-        "_id":        int(user_id),
+        "_id":        uid,
         "data":       data,
         "expires_at": datetime.utcnow() + timedelta(seconds=SESSION_TTL),
     }
     try:
-        loop = _asyncio.get_event_loop()
+        loop = asyncio.get_event_loop()
         if loop.is_running():
-            loop.create_task(_set_session_async(doc))
-        else:
-            _sessions_col.replace_one({"_id": doc["_id"]}, doc, upsert=True)
-    except Exception as e:
-        logger.error(f"set_session error: {e}")
-        # fallback: direct sync call
-        try:
-            _sessions_col.replace_one({"_id": doc["_id"]}, doc, upsert=True)
-        except Exception:
-            pass
-
-
-async def _set_session_async(doc: dict):
-    await asyncio.to_thread(
-        lambda: _sessions_col.replace_one({"_id": doc["_id"]}, doc, upsert=True)
-    )
+            loop.create_task(
+                asyncio.to_thread(
+                    lambda: _sessions_col.replace_one({"_id": uid}, doc, upsert=True)
+                )
+            )
+    except Exception:
+        pass  # Non-fatal — memory copy is always the live source
 
 
 async def get_session_async(user_id: int):
-    """Async session retrieval from MongoDB."""
+    """
+    Read from memory first (fast, zero latency).
+    Fall back to MongoDB only after a restart when memory is empty.
+    """
     from datetime import datetime
 
+    uid = int(user_id)
+
+    # ── 1. Memory (primary) ──────────────────────────────────
+    entry = _SESSION_MEM.get(uid)
+    if entry:
+        if time.time() > entry["expires"]:
+            _SESSION_MEM.pop(uid, None)
+        else:
+            return entry["data"]
+
+    # ── 2. MongoDB (restart recovery fallback) ───────────────
     def _sync():
-        doc = _sessions_col.find_one({"_id": int(user_id)})
+        doc = _sessions_col.find_one({"_id": uid})
         if not doc:
             return None
         if doc.get("expires_at") and doc["expires_at"] < datetime.utcnow():
-            _sessions_col.delete_one({"_id": int(user_id)})
+            _sessions_col.delete_one({"_id": uid})
             return None
         return doc.get("data")
 
-    return await asyncio.to_thread(_sync)
+    data = await asyncio.to_thread(_sync)
+    if data:
+        # Warm memory cache for subsequent calls
+        _SESSION_MEM[uid] = {"data": data, "expires": time.time() + SESSION_TTL}
+    return data
 
 
 def get_session(user_id: int):
-    """
-    Sync wrapper — kept for backward compat with fsub.py calls.
-    Returns None if no session found.
-    WARNING: Runs sync MongoDB call — use get_session_async() in async context.
-    """
-    from datetime import datetime
-    try:
-        doc = _sessions_col.find_one({"_id": int(user_id)})
-        if not doc:
-            return None
-        if doc.get("expires_at") and doc["expires_at"] < datetime.utcnow():
-            _sessions_col.delete_one({"_id": int(user_id)})
-            return None
-        return doc.get("data")
-    except Exception as e:
-        logger.error(f"get_session error: {e}")
+    """Sync read — checks memory only. For legacy compat."""
+    uid   = int(user_id)
+    entry = _SESSION_MEM.get(uid)
+    if not entry:
         return None
+    if time.time() > entry["expires"]:
+        _SESSION_MEM.pop(uid, None)
+        return None
+    return entry["data"]
 
 
 def clear_session(user_id: int):
+    uid = int(user_id)
+    _SESSION_MEM.pop(uid, None)
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
             loop.create_task(
-                asyncio.to_thread(lambda: _sessions_col.delete_one({"_id": int(user_id)}))
+                asyncio.to_thread(lambda: _sessions_col.delete_one({"_id": uid}))
             )
-        else:
-            _sessions_col.delete_one({"_id": int(user_id)})
-    except Exception as e:
-        logger.error(f"clear_session error: {e}")
+    except Exception:
+        pass
 
 
 # =========================================================
@@ -240,7 +265,12 @@ async def finish_progress(cyber, user_id):
         pass
 
 
-async def sender_worker(cyber, user_id):
+async def sender_worker(cyber, user_id, on_complete=None):
+    """
+    on_complete: optional async callable, invoked AFTER all files are sent
+    and finish_progress completes. This is how do_deliver() in fsub.py sends
+    the retry button at exactly the right moment — after delivery, not before.
+    """
     queue = get_user_queue(user_id)
 
     while not queue.empty():
@@ -267,16 +297,26 @@ async def sender_worker(cyber, user_id):
 
     await finish_progress(cyber, user_id)
     USER_SEND_TASKS.pop(user_id, None)
-    # Clean up empty queue ref
     USER_SEND_QUEUES.pop(user_id, None)
+
+    # Fire on_complete AFTER everything done — correct place for retry button
+    if on_complete:
+        try:
+            await on_complete()
+        except Exception as e:
+            logger.error(f"on_complete error uid={user_id}: {e}")
 
 
 # =========================================================
 # DELIVERY LOGIC
 # =========================================================
 
-async def deliver_files_direct(cyber, user_id):
-    # FIX: use async session fetch
+async def deliver_files_direct(cyber, user_id, on_complete=None):
+    """
+    on_complete: optional async callable fired after ALL files are sent.
+    Pass this from do_deliver() in fsub.py to send the retry button
+    only after sender_worker finishes — not immediately.
+    """
     session = await get_session_async(user_id)
     if not session:
         logger.warning(f"deliver_files_direct: no session for uid={user_id}")
@@ -294,7 +334,7 @@ async def deliver_files_direct(cyber, user_id):
 
     if not files:
         await cyber.send_message(user_id, "❌ No files found.")
-        await asyncio.to_thread(lambda: _sessions_col.delete_one({"_id": int(user_id)}))
+        clear_session(user_id)
         return
 
     # FIX: fetch settings ONCE, not per-file
@@ -363,10 +403,10 @@ async def deliver_files_direct(cyber, user_id):
 
         await queue.put(send_job)
 
-    # FIX: clear session AFTER populating queue (not before)
-    await asyncio.to_thread(lambda: _sessions_col.delete_one({"_id": int(user_id)}))
+    # Clear session AFTER populating queue (not before)
+    clear_session(user_id)
 
     if not is_sender_running(user_id):
         USER_SEND_TASKS[user_id] = asyncio.create_task(
-            sender_worker(cyber, user_id)
+            sender_worker(cyber, user_id, on_complete=on_complete)
         )
