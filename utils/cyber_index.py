@@ -56,24 +56,56 @@ _QUALITY_MAP = [
     (re.compile(r"\b360[pP]\b"),                        "360P"),
 ]
 
-# Language patterns — checked against full upper-cased filename
+# Language patterns — ordered: full words first (most reliable), then 3-letter codes.
+# NOTE: 2-letter codes like HI / EN removed — too many false positives
+#       (HI matches "HI-DEF", EN matches "NETFLIX", etc.)
 _LANG_MAP = [
-    (re.compile(r"\b(HINDI|HIN|HI)\b"),               "Hindi"),
-    (re.compile(r"\b(ENGLISH|ENG|EN)\b"),             "English"),
-    (re.compile(r"\b(TAMIL|TAM)\b"),                  "Tamil"),
-    (re.compile(r"\b(TELUGU|TEL)\b"),                 "Telugu"),
-    (re.compile(r"\b(MALAYALAM|MAL)\b"),              "Malayalam"),
-    (re.compile(r"\b(KANNADA|KAN)\b"),                "Kannada"),
-    (re.compile(r"\b(BENGALI|BEN)\b"),                "Bengali"),
-    (re.compile(r"\b(MARATHI|MAR)\b"),                "Marathi"),
-    (re.compile(r"\b(PUNJABI|PUN)\b"),                "Punjabi"),
-    (re.compile(r"\b(KOREAN|KOR)\b"),                 "Korean"),
-    (re.compile(r"\b(JAPANESE|JPN|JAP)\b"),           "Japanese"),
-    (re.compile(r"\b(CHINESE|CHN|CHI)\b"),            "Chinese"),
-    (re.compile(r"\b(SPANISH|ESP)\b"),                "Spanish"),
-    (re.compile(r"\b(FRENCH|FRE)\b"),                 "French"),
-    (re.compile(r"\b(GERMAN|GER)\b"),                 "German"),
-    (re.compile(r"\b(ARABIC|ARA)\b"),                 "Arabic"),
+    # ── Full words ───────────────────────────────────────────────
+    (re.compile(r"\bHINDI\b"),      "Hindi"),
+    (re.compile(r"\bENGLISH\b"),    "English"),
+    (re.compile(r"\bTAMIL\b"),      "Tamil"),
+    (re.compile(r"\bTELUGU\b"),     "Telugu"),
+    (re.compile(r"\bMALAYALAM\b"),  "Malayalam"),
+    (re.compile(r"\bKANNADA\b"),    "Kannada"),
+    (re.compile(r"\bBENGALI\b"),    "Bengali"),
+    (re.compile(r"\bMARATHI\b"),    "Marathi"),
+    (re.compile(r"\bPUNJABI\b"),    "Punjabi"),
+    (re.compile(r"\bKOREAN\b"),     "Korean"),
+    (re.compile(r"\bJAPANESE\b"),   "Japanese"),
+    (re.compile(r"\bCHINESE\b"),    "Chinese"),
+    (re.compile(r"\bMANDARIN\b"),   "Chinese"),
+    (re.compile(r"\bSPANISH\b"),    "Spanish"),
+    (re.compile(r"\bFRENCH\b"),     "French"),
+    (re.compile(r"\bGERMAN\b"),     "German"),
+    (re.compile(r"\bARABIC\b"),     "Arabic"),
+    (re.compile(r"\bTURKISH\b"),    "Turkish"),
+    (re.compile(r"\bITALIAN\b"),    "Italian"),
+    (re.compile(r"\bPORTUGUESE\b"), "Portuguese"),
+    (re.compile(r"\bRUSSIAN\b"),    "Russian"),
+    (re.compile(r"\bTHAI\b"),       "Thai"),
+    # ── 3-letter codes ───────────────────────────────────────────
+    (re.compile(r"\bHIN\b"),        "Hindi"),
+    (re.compile(r"\bENG\b"),        "English"),
+    (re.compile(r"\bTAM\b"),        "Tamil"),
+    (re.compile(r"\bTEL\b"),        "Telugu"),
+    (re.compile(r"\bMAL\b"),        "Malayalam"),
+    (re.compile(r"\bKAN\b"),        "Kannada"),
+    (re.compile(r"\bBEN\b"),        "Bengali"),
+    (re.compile(r"\bMAR\b"),        "Marathi"),
+    (re.compile(r"\bPUN\b"),        "Punjabi"),
+    (re.compile(r"\bKOR\b"),        "Korean"),
+    (re.compile(r"\bJPN\b"),        "Japanese"),
+    (re.compile(r"\bJAP\b"),        "Japanese"),
+    (re.compile(r"\bCHN\b"),        "Chinese"),
+    (re.compile(r"\bCHI\b"),        "Chinese"),
+    (re.compile(r"\bESP\b"),        "Spanish"),
+    (re.compile(r"\bFRE\b"),        "French"),
+    (re.compile(r"\bGER\b"),        "German"),
+    (re.compile(r"\bARA\b"),        "Arabic"),
+    (re.compile(r"\bTUR\b"),        "Turkish"),
+    (re.compile(r"\bITA\b"),        "Italian"),
+    (re.compile(r"\bPOR\b"),        "Portuguese"),
+    (re.compile(r"\bRUS\b"),        "Russian"),
 ]
 
 # Junk tokens to strip when building normalized_name
@@ -133,26 +165,59 @@ def _parse_quality(name: str) -> str:
     return "Unknown"
 
 
-def _parse_language(name: str) -> str:
-    upper = name.upper()
-    # Normalise separators so "HIN+ENG" → "HIN ENG"
-    upper = re.sub(r"[+&/x,.\-_]+", " ", upper)
+def _parse_language(name: str, caption: str = "") -> str:
+    """
+    Detect language from filename AND caption text.
 
+    Strategy:
+      1. Combine filename + caption for maximum signal.
+      2. Search bracket/parenthesis content first (highest confidence).
+      3. Then search full normalized text.
+      4. Full words matched before 3-letter codes to avoid partial hits.
+      5. Default is "Unknown" (not "English") — honest when no tag found.
+
+    Args:
+        name:    raw file_name string
+        caption: Telegram message caption (optional, but greatly helps accuracy)
+    """
+    # ── Build search space ────────────────────────────────────────────────
+    combined = f"{name} {caption}"
+    upper    = combined.upper()
+
+    # Normalise separators: dots, dashes, underscores, plus, &, / → space
+    upper_norm = re.sub(r"[._\-+&/\\,]+", " ", upper)
+
+    # Also extract bracket / paren content separately — high confidence source
+    # e.g. "[Hindi]", "(Tamil + English)", "{HIN+ENG}"
+    bracket_raw     = " ".join(re.findall(r"[\[\({]([^\]\){}]+)[\]\){}]", upper))
+    bracket_norm    = re.sub(r"[._\-+&/\\,]+", " ", bracket_raw)
+
+    # Final search space: bracket content prepended (searched first via ordering)
+    search = f"{bracket_norm} {upper_norm}"
+
+    # ── Match languages ───────────────────────────────────────────────────
     found = []
+    seen  = set()
     for pattern, label in _LANG_MAP:
-        if pattern.search(upper):
+        if label not in seen and pattern.search(search):
             found.append(label)
+            seen.add(label)
+
+    # ── Multi / Dual audio ────────────────────────────────────────────────
+    is_multi = bool(re.search(r"\b(DUAL|MULTI)\b", search))
+
+    if is_multi:
+        if len(found) >= 2:
+            return " + ".join(found)
+        return "Multi Audio"
 
     if not found:
-        if re.search(r"\b(DUAL|MULTI)\b", upper):
-            return "Multi Audio"
-        return "English"   # safe default
+        return "Unknown"       # honest — do NOT assume English
 
     if len(found) == 1:
         return found[0]
 
-    # e.g. "Hindi-English" for dual dubs
-    return "-".join(found)
+    return " + ".join(found)   # e.g. "Hindi + English"
 
 
 def _normalized_series_name(file_name: str) -> str:
@@ -268,9 +333,14 @@ async def save_series_file_for_bulk_index(
             return False, 0
 
         # ── Parse metadata ─────────────────────────────────────
+        # Extract caption — channels often include language info here
+        caption = getattr(msg, "caption", None) or ""
+        if not isinstance(caption, str):
+            caption = str(caption)
+
         season, episode = _parse_season_episode(file_name)
         quality         = _parse_quality(file_name)
-        language        = _parse_language(file_name)
+        language        = _parse_language(file_name, caption)  # caption = extra signal
         normalized_name = _normalized_series_name(file_name)
 
         if not normalized_name:
@@ -325,5 +395,5 @@ def parse_file_name(file_name: str) -> dict:
         "season":          season,
         "episode":         episode,
         "quality":         _parse_quality(file_name),
-        "language":        _parse_language(file_name),
+        "language":        _parse_language(file_name),  # no caption in standalone mode
     }
