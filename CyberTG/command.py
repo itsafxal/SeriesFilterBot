@@ -53,31 +53,28 @@ def register_command_handlers(cyber: Client):
 
                 # ── Get per-slot status for this user ──────────
                 statuses = await get_slot_statuses(cyber, uid)
-                active_slots = [s for s in statuses]  # all configured slots
+                active_slots = [s for s in statuses]
 
                 # User passes only when actually joined ALL slots (not just requested)
-                # NOTE: if no slots configured, active_slots is empty → all() = True → pass
-                # This is correct: if FSub is disabled, everyone passes.
+                # If no slots configured → active_slots empty → all() = True → pass
                 passed = all(s["joined"] for s in active_slots)
 
                 logger.info(f"[FSUB] uid={uid} statuses={[(s['slot'],s['joined'],s['requested']) for s in active_slots]} passed={passed}")
 
+                # ── Delete the incoming /start message silently ──
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+
                 if not passed:
                     bot = await cyber.get_me()
 
-                    # ── Always delete the /start message silently ──
-                    try:
-                        await message.delete()
-                    except Exception:
-                        pass
-
-                    # ── If a gate message already exists for this user,
-                    #    just edit it in place — never send a duplicate. ──
+                    # ── If a gate message already exists for this user with the
+                    #    SAME payload, just update its keyboard — don't spam a new one ──
                     existing = _PENDING_FSUB.get(uid)
                     if existing and existing["payload"] == payload:
-                        # Same link — update the existing gate message keyboard
-                        # to reflect latest slot statuses, then stop.
-                        kb = build_fsub_keyboard(bot.username, payload, statuses)
+                        kb  = build_fsub_keyboard(bot.username, payload, statuses)
                         txt = fsub_text(statuses)
                         try:
                             await existing["msg"].edit_text(
@@ -100,13 +97,11 @@ def register_command_handlers(cyber: Client):
                         parse_mode=enums.ParseMode.HTML,
                     )
 
-                    # Register so join_request event can edit this message
+                    # Register so join_request event can edit this message later
                     register_pending_fsub(uid, gate_msg, payload)
                     return
 
-                # ── User passed — clean up gate message then deliver ──
-                # Delete the old fsub gate message (with ⏳/✅ buttons) so it
-                # doesn't linger after the user has fully joined.
+                # ── User passed fsub — clean up gate message then deliver ──
                 pending = _PENDING_FSUB.get(uid)
                 if pending:
                     try:
@@ -115,7 +110,7 @@ def register_command_handlers(cyber: Client):
                         pass
                     clear_pending_fsub(uid)
 
-                # Decode the payload — checks memory first, then MongoDB fallback
+                # Decode the payload
                 try:
                     decoded = await decode_payload_async(payload)
                 except Exception as e:
@@ -125,10 +120,6 @@ def register_command_handlers(cyber: Client):
                 logger.info(f"[START] uid={uid} payload={payload} decoded={'ok' if decoded else 'NONE'}")
 
                 if not decoded:
-                    try:
-                        await message.delete()
-                    except Exception:
-                        pass
                     await cyber.send_message(
                         uid,
                         "⚠️ This link has expired or is invalid.\n"
@@ -139,20 +130,10 @@ def register_command_handlers(cyber: Client):
                 owner, series, season, lang, quality = decoded
 
                 if int(owner) != uid:
-                    try:
-                        await message.delete()
-                    except Exception:
-                        pass
                     await cyber.send_message(uid, "⚠️ This link is not for you.")
                     return
 
                 season = int(season)
-
-                # Delete the /start message before delivery so UI is clean
-                try:
-                    await message.delete()
-                except Exception:
-                    pass
 
                 set_session(uid, {
                     "series":   series,
@@ -208,7 +189,7 @@ def register_command_handlers(cyber: Client):
             _join_reqs_db,
         )
 
-        lines = ["<b>🔍 FSUB DEBUG REPORT</b>\n"]
+        lines = ["<b>🔍 FSub Debug</b>\n"]
 
         for slot, ch, mode, link in [
             (1, FSUB_CHANNEL1, FSUB_MODE1, FSUB_LINK1),
