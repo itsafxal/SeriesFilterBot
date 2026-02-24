@@ -258,12 +258,18 @@ def register_index_handlers(cyber: Client):
         eff_start = await compute_effective_start(chat_id, 2)
 
         # Step 1 — ask which DB
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("📁 DB1",       callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|db1"),
-            InlineKeyboardButton("📁 DB2",       callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|db2"),
-            InlineKeyboardButton("📁📁 Both",    callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|both"),
-            InlineKeyboardButton("❌ Cancel",    callback_data="cancel_prompt"),
-        ]])
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📁 DB1",  callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|db1"),
+                InlineKeyboardButton("📁 DB2",  callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|db2"),
+            ],
+            [
+                InlineKeyboardButton("📁📁 Both", callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|both"),
+            ],
+            [
+                InlineKeyboardButton("❌ Cancel", callback_data="cancel_prompt"),
+            ],
+        ])
 
         await bot.send_message(
             message.from_user.id,
@@ -284,12 +290,18 @@ def register_index_handlers(cyber: Client):
         chat_id, start_id, last_id = extract_links(args)
         eff_start = await compute_effective_start(chat_id, start_id)
 
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("📁 DB1",       callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|db1"),
-            InlineKeyboardButton("📁 DB2",       callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|db2"),
-            InlineKeyboardButton("📁📁 Both",    callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|both"),
-            InlineKeyboardButton("❌ Cancel",    callback_data="cancel_prompt"),
-        ]])
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📁 DB1",  callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|db1"),
+                InlineKeyboardButton("📁 DB2",  callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|db2"),
+            ],
+            [
+                InlineKeyboardButton("📁📁 Both", callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|both"),
+            ],
+            [
+                InlineKeyboardButton("❌ Cancel", callback_data="cancel_prompt"),
+            ],
+        ])
 
         await bot.send_message(
             message.from_user.id,
@@ -305,33 +317,37 @@ def register_index_handlers(cyber: Client):
     @cyber.on_callback_query(filters.regex(r"^idx_db\|"))
     async def idx_db_chosen(bot, query):
         # format: idx_db|chat_id|start_id|last_id|target
+        await query.answer()   # answer FIRST to prevent timeout spinner
         parts = query.data.split("|")
         _, chat_id, start_id, last_id, target = parts
         chat_id, start_id, last_id = int(chat_id), int(start_id), int(last_id)
 
         label = {"db1": "📁 DB1 only", "db2": "📁 DB2 only", "both": "📁📁 DB1 + DB2"}.get(target, target)
 
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "✅ Proceed",
-                callback_data=f"index|{chat_id}|{start_id}|{last_id}|{target}",
-            ),
-            InlineKeyboardButton("❌ Cancel", callback_data="cancel_prompt"),
-        ]])
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Proceed", callback_data=f"index|{chat_id}|{start_id}|{last_id}|{target}"),
+            ],
+            [
+                InlineKeyboardButton("❌ Cancel", callback_data="cancel_prompt"),
+            ],
+        ])
 
-        await query.message.edit_text(
-            f"**Confirm Index**\n"
-            f"Channel: `{chat_id}`\n"
-            f"Range: **{start_id}** → **{last_id}**\n"
-            f"Target: **{label}**\n\n"
-            f"Press Proceed to start.",
-            parse_mode=enums.ParseMode.MARKDOWN,
-            reply_markup=kb,
-        )
-        await query.answer()
+        try:
+            await query.message.edit_text(
+                f"**Confirm Index**\n"
+                f"Channel: `{chat_id}`\n"
+                f"Range: **{start_id}** → **{last_id}**\n"
+                f"Target: **{label}**\n\n"
+                f"Tap Proceed to start indexing.",
+                parse_mode=enums.ParseMode.MARKDOWN,
+                reply_markup=kb,
+            )
+        except Exception as e:
+            logger.error(f"[INDEX] idx_db_chosen edit failed: {e}")
 
     # ── START INDEX ───────────────────────────────────────────────────────
-    @cyber.on_callback_query(filters.regex(r"^index\|-?\d+\|\d+\|\d+\|"))
+    @cyber.on_callback_query(filters.regex(r"^index\|"))
     async def start_index(bot, query):
         global index_task
 
@@ -339,9 +355,14 @@ def register_index_handlers(cyber: Client):
             return await query.answer("Index already running.", show_alert=True)
 
         # format: index|chat_id|start_id|last_id|target
-        parts                     = query.data.split("|")
-        _, chat_id, start_id, last_id, target = parts
-        chat_id, start_id, last_id = int(chat_id), int(start_id), int(last_id)
+        try:
+            parts = query.data.split("|")
+            # parts: ['index', chat_id, start_id, last_id, target]
+            _, chat_id, start_id, last_id, target = parts[0], parts[1], parts[2], parts[3], parts[4]
+            chat_id, start_id, last_id = int(chat_id), int(start_id), int(last_id)
+        except Exception as e:
+            logger.error(f"[INDEX] start_index parse error: {e} data={query.data!r}")
+            return await query.answer("Invalid data. Try again.", show_alert=True)
 
         skip_raw = await get_global_setting(INDEX_SKIP_ID_KEY, None)
         try:
