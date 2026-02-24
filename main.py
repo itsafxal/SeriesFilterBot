@@ -1,10 +1,7 @@
-# main.py — FIXED FINAL IMPLEMENTATION
-# Fixes applied:
-#   1. load_fsub_settings() is always awaited before any user requests are served
-#   2. check_and_resume_index runs AFTER fsub settings are loaded
-#   3. Proper exception isolation — one failure doesn't kill startup
-#   4. register_index_handlers called correctly
-#   5. Clear startup log sequence so you can verify load order
+# main.py — FIXED
+# Key fix: register_fsub_handlers(cyber) is now called BEFORE cyber.start()
+# This ensures the chat_join_request handler is bound to the client instance
+# and Pyrogram routes join request updates to it correctly.
 
 import asyncio
 from pyrogram import Client, enums
@@ -12,7 +9,7 @@ from CyberTG.command import register_command_handlers
 from CyberTG.menus import register_menu_handlers
 from CyberTG.index import index_files_task, lock, INDEX_STATUS_KEY, register_index_handlers
 from CyberTG.filters import register_filters
-from CyberTG.fsub import load_fsub_settings
+from CyberTG.fsub import load_fsub_settings, register_fsub_handlers   # ← added register_fsub_handlers
 from utils.cyber_delete import start_scheduler
 from DB.database import initialize_sql_db, get_global_setting, set_global_setting
 from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS
@@ -24,7 +21,6 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 # ─────────────────────────────────────────────────────────────
 
 async def check_and_resume_index(cyber: Client):
-    """Checks for an interrupted indexing task and resumes it if found."""
     if lock.locked():
         logger.warning("[STARTUP] Index lock is held — skipping resume check.")
         return
@@ -40,7 +36,6 @@ async def check_and_resume_index(cyber: Client):
         return
 
     try:
-        # Format: RUNNING|<chat_id>|<current_id>|<last_msg_id>
         parts = status.split("|")
         if len(parts) != 4:
             raise ValueError(f"Unexpected status format: {status!r}")
@@ -58,7 +53,6 @@ async def check_and_resume_index(cyber: Client):
         admin_id = ADMIN_USERS[0] if ADMIN_USERS else None
 
         if not admin_id:
-            logger.error("[STARTUP] No ADMIN_USERS configured — resuming index without notification.")
             asyncio.create_task(
                 index_files_task(cyber, None, chat_id, start_msg_id, last_msg_id)
             )
@@ -100,7 +94,6 @@ async def check_and_resume_index(cyber: Client):
 # ─────────────────────────────────────────────────────────────
 
 async def run_bot_async(cyber: Client):
-    """Connects the client and runs the bot indefinitely."""
     logger.info("[STARTUP] Connecting bot client...")
     await cyber.start()
     logger.info("[STARTUP] Bot client connected ✅")
@@ -112,14 +105,14 @@ async def run_bot_async(cyber: Client):
     except Exception as e:
         logger.exception(f"[STARTUP] ❌ Auto-delete scheduler failed: {e}")
 
-    # 2. Load FSub settings — MUST happen before any user can trigger check_fsub()
+    # 2. Load FSub settings
     try:
         await load_fsub_settings()
         logger.info("[STARTUP] ✅ FSub settings loaded.")
     except Exception as e:
         logger.exception(f"[STARTUP] ❌ Failed to load FSub settings: {e}")
 
-    # 3. Register index handlers (dynamic, needs running client)
+    # 3. Register index handlers
     try:
         register_index_handlers(cyber)
         logger.info("[STARTUP] ✅ Index handlers registered.")
@@ -133,7 +126,7 @@ async def run_bot_async(cyber: Client):
     except Exception as e:
         logger.exception(f"[STARTUP] ❌ Failed to schedule index resume check: {e}")
 
-    # 5. Notify admin of successful restart
+    # 5. Notify admin
     admin_id = ADMIN_USERS[0] if ADMIN_USERS else None
     if admin_id:
         try:
@@ -149,7 +142,6 @@ async def run_bot_async(cyber: Client):
 
     logger.info("[STARTUP] 🟢 Bot is fully running. Waiting for updates...")
 
-    # Keep alive
     try:
         await asyncio.Future()
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -164,7 +156,6 @@ async def run_bot_async(cyber: Client):
 # ─────────────────────────────────────────────────────────────
 
 def main():
-    """Initializes databases and starts the bot."""
     logger.info("[INIT] Initializing SQL database...")
     try:
         initialize_sql_db()
@@ -180,11 +171,16 @@ def main():
         bot_token=BOT_TOKEN,
     )
 
-    # Register all static handlers before starting
+    # Register all handlers BEFORE starting
     logger.info("[INIT] Registering handlers...")
     register_command_handlers(cyber)
     register_menu_handlers(cyber)
     register_filters(cyber)
+
+    # ✅ THE KEY FIX: register FSub join request handler on the instance
+    # This MUST be called before cyber.start() so Pyrogram binds it correctly.
+    register_fsub_handlers(cyber)
+
     logger.info("[INIT] ✅ All handlers registered.")
 
     logger.info("[INIT] Starting bot event loop...")
