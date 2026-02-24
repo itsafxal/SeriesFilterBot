@@ -166,7 +166,7 @@ def register_command_handlers(cyber: Client):
                         parse_mode=_enums.ParseMode.HTML,
                     )
                     # Use the existing APScheduler-based delete utility (60s)
-                    delete_message_later(cyber, uid, retry_msg.id, 60)
+                    delete_message_later(cyber, uid, retry_msg.id, 15)
                 except Exception as _e:
                     logger.error(f"RETRY BTN ERROR: {_e}")
                 return
