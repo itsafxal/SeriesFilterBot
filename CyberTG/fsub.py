@@ -1,30 +1,3 @@
-"""
-fsub.py — SMART FSUB v3
-
-NEW FEATURES:
-  1. Already-joined members never see the join button for channels they're in.
-     Each slot button is shown only if the user hasn't joined that slot yet.
-
-  2. When a user clicks a "Request to Join" link, the join_request event
-     saves them to DB AND immediately removes that slot's button from the
-     message, replacing it with ✅ Requested.
-
-  3. When ALL slots are satisfied (joined or requested), the keyboard
-     automatically replaces itself with just the RETRY DOWNLOAD button —
-     no manual retry needed.
-
-  4. Auto-retry: after the join_request event fires and all slots are done,
-     the bot silently delivers the files automatically (zero clicks needed).
-
-HOW IT WORKS:
-  - build_fsub_keyboard() now takes per_slot_status dict so it can
-    hide buttons for already-joined slots.
-  - get_slot_status(cyber, uid) returns per-slot join state for a user.
-  - On join_request event: update DB, then call _try_auto_deliver() which
-    checks if all slots are now satisfied and delivers files if so.
-  - command.py passes the fsub message_id so we can edit it later.
-"""
-
 from __future__ import annotations
 
 import asyncio
