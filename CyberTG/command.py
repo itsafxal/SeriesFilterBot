@@ -158,9 +158,7 @@ def register_command_handlers(cyber: Client):
                     _bot = await cyber.get_me()
                     retry_msg = await cyber.send_message(
                         uid,
-                        "✅ <b>Files sent!</b>
-"
-                        "If anything is missing, tap below within 60 seconds.",
+                        "✅ <b>Files sent!</b>\nIf anything is missing, tap below within 60 seconds.",
                         reply_markup=_IKM([
                             [_BTN("☘️ RETRY DOWNLOAD ☘️",
                                   url=f"https://t.me/{_bot.username}?start={payload}")]
