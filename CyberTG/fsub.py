@@ -470,9 +470,7 @@ async def _try_auto_deliver(cyber, uid: int, slot_triggered: int):
                     try:
                         retry_msg = await cyber.send_message(
                             uid,
-                            "✅ <b>Files sent!</b>
-"
-                            "If anything is missing, tap below within 60 seconds.",
+                            "✅ <b>Files sent!</b>\nIf anything is missing, tap below within 60 seconds.",
                             reply_markup=InlineKeyboardMarkup([
                                 [BTN("☘️ RETRY DOWNLOAD ☘️",
                                      url=f"https://t.me/{bot.username}?start={payload}")]
