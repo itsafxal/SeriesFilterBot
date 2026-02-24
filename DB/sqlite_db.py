@@ -487,3 +487,14 @@ def get_total_files_sync():
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM files")
     return cursor.fetchone()[0]
+
+
+def get_total_series_sync() -> int:
+    """
+    Returns the count of distinct normalized_name values in SQLite.
+    Each distinct name = one "batched series" (e.g. Dark, Stranger Things).
+    """
+    conn   = _get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(DISTINCT normalized_name) FROM files")
+    return cursor.fetchone()[0]
