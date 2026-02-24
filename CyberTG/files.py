@@ -219,6 +219,9 @@ async def deliver_files_direct(cyber, user_id):
         "CUSTOM_FILE_CAPTION",
         DEFAULT_CAPTION
     )
+    # Fallback if DB returns None instead of the default
+    if not custom_caption:
+        custom_caption = DEFAULT_CAPTION
 
     await init_progress(cyber, user_id, len(files))
 
