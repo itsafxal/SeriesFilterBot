@@ -399,8 +399,18 @@ def fsub_text(statuses: list[dict] | None = None) -> str:
 def register_pending_fsub(uid: int, msg: Message, payload: str):
     """
     Call this in command.py after sending the fsub gate message.
-    Stores the message so the join_request handler can edit it later.
+    If there's already a pending entry for this user (they clicked a new
+    link before finishing the old one), delete the old gate message first.
     """
+    old = _PENDING_FSUB.get(uid)
+    if old:
+        # Schedule deletion of the old gate message without blocking
+        try:
+            import asyncio
+            asyncio.get_event_loop().create_task(old["msg"].delete())
+        except Exception:
+            pass
+
     _PENDING_FSUB[uid] = {
         "msg":     msg,
         "payload": payload,
