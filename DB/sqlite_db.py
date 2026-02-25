@@ -153,6 +153,7 @@ def create_sql_schema(conn):
             file_id        TEXT,
             media_type     TEXT    DEFAULT 'document',
             caption        TEXT    DEFAULT '',
+            codec          TEXT    DEFAULT '',
             UNIQUE(channel_id, message_id),
             UNIQUE(normalized_name, season, episode, quality, language)
         )
@@ -165,6 +166,8 @@ def create_sql_schema(conn):
         cursor.execute("ALTER TABLE files ADD COLUMN media_type TEXT DEFAULT 'document'")
     if "caption" not in existing_cols:
         cursor.execute("ALTER TABLE files ADD COLUMN caption TEXT DEFAULT ''")
+    if "codec" not in existing_cols:
+        cursor.execute("ALTER TABLE files ADD COLUMN codec TEXT DEFAULT ''")
 
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_series_lookup
@@ -208,7 +211,7 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
         "channel_id": 1, "message_id": 1, "file_name": 1,
         "normalized_name": 1, "season": 1, "episode": 1,
         "quality": 1, "language": 1, "file_id": 1, "media_type": 1,
-        "caption": 1, "_id": 0
+        "caption": 1, "codec": 1, "_id": 0
     })
 
     batch = []
@@ -230,14 +233,15 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
             doc.get("file_id"),
             doc.get("media_type", "document"),
             doc.get("caption", ""),
+            doc.get("codec", ""),
         ))
 
         if len(batch) >= BATCH_SIZE:
             cursor.executemany("""
                 INSERT OR IGNORE INTO files
                 (channel_id, message_id, file_name, normalized_name,
-                 season, episode, quality, language, file_id, media_type, caption)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 season, episode, quality, language, file_id, media_type, caption, codec)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, batch)
             conn.commit()
             total += len(batch)
@@ -431,6 +435,29 @@ def get_unique_qualities_by_lang_season_sync(series_name: str, language: str, se
                         key=lambda x: _QUALITY_ORDER.index(x)))
 
 
+def get_unique_qualities_with_codec_sync(series_name: str, language: str, season: int):
+    """
+    Returns list of (quality, codec) tuples for button display.
+    e.g. [("1080P", "H.265"), ("720P", "H.264"), ("720P", "")]
+    Deduped and sorted by quality order.
+    """
+    conn   = _get_conn()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT DISTINCT quality, codec FROM files
+        WHERE normalized_name = ? AND language = ? AND season = ?
+    """, (series_name, language, season))
+    rows = cursor.fetchall()
+    seen = set()
+    result = []
+    for q, c in rows:
+        if q not in seen:
+            seen.add(q)
+            result.append((q, c or ""))
+    result.sort(key=lambda x: _QUALITY_ORDER.index(x[0]) if x[0] in _QUALITY_ORDER else 99)
+    return result
+
+
 def get_file_by_message_id_and_channel_id_sync(channel_id: int, message_id: int):
     conn   = _get_conn()
     cursor = conn.cursor()
@@ -474,8 +501,8 @@ def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
         cursor.execute("""
             INSERT OR IGNORE INTO files
             (channel_id, message_id, file_name, normalized_name,
-             season, episode, quality, language, file_id, media_type, caption)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             season, episode, quality, language, file_id, media_type, caption, codec)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             file_doc["channel_id"],
             file_doc["message_id"],
@@ -488,6 +515,7 @@ def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
             file_doc.get("file_id"),
             file_doc.get("media_type", "document"),
             file_doc.get("caption", ""),
+            file_doc.get("codec", ""),
         ))
 
         inserted = cursor.rowcount
