@@ -8,6 +8,12 @@ FIXES:
   4. All sync functions use _get_conn() from pool instead of sqlite3.connect() each time
   5. Cache cleared only on writes (not reads) — lru_cache stays warm
   6. media_type column added to schema (was missing, caused KeyError on delivery)
+  7. CODEC FIX: get_unique_qualities_with_codec_sync now orders by non-empty codec first
+     so the best codec label always wins when deduplicating by quality
+  8. CODEC FIX: save_file_to_sql_sync uses INSERT ... ON CONFLICT DO UPDATE so
+     re-indexing updates stale empty-codec rows instead of silently ignoring them
+  9. CODEC FIX: repair_codec_from_filenames_sync() backfills codec for all existing
+     rows that were indexed before codec detection was added
 """
 
 import asyncio
@@ -46,8 +52,6 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
-# ── Junk-word cleanup ─────────────────────────────────────────
-
 # ── Normalizer regexes (mirrors cyber_index.py exactly) ──────
 _SE_RE_SQL        = re.compile(r"[sS](\d{1,3})[._\-\s]*[eE](\d{1,3})", re.IGNORECASE)
 _SEASON_ONLY_SQL  = re.compile(r"\b(?:season[\s._\-]*\d{1,3}|[sS]\d{1,3})\b", re.IGNORECASE)
@@ -69,14 +73,28 @@ _JUNK_SQL         = re.compile(r"""
     pack|collection|set|vol|volume|episode|ep|season|mkv|mp4|avi|mov)\b
 """, re.IGNORECASE | re.VERBOSE)
 
+# ── Codec regexes — used for backfill repair ──────────────────
+_CODEC_MAP_SQL = [
+    (re.compile(r"H\.?265|HEVC|x265", re.IGNORECASE), "H.265"),
+    (re.compile(r"H\.?264|AVC|x264",  re.IGNORECASE), "H.264"),
+    (re.compile(r"\bAV1\b",           re.IGNORECASE), "AV1"),
+    (re.compile(r"\bVP9\b",           re.IGNORECASE), "VP9"),
+    (re.compile(r"HDR|DOVI|Dolby.?Vision", re.IGNORECASE), "HDR"),
+]
+
+
+def _parse_codec_from_filename(file_name: str) -> str:
+    """Extract codec label from a raw filename. Returns '' if not found."""
+    for pattern, label in _CODEC_MAP_SQL:
+        if pattern.search(file_name or ""):
+            return label
+    return ""
+
 
 def _normalized_series_from_filename(file_name: str) -> str:
     """
     Identical logic to cyber_index._normalized_series_name().
     Used during migration so normalized_name is consistent.
-
-    Cut-point priority: SxxExx > Sxx > Exx
-    Also strips: Part N, bare numbers, leading ALL-CAPS channel tags.
     """
     if not file_name:
         return ""
@@ -111,6 +129,7 @@ def _normalized_series_from_filename(file_name: str) -> str:
     if len(parts) > 4:
         parts = parts[:4]
     return " ".join(parts).title()
+
 
 def _extract_language_local(file_name: str) -> str:
     name = (file_name or "").upper()
@@ -159,7 +178,7 @@ def create_sql_schema(conn):
         )
     """)
 
-    # FIX: add media_type column if upgrading from old schema
+    # Auto-migration: add columns if upgrading from old schema
     cursor.execute("PRAGMA table_info(files)")
     existing_cols = {row[1] for row in cursor.fetchall()}
     if "media_type" not in existing_cols:
@@ -221,6 +240,12 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
     for doc in mongo_docs:
         fn         = doc.get("file_name", "") or ""
         normalized = _normalized_series_from_filename(fn)
+
+        # CODEC FIX: if Mongo doc has no codec, parse it from filename now
+        codec = doc.get("codec", "") or ""
+        if not codec:
+            codec = _parse_codec_from_filename(fn)
+
         batch.append((
             doc.get("channel_id"),
             doc.get("message_id"),
@@ -233,7 +258,7 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
             doc.get("file_id"),
             doc.get("media_type", "document"),
             doc.get("caption", ""),
-            doc.get("codec", ""),
+            codec,
         ))
 
         if len(batch) >= BATCH_SIZE:
@@ -256,8 +281,8 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
         cursor.executemany("""
             INSERT OR IGNORE INTO files
             (channel_id, message_id, file_name, normalized_name,
-             season, episode, quality, language, file_id, media_type, caption)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             season, episode, quality, language, file_id, media_type, caption, codec)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, batch)
         conn.commit()
         total += len(batch)
@@ -282,6 +307,48 @@ def repair_normalized_names_in_sqlite_sync(logger):
         logger.info(f"🛠️ Repaired {len(updates)} normalized_name rows.")
 
 
+def repair_codec_from_filenames_sync(logger):
+    """
+    One-time repair: re-parse codec from file_name for all rows where codec
+    is empty string or NULL. Safe to run on every boot — skips rows that
+    already have a codec value.
+
+    This fixes all files that were indexed before codec detection was added.
+    e.g.  '[ss™] Man.Vs.Bee.S01E03.720p.x265.mkv'  →  codec = 'H.265'
+    """
+    conn   = _get_conn()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT rowid, file_name FROM files WHERE codec = '' OR codec IS NULL"
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        logger.info("[CODEC REPAIR] All rows already have codec — nothing to do.")
+        return
+
+    updates = []
+    for rowid, file_name in rows:
+        codec = _parse_codec_from_filename(file_name or "")
+        if codec:
+            updates.append((codec, rowid))
+
+    if updates:
+        cursor.executemany(
+            "UPDATE files SET codec = ? WHERE rowid = ?", updates
+        )
+        conn.commit()
+        clear_all_caches()
+        logger.info(
+            f"[CODEC REPAIR] Backfilled codec for {len(updates)} / {len(rows)} rows."
+        )
+    else:
+        logger.info(
+            f"[CODEC REPAIR] {len(rows)} rows have empty codec but no codec "
+            f"detectable from filename (e.g. documents, audio)."
+        )
+
+
 # ── Queries ───────────────────────────────────────────────────
 
 _QUALITY_ORDER = ["4K", "1080P", "720P", "480P", "360P", "UNKNOWN"]
@@ -300,10 +367,10 @@ def get_series_summary_sync(series_name: str):
         ORDER BY season ASC
     """, (series_name,))
 
-    rows      = cursor.fetchall()
-    languages = set()
-    seasons   = []
-    qualities = set()
+    rows         = cursor.fetchall()
+    languages    = set()
+    seasons      = []
+    qualities    = set()
     seen_seasons = set()
 
     for row in rows:
@@ -342,7 +409,7 @@ def search_series_sync(query: str):
     for r in cursor.fetchall():
         unique_results.add(r[0])
 
-    search_words       = q.split()
+    search_words        = q.split()
     full_phrase_pattern = "%" + "%".join(search_words) + "%"
     cursor.execute("""
         SELECT DISTINCT normalized_name FROM files
@@ -354,7 +421,7 @@ def search_series_sync(query: str):
     final = list(unique_results)
 
     def sort_key(name):
-        n = name.lower()
+        n  = name.lower()
         ql = q.lower()
         return (not n.startswith(ql), ql not in n, abs(len(n) - len(ql)), len(n))
 
@@ -438,23 +505,40 @@ def get_unique_qualities_by_lang_season_sync(series_name: str, language: str, se
 def get_unique_qualities_with_codec_sync(series_name: str, language: str, season: int):
     """
     Returns list of (quality, codec) tuples for button display.
-    e.g. [("1080P", "H.265"), ("720P", "H.264"), ("720P", "")]
-    Deduped and sorted by quality order.
+    e.g. [("1080P", "H.265"), ("720P", "H.264"), ("480P", "")]
+
+    CODEC FIX: rows are ordered so non-empty codec comes first within each
+    quality group. The dedup (seen set) then always picks the best-codec row,
+    never the stale empty-codec row from before codec detection was added.
+
+    Sort order:
+      1. quality rank  (4K → 1080P → 720P …)
+      2. codec present (non-empty first)
+      3. codec alpha   (deterministic tie-break between e.g. H.264 vs H.265)
     """
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT DISTINCT quality, codec FROM files
+        SELECT DISTINCT quality, codec
+        FROM files
         WHERE normalized_name = ? AND language = ? AND season = ?
+        ORDER BY
+            quality ASC,
+            CASE WHEN codec IS NOT NULL AND codec != '' THEN 0 ELSE 1 END ASC,
+            codec ASC
     """, (series_name, language, season))
     rows = cursor.fetchall()
-    seen = set()
+
+    seen   = set()
     result = []
     for q, c in rows:
         if q not in seen:
             seen.add(q)
             result.append((q, c or ""))
-    result.sort(key=lambda x: _QUALITY_ORDER.index(x[0]) if x[0] in _QUALITY_ORDER else 99)
+
+    result.sort(
+        key=lambda x: _QUALITY_ORDER.index(x[0]) if x[0] in _QUALITY_ORDER else 99
+    )
     return result
 
 
@@ -473,8 +557,6 @@ def episode_exists_sync(normalized_name: str, season: int, episode: int,
     """
     Check if an episode slot is already filled.
     Returns True if ANY file with this series+season+episode+quality+language exists.
-    Used as a fast pre-check before attempting to save — avoids duplicate inserts
-    even when channel_id/message_id differ (re-uploads, mirrors, etc.).
     """
     conn   = _get_conn()
     cursor = conn.cursor()
@@ -491,6 +573,19 @@ def episode_exists_sync(normalized_name: str, season: int, episode: int,
 
 
 def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
+    """
+    CODEC FIX: uses INSERT … ON CONFLICT DO UPDATE instead of INSERT OR IGNORE.
+
+    On conflict by (channel_id, message_id) OR by content-identity
+    (normalized_name, season, episode, quality, language):
+      - codec      is updated only if the new value is non-empty
+                   (never overwrites a real codec with an empty string)
+      - media_type is updated only if the new value is non-empty
+      - file_id    is always refreshed (Telegram file_ids can rotate)
+
+    This means re-indexing a file will backfill a missing codec without
+    clobbering any field that is already correctly set.
+    """
     try:
         conn   = _get_conn()
         cursor = conn.cursor()
@@ -498,11 +593,39 @@ def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
         normalized = (file_doc.get("normalized_name") or "").strip().lower()
         file_doc["normalized_name"] = normalized
 
+        # If caller didn't detect a codec, try to parse it from the filename
+        # as a last-resort so we never write empty when the info is available.
+        codec = (file_doc.get("codec") or "").strip()
+        if not codec:
+            codec = _parse_codec_from_filename(file_doc.get("file_name", ""))
+        file_doc["codec"] = codec
+
         cursor.execute("""
-            INSERT OR IGNORE INTO files
-            (channel_id, message_id, file_name, normalized_name,
-             season, episode, quality, language, file_id, media_type, caption, codec)
+            INSERT INTO files
+                (channel_id, message_id, file_name, normalized_name,
+                 season, episode, quality, language, file_id,
+                 media_type, caption, codec)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(channel_id, message_id) DO UPDATE SET
+                file_id    = excluded.file_id,
+                codec      = CASE
+                                 WHEN excluded.codec != '' THEN excluded.codec
+                                 ELSE codec
+                             END,
+                media_type = CASE
+                                 WHEN excluded.media_type != '' THEN excluded.media_type
+                                 ELSE media_type
+                             END
+            ON CONFLICT(normalized_name, season, episode, quality, language) DO UPDATE SET
+                file_id    = excluded.file_id,
+                codec      = CASE
+                                 WHEN excluded.codec != '' THEN excluded.codec
+                                 ELSE codec
+                             END,
+                media_type = CASE
+                                 WHEN excluded.media_type != '' THEN excluded.media_type
+                                 ELSE media_type
+                             END
         """, (
             file_doc["channel_id"],
             file_doc["message_id"],
@@ -515,16 +638,13 @@ def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
             file_doc.get("file_id"),
             file_doc.get("media_type", "document"),
             file_doc.get("caption", ""),
-            file_doc.get("codec", ""),
+            file_doc["codec"],
         ))
 
-        inserted = cursor.rowcount
         conn.commit()
-
-        if inserted:
-            clear_all_caches()
-
-        return bool(inserted)
+        # rowcount is 1 for INSERT, 1 for UPDATE — both count as "processed"
+        clear_all_caches()
+        return True
 
     except Exception as e:
         logger.error(f"save_file_to_sql_sync error: {e}")
@@ -550,8 +670,10 @@ def delete_all_files_sync():
 
 def delete_one_file_sync(channel_id: int, msg_id: int):
     conn = _get_conn()
-    conn.execute("DELETE FROM files WHERE channel_id = ? AND message_id = ?",
-                 (channel_id, msg_id))
+    conn.execute(
+        "DELETE FROM files WHERE channel_id = ? AND message_id = ?",
+        (channel_id, msg_id)
+    )
     conn.commit()
     clear_all_caches()
 
@@ -564,10 +686,6 @@ def get_total_files_sync():
 
 
 def get_total_series_sync() -> int:
-    """
-    Returns the count of distinct normalized_name values in SQLite.
-    Each distinct name = one "batched series" (e.g. Dark, Stranger Things).
-    """
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(DISTINCT normalized_name) FROM files")
@@ -575,10 +693,6 @@ def get_total_series_sync() -> int:
 
 
 def get_all_series_sync() -> list:
-    """
-    Returns all distinct normalized_name values sorted alphabetically.
-    Used by /listbatch command.
-    """
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
