@@ -534,3 +534,69 @@ async def clear_pending_delivery(user_id: int):
             logger.error(f"clear_pending_delivery error: {e}")
 
     await asyncio.to_thread(_sync)
+
+
+# ─────────────────────────────────────────────────────────────
+# NORMALIZED NAME REPAIR  (run once after normalizer upgrade)
+# ─────────────────────────────────────────────────────────────
+
+async def repair_normalized_names_in_mongo():
+    """
+    Re-compute normalized_name for every document in both Mongo
+    file DBs using the current (improved) normalizer and write
+    back only rows that changed.
+
+    Called from initialize_sql_db() path in main.py so it runs
+    automatically on the first restart after the normalizer update.
+    Safe to run multiple times — no-ops when names are already correct.
+    """
+    from utils.sqlite_db import _normalized_series_from_filename  # shared normalizer
+
+    def _repair_col(col):
+        updated = 0
+        skipped = 0
+        try:
+            docs = list(col.find({}, {"_id": 1, "file_name": 1, "normalized_name": 1}))
+        except Exception as e:
+            logger.error(f"repair_normalized_names_in_mongo: fetch error ({col.full_name}): {e}")
+            return 0, 0
+
+        bulk = []
+        for doc in docs:
+            file_name = doc.get("file_name") or ""
+            old_norm  = doc.get("normalized_name") or ""
+            new_norm  = _normalized_series_from_filename(file_name).lower()
+            if new_norm and new_norm != old_norm:
+                from pymongo import UpdateOne
+                bulk.append(UpdateOne(
+                    {"_id": doc["_id"]},
+                    {"$set": {"normalized_name": new_norm}},
+                ))
+
+        if bulk:
+            try:
+                result = col.bulk_write(bulk, ordered=False)
+                updated = result.modified_count
+            except Exception as e:
+                logger.error(f"repair_normalized_names_in_mongo: bulk_write error ({col.full_name}): {e}")
+        else:
+            skipped = len(docs)
+
+        return updated, skipped
+
+    def _sync():
+        total_updated = 0
+        for col in (files_collection_1, files_collection_2):
+            u, s = _repair_col(col)
+            logger.info(
+                f"[REPAIR] {col.full_name}: "
+                f"updated={u}, already_correct={s}"
+            )
+            total_updated += u
+        if total_updated:
+            clear_all_caches()
+        return total_updated
+
+    total = await asyncio.to_thread(_sync)
+    logger.info(f"[REPAIR] MongoDB normalized_name repair done. Total updated: {total}")
+    return total
