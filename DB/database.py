@@ -15,11 +15,11 @@ On live index:
   - save_file_to_db(file_doc, target="both"|"db1"|"db2")
   - Writes to the selected MongoDB file DBs + always writes to SQLite
 
-New env vars required in config.py:
-  MONGO_URI_CONFIG   — config/state/user data
-  MONGO_URI_DB1      — file store 1
-  MONGO_URI_DB2      — file store 2
-  (MONGO_URI kept as alias → CONFIG if you don't separate yet)
+CODEC FIX (this version):
+  - initialize_sql_db() now calls repair_codec_from_filenames_sync() after migration
+    to backfill codec for every row that was indexed before codec detection existed.
+  - save_file_to_db() passes through the codec field correctly.
+  - repair_normalized_names_in_mongo() left unchanged (codec repair is SQLite-only).
 """
 
 import asyncio
@@ -72,8 +72,6 @@ def _ensure_file_indexes(col):
             background=True,
             language_override="text_index_lang",
         )
-        # Content-identity unique index — prevents duplicate episodes
-        # (same series+season+episode+quality+language from different uploads)
         col.create_index(
             [
                 ("normalized_name", 1),
@@ -86,7 +84,6 @@ def _ensure_file_indexes(col):
             unique=True,
             name="content_identity_unique",
         )
-        # Keep channel+message index for lookups (non-unique now)
         col.create_index(
             [("channel_id", 1), ("message_id", 1)],
             background=True,
@@ -110,6 +107,7 @@ from .sqlite_db import (
     create_sql_schema,
     migrate_data_from_mongo_to_sql_sync,
     repair_normalized_names_in_sqlite_sync,
+    repair_codec_from_filenames_sync,          # ← NEW: codec backfill
     get_series_summary_sync,
     search_series_sync,
     get_unique_languages_by_name_sync,
@@ -140,9 +138,7 @@ class _MergedCursor:
     """
     Wraps two pymongo cursors and iterates them as one logical stream.
     Exposes count_documents() by summing both collections.
-    Used so that migrate_data_from_mongo_to_sql_sync() needs zero changes.
     """
-
     def __init__(self, col1, col2, projection):
         self._col1 = col1
         self._col2 = col2
@@ -158,14 +154,11 @@ class _MergedCursor:
             return 0
 
     def find(self, filt=None, projection=None):
-        """Yield from col1 first, then col2."""
         filt       = filt or {}
         projection = projection or self._proj
         yield from self._col1.find(filt, projection)
         yield from self._col2.find(filt, projection)
 
-    # Make the object itself iterable (migrate function calls find())
-    # We also patch count_documents on the object so the sync fn works:
     def __iter__(self):
         return self.find()
 
@@ -173,14 +166,13 @@ class _MergedCursor:
 def initialize_sql_db():
     """
     Synchronously initialises the SQL database.
-    Migrates from BOTH Mongo file collections (deduplication handled by
-    SQLite UNIQUE(channel_id, message_id) → INSERT OR IGNORE).
+    Migrates from BOTH Mongo file collections, then runs two repair passes:
+      1. normalized_name repair  — fixes series titles from old normalizer
+      2. codec repair            — backfills codec for pre-codec-detection rows
     """
     logger.info("[INIT] Starting migration from BOTH MongoDB file DBs → SQLite...")
 
-    # Build a single merged pseudo-collection
     class _Merged:
-        """Duck-types enough of pymongo Collection for migrate_data_from_mongo_to_sql_sync."""
         def count_documents(self, filt=None):
             filt = filt or {}
             return (
@@ -197,12 +189,19 @@ def initialize_sql_db():
     merged = _Merged()
     migrate_data_from_mongo_to_sql_sync(merged, create_sql_schema, logger)
 
+    # Repair 1: normalized series names
     try:
         repair_normalized_names_in_sqlite_sync(logger)
     except Exception as e:
         logger.error(f"repair_normalized_names_in_sqlite failed: {e}")
 
-    logger.info("✅ SQLite initialisation complete (dual-DB migration done).")
+    # Repair 2: codec backfill — fixes rows where codec = '' from old index runs
+    try:
+        repair_codec_from_filenames_sync(logger)
+    except Exception as e:
+        logger.error(f"repair_codec_from_filenames failed: {e}")
+
+    logger.info("✅ SQLite initialisation complete (dual-DB migration + codec repair done).")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -329,10 +328,14 @@ async def get_unique_seasons_by_name(series_name: str, language: str):
 
 async def get_unique_qualities_by_season(series_name: str, language: str, season: int):
     async with sql_db_lock:
-        return await asyncio.to_thread(get_unique_qualities_by_season_sync, series_name, language, season)
+        return await asyncio.to_thread(
+            get_unique_qualities_by_season_sync, series_name, language, season
+        )
 
 
-async def get_all_files_by_season_and_quality(series_name: str, season: int, quality: str, language: str):
+async def get_all_files_by_season_and_quality(
+    series_name: str, season: int, quality: str, language: str
+):
     async with sql_db_lock:
         return await asyncio.to_thread(
             get_all_files_by_season_and_quality_sync, series_name, season, quality, language
@@ -341,15 +344,23 @@ async def get_all_files_by_season_and_quality(series_name: str, season: int, qua
 
 async def get_unique_languages_by_season(series_name: str, season: int):
     async with sql_db_lock:
-        return await asyncio.to_thread(get_unique_languages_by_season_sync, series_name, season)
+        return await asyncio.to_thread(
+            get_unique_languages_by_season_sync, series_name, season
+        )
 
 
-async def get_unique_qualities_by_lang_season(series_name: str, language: str, season: int):
+async def get_unique_qualities_by_lang_season(
+    series_name: str, language: str, season: int
+):
     async with sql_db_lock:
-        return await asyncio.to_thread(get_unique_qualities_by_lang_season_sync, series_name, language, season)
+        return await asyncio.to_thread(
+            get_unique_qualities_by_lang_season_sync, series_name, language, season
+        )
 
 
-async def get_unique_qualities_with_codec(series_name: str, language: str, season: int):
+async def get_unique_qualities_with_codec(
+    series_name: str, language: str, season: int
+):
     """Returns list of (quality, codec) tuples for building quality buttons."""
     async with sql_db_lock:
         return await asyncio.to_thread(
@@ -364,12 +375,9 @@ async def get_file_by_message_id_and_channel_id(channel_id: int, message_id: int
         )
 
 
-async def episode_exists(normalized_name: str, season: int, episode: int,
-                         quality: str, language: str) -> bool:
-    """
-    Async wrapper — returns True if this episode slot is already filled.
-    Called from cyber_index before attempting to save.
-    """
+async def episode_exists(
+    normalized_name: str, season: int, episode: int, quality: str, language: str
+) -> bool:
     async with sql_db_lock:
         return await asyncio.to_thread(
             episode_exists_sync, normalized_name, season, episode, quality, language
@@ -383,10 +391,15 @@ async def episode_exists(normalized_name: str, season: int, episode: int,
 def _mongo_upsert(col, file_doc: dict):
     """
     Upsert one file_doc into a pymongo collection.
-    Keyed on content identity (normalized_name + season + episode + quality + language)
-    so re-uploads and mirror copies of the same episode are deduplicated.
+    Keyed on content identity (normalized_name + season + episode + quality + language).
+    Also updates codec if the new value is non-empty.
     """
     try:
+        update_fields = dict(file_doc)
+        # Never overwrite a real codec with an empty string in Mongo either
+        if not update_fields.get("codec"):
+            update_fields.pop("codec", None)   # remove key so $set won't blank it
+
         col.update_one(
             {
                 "normalized_name": file_doc["normalized_name"],
@@ -395,7 +408,10 @@ def _mongo_upsert(col, file_doc: dict):
                 "quality":         file_doc["quality"],
                 "language":        file_doc["language"],
             },
-            {"$set": file_doc},
+            {
+                "$set":         update_fields,
+                "$setOnInsert": {"codec": file_doc.get("codec", "")},
+            },
             upsert=True,
         )
         return True
@@ -435,7 +451,6 @@ async def save_file_to_db(file_doc: dict, target: str = "both"):
 
 
 async def delete_all_files():
-    """Delete all files from both Mongo file DBs + SQLite."""
     def _sync():
         for col in (files_collection_1, files_collection_2):
             try:
@@ -449,7 +464,6 @@ async def delete_all_files():
 
 
 async def delete_one_file(channel_id: int, msg_id: int):
-    """Delete single file from both Mongo file DBs + SQLite."""
     def _sync():
         filt = {"channel_id": channel_id, "message_id": msg_id}
         for col in (files_collection_1, files_collection_2):
@@ -469,24 +483,15 @@ async def get_total_files() -> int:
 
 
 async def get_total_series() -> int:
-    """
-    Returns count of distinct normalized_name values = unique series titles.
-    This is the "batched series" count shown in /total.
-    """
     async with sql_db_lock:
         return await asyncio.to_thread(get_total_series_sync)
 
 
 async def get_all_series() -> list:
-    """
-    Returns list of (normalized_name, file_count) tuples sorted alphabetically.
-    Used by /listbatch command.
-    """
     async with sql_db_lock:
         return await asyncio.to_thread(get_all_series_sync)
 
 
-# Convenience: total docs in each Mongo file DB
 async def get_total_files_per_db() -> dict:
     def _sync():
         try:
@@ -578,18 +583,14 @@ async def clear_pending_delivery(user_id: int):
 
 
 # ─────────────────────────────────────────────────────────────
-# NORMALIZED NAME REPAIR  (run once after normalizer upgrade)
+# NORMALIZED NAME REPAIR  (MongoDB — run once after normalizer upgrade)
 # ─────────────────────────────────────────────────────────────
 
 async def repair_normalized_names_in_mongo():
     """
     Re-compute normalized_name for every document in both Mongo
-    file DBs using the current (improved) normalizer and write
-    back only rows that changed.
-
-    Called from initialize_sql_db() path in main.py so it runs
-    automatically on the first restart after the normalizer update.
-    Safe to run multiple times — no-ops when names are already correct.
+    file DBs and write back only rows that changed.
+    Safe to run multiple times.
     """
     def _repair_col(col):
         updated = 0
@@ -614,10 +615,12 @@ async def repair_normalized_names_in_mongo():
 
         if bulk:
             try:
-                result = col.bulk_write(bulk, ordered=False)
-                updated = result.modified_count
+                result   = col.bulk_write(bulk, ordered=False)
+                updated  = result.modified_count
             except Exception as e:
-                logger.error(f"repair_normalized_names_in_mongo: bulk_write error ({col.full_name}): {e}")
+                logger.error(
+                    f"repair_normalized_names_in_mongo: bulk_write error ({col.full_name}): {e}"
+                )
         else:
             skipped = len(docs)
 
@@ -628,8 +631,7 @@ async def repair_normalized_names_in_mongo():
         for col in (files_collection_1, files_collection_2):
             u, s = _repair_col(col)
             logger.info(
-                f"[REPAIR] {col.full_name}: "
-                f"updated={u}, already_correct={s}"
+                f"[REPAIR] {col.full_name}: updated={u}, already_correct={s}"
             )
             total_updated += u
         if total_updated:
