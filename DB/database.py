@@ -392,13 +392,24 @@ def _mongo_upsert(col, file_doc: dict):
     """
     Upsert one file_doc into a pymongo collection.
     Keyed on content identity (normalized_name + season + episode + quality + language).
-    Also updates codec if the new value is non-empty.
+
+    CODEC FIX: $set and $setOnInsert must never touch the same field —
+    MongoDB raises error code 40 (path conflict) if they do.
+
+    Strategy:
+      - If new codec is non-empty  → include it in $set (overwrites blank, keeps good)
+      - If new codec is empty      → omit codec from $set entirely so existing value
+                                     is preserved on updates; new inserts get '' by
+                                     default from the schema.
+    No $setOnInsert used — it caused the conflict.
     """
     try:
-        update_fields = dict(file_doc)
-        # Never overwrite a real codec with an empty string in Mongo either
-        if not update_fields.get("codec"):
-            update_fields.pop("codec", None)   # remove key so $set won't blank it
+        codec = (file_doc.get("codec") or "").strip()
+
+        # Build $set — all fields always, codec only when non-empty
+        set_fields = {k: v for k, v in file_doc.items() if k != "codec"}
+        if codec:
+            set_fields["codec"] = codec
 
         col.update_one(
             {
@@ -408,10 +419,7 @@ def _mongo_upsert(col, file_doc: dict):
                 "quality":         file_doc["quality"],
                 "language":        file_doc["language"],
             },
-            {
-                "$set":         update_fields,
-                "$setOnInsert": {"codec": file_doc.get("codec", "")},
-            },
+            {"$set": set_fields},
             upsert=True,
         )
         return True
