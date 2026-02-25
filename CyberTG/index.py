@@ -54,15 +54,17 @@ from utils.cyber_filter import extract_links
 # TUNABLE CONSTANTS
 # ─────────────────────────────────────────────────────────────
 
-FETCH_BATCH_SIZE    = 200    # IDs per get_messages() call (proven safe with 0.5s delay)
-MIN_CALL_DELAY      = 0.5    # seconds between batches (matches reference implementation)
-INTRA_BATCH_PAUSE   = 0.2    # tiny pause every 20 messages within a batch
+FETCH_BATCH_SIZE    = 100    # IDs per get_messages() call — halved to reduce per-call weight
+MIN_CALL_DELAY      = 1.0    # seconds between batches — doubled from reference for safety
+INTRA_BATCH_PAUSE   = 0.3    # tiny pause every 20 messages within a batch
 SAVE_BATCH_SIZE     = 400    # accumulate docs before one DB write
 PROGRESS_EDIT_EVERY = 30     # seconds between Telegram message edits
 
 # Adaptive pacing
-_RATE_INCREASE   = 2.0    # multiply delay on FloodWait
-_RATE_DECAY      = 0.95   # multiply delay each clean call (slow recovery)
+# On FloodWait: delay jumps to fw.value territory (already slept), then we add
+# extra headroom so next call is slower. 4× means 1.0s → 4.0s after first FloodWait.
+_RATE_INCREASE   = 4.0    # multiply delay on FloodWait (aggressive back-off)
+_RATE_DECAY      = 0.97   # multiply delay each clean call (slow recovery)
 _MAX_CALL_DELAY  = 120.0  # cap
 
 INDEX_SKIP_ID_KEY = "INDEX_SKIP_ID"
