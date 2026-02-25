@@ -1,26 +1,26 @@
 """
-index.py — iter_messages EDITION
-==================================
+index.py — BOT-SAFE EDITION
+==============================
 
-STRATEGY CHANGE: iter_messages instead of get_messages(id_list)
-----------------------------------------------------------------
-Previous approach: get_messages(chat_id, [id1, id2, ..., id200])
-  → Uses GetMessages MTProto call with ID list
-  → Telegram counts each ID individually against rate limit
-  → 200 IDs = 200 rate-limit units → instant FloodWait on large channels
+STRATEGY: get_messages(id_list) with small batches + mandatory pacing
+-----------------------------------------------------------------------
+Bots cannot use messages.GetHistory — only user accounts can.
+Bots must use messages.GetMessages with explicit ID lists.
 
-New approach: bot.get_history(chat_id, limit=100, offset_id=X)
-  → Uses messages.getHistory MTProto call (offset-based pagination)
-  → This is how Telegram clients fetch chat history natively
-  → Telegram rate limit is PER CALL (not per message)
-  → 100 messages per call, ~1 call/second = sustainable throughput
+The FloodWait was caused by fetching 200 IDs per call — too heavy.
 
-ARCHITECTURE:
-  - Sequential history pages (offset-based, no parallelism needed)
-  - Each page: up to 100 messages, one API call
-  - Mandatory MIN_PAGE_DELAY between calls (starts 1.2s, adapts on FloodWait)
-  - DB save batched every SAVE_BATCH_SIZE docs (single bulk_write)
-  - Progress, cancel, resume, Yes/No restart prompt all preserved
+SOLUTION:
+  - Fetch 50 IDs per call (not 200) — 4× lighter per request
+  - Mandatory MIN_CALL_DELAY (1.5s) between every single API call
+  - Adaptive: FloodWait → delay grows, clean calls → delay decays
+  - No parallelism — one call at a time, steady and safe
+
+THROUGHPUT ESTIMATE:
+  50 IDs × (1 / 1.5s) = ~33 IDs/second = ~2000 IDs/minute
+  For 500k IDs ≈ 4 hours  (vs hanging forever with FloodWaits)
+  For 50k  IDs ≈ 25 minutes
+
+All other features preserved: progress, cancel, resume, Yes/No restart.
 """
 
 import asyncio
@@ -54,15 +54,15 @@ from utils.cyber_filter import extract_links
 # TUNABLE CONSTANTS
 # ─────────────────────────────────────────────────────────────
 
-PAGE_SIZE           = 100    # messages per get_history() call (Telegram max is 100)
-MIN_PAGE_DELAY      = 1.2    # minimum seconds between API calls (safe for Telegram)
-SAVE_BATCH_SIZE     = 500    # accumulate this many docs before one DB write
+FETCH_BATCH_SIZE    = 50     # IDs per get_messages() call — keep small to avoid FloodWait
+MIN_CALL_DELAY      = 1.5    # seconds between every API call (mandatory floor)
+SAVE_BATCH_SIZE     = 300    # accumulate docs before one DB write
 PROGRESS_EDIT_EVERY = 30     # seconds between Telegram message edits
 
-# Adaptive rate
-_RATE_INCREASE   = 3.0   # multiply delay on FloodWait
-_RATE_DECAY      = 0.97  # multiply delay each clean page (slow recovery)
-_MAX_PAGE_DELAY  = 120.0 # never wait more than this between pages
+# Adaptive pacing
+_RATE_INCREASE   = 3.0    # multiply delay on FloodWait
+_RATE_DECAY      = 0.98   # multiply delay each clean call (slow recovery)
+_MAX_CALL_DELAY  = 120.0  # cap
 
 INDEX_SKIP_ID_KEY = "INDEX_SKIP_ID"
 INDEX_STATUS_KEY  = "CURRENT_INDEX_TASK"
@@ -122,24 +122,21 @@ async def safe_edit(msg: Message, text: str, **kwargs):
 
 def _build_progress_text(
     *,
-    current_id: int,
+    current: int,
     start_id: int,
     last_id: int,
-    total_fetched: int,
+    total_checked: int,
     total_saved: int,
     total_skipped: int,
     total_duplicate: int,
-    page_count: int,
+    call_count: int,
     target_label: str,
     floodwait_count: int,
-    page_delay: float,
+    call_delay: float,
     status_line: str = "⚡ Indexing...",
 ) -> str:
     total_range = max(last_id - start_id, 1)
-    pct = min(((start_id + total_fetched - start_id) / total_range) * 100, 100.0)
-    # Better estimate: use current_id position
-    pct = min(((current_id - start_id) / total_range) * 100, 100.0)
-
+    pct = min(((current - start_id) / total_range) * 100, 100.0)
     filled = int(pct / 5)
     bar    = "█" * filled + "░" * (20 - filled)
 
@@ -147,10 +144,9 @@ def _build_progress_text(
         f"{status_line}",
         f"",
         f"[{bar}] **{pct:.1f}%**",
-        f"ID: `{current_id}` / `{last_id}`",
+        f"ID: `{current}` / `{last_id}`",
         f"",
-        f"📄 **Pages**     : `{page_count}` × {PAGE_SIZE} msgs",
-        f"📦 **Fetched**   : `{total_fetched:,}` messages",
+        f"📦 **Checked**   : `{total_checked:,}` IDs  (`{call_count}` calls)",
         f"✅ **Saved**     : `{total_saved:,}` files",
         f"⏭ **Skipped**   : `{total_skipped:,}`",
         f"🔁 **Duplicate** : `{total_duplicate:,}`",
@@ -161,10 +157,9 @@ def _build_progress_text(
 
     lines += [
         f"",
-        f"⏱ **Pace**    : `{page_delay:.1f}s` / page",
+        f"⏱ **Pace**    : `{call_delay:.1f}s` / call  ({FETCH_BATCH_SIZE} IDs/call)",
         f"🎯 **Target** : `{target_label}`",
     ]
-
     return "\n".join(lines)
 
 
@@ -175,7 +170,47 @@ def _cancel_kb() -> InlineKeyboardMarkup:
 
 
 # ─────────────────────────────────────────────────────────────
-# CORE INDEX ENGINE — iter_messages / get_history based
+# SINGLE BATCH FETCH  (with retry)
+# ─────────────────────────────────────────────────────────────
+
+async def _fetch_batch(
+    bot: Client,
+    chat_id: int,
+    id_window: list[int],
+    call_delay: list,        # mutable [float]
+    floodwait_count: list,   # mutable [int]
+) -> list:
+    """
+    Fetch one window of message IDs.
+    On FloodWait: sleep required time, grow call_delay, retry.
+    Returns list of Message objects (may be empty on persistent error).
+    """
+    for _attempt in range(4):
+        try:
+            msgs = await bot.get_messages(chat_id, id_window)
+            if not isinstance(msgs, list):
+                msgs = [msgs]
+            return msgs
+        except FloodWait as fw:
+            floodwait_count[0] += 1
+            call_delay[0] = min(call_delay[0] * _RATE_INCREASE, _MAX_CALL_DELAY)
+            logger.warning(
+                f"[INDEX] FloodWait — call_delay → {call_delay[0]:.1f}s"
+            )
+            await safe_floodwait_sleep(fw)
+        except ChannelPrivate:
+            logger.error(f"[INDEX] Channel {chat_id} is private/inaccessible.")
+            return []
+        except Exception as e:
+            logger.error(f"[INDEX] get_messages error (attempt {_attempt+1}): {e}")
+            await asyncio.sleep(5)
+
+    logger.warning("[INDEX] 4 fetch attempts failed — skipping window.")
+    return []
+
+
+# ─────────────────────────────────────────────────────────────
+# CORE INDEX ENGINE
 # ─────────────────────────────────────────────────────────────
 
 async def index_files_task(
@@ -191,7 +226,7 @@ async def index_files_task(
     chat_key     = f"index_{chat_id}"
     target_label = {"db1": "DB1 only", "db2": "DB2 only", "both": "DB1 + DB2"}.get(target, target)
 
-    # ── Resume: start from last checkpoint ───────────────────
+    # ── Resume from checkpoint ────────────────────────────────
     last_processed = await get_bot_state(chat_key)
     skip_raw = await get_global_setting(INDEX_SKIP_ID_KEY, 0)
     try:
@@ -206,49 +241,45 @@ async def index_files_task(
         except Exception:
             pass
 
-    resume_from_id = max(candidates)
+    current = max(candidates)
 
     await set_global_setting(
         INDEX_STATUS_KEY,
         f"RUNNING|{chat_id}|{start_id}|{last_id}|{target}",
     )
 
-    # Cache CAPTION_LANG once
+    # Cache CAPTION_LANG once (eliminates per-doc MongoDB call)
     caption_lang_flag = await get_global_setting("CAPTION_LANG", True)
     set_caption_lang_cache(bool(caption_lang_flag))
     logger.info(f"[INDEX] CAPTION_LANG cached: {caption_lang_flag}")
 
     # Counters
-    total_fetched   = 0
+    total_checked   = 0
     total_saved     = 0
     total_skipped   = 0
     total_duplicate = 0
-    page_count      = 0
-    floodwait_count = 0
-    current_id      = resume_from_id
+    call_count      = 0
+    floodwait_count = [0]
+    call_delay      = [MIN_CALL_DELAY]
 
-    # Adaptive delay
-    page_delay = MIN_PAGE_DELAY
-
-    # Progress throttle
-    last_edit_time = [0.0]
+    last_edit_time  = [0.0]
 
     async def push_progress(force: bool = False, status_line: str = "⚡ Indexing..."):
         now = time.monotonic()
         if not force and (now - last_edit_time[0]) < PROGRESS_EDIT_EVERY:
             return
         text = _build_progress_text(
-            current_id=current_id,
+            current=current,
             start_id=start_id,
             last_id=last_id,
-            total_fetched=total_fetched,
+            total_checked=total_checked,
             total_saved=total_saved,
             total_skipped=total_skipped,
             total_duplicate=total_duplicate,
-            page_count=page_count,
+            call_count=call_count,
             target_label=target_label,
-            floodwait_count=floodwait_count,
-            page_delay=page_delay,
+            floodwait_count=floodwait_count[0],
+            call_delay=call_delay[0],
             status_line=status_line,
         )
         await safe_edit(
@@ -261,118 +292,60 @@ async def index_files_task(
     await push_progress(force=True)
 
     doc_buffer:     list[dict] = []
-    last_checkpoint = resume_from_id
+    last_checkpoint = current
 
     total_range = max(last_id - start_id, 1)
+    total_calls = (total_range + FETCH_BATCH_SIZE - 1) // FETCH_BATCH_SIZE
     logger.info(
-        f"[INDEX] iter_messages mode: chat={chat_id} "
-        f"from_id={resume_from_id} → {last_id} "
-        f"({total_range:,} IDs), page={PAGE_SIZE}, delay={page_delay}s"
+        f"[INDEX] Starting: chat={chat_id} from={current} → {last_id} "
+        f"({total_range:,} IDs, ~{total_calls} calls, "
+        f"{FETCH_BATCH_SIZE} IDs/call, {MIN_CALL_DELAY}s/call)"
     )
 
     try:
-        # ── offset_id: Telegram returns messages OLDER than this ID ──
-        # We want messages from resume_from_id up to last_id.
-        # Strategy: start at last_id and page backwards using offset_id.
-        # Stop when the oldest message in the page is < resume_from_id.
-        #
-        # BUT we want ascending order for saving (so checkpoints are meaningful).
-        # So we collect pages into a list, then reverse for processing.
-        #
-        # More efficient: page forward using add_offset trick — but Pyrogram's
-        # get_history does not support forward direction directly.
-        # Instead we use offset_id = last_id+1 and page backward naturally,
-        # filtering out IDs < resume_from_id.
+        while current <= last_id:
 
-        offset_id = last_id + 1   # start just above last_id, page backwards
+            # ── Build ID window ───────────────────────────────
+            window_end = min(current + FETCH_BATCH_SIZE - 1, last_id)
+            id_window  = list(range(current, window_end + 1))
 
-        while True:
-            # ── Fetch one page ────────────────────────────────
-            # ── Fetch one page via get_chat_history (async generator) ──
-            # Pyrogram 2.x: get_chat_history returns AsyncGenerator.
-            # We collect up to PAGE_SIZE messages with offset_id to page backwards.
-            messages = []
-            fetch_ok = False
-            for _attempt in range(3):
-                try:
-                    async for msg in bot.get_chat_history(
-                        chat_id,
-                        limit=PAGE_SIZE,
-                        offset_id=offset_id,
-                    ):
-                        messages.append(msg)
-                    fetch_ok = True
-                    break
-                except FloodWait as fw:
-                    floodwait_count += 1
-                    page_delay = min(page_delay * _RATE_INCREASE, _MAX_PAGE_DELAY)
-                    logger.warning(
-                        f"[INDEX] FloodWait — page_delay → {page_delay:.1f}s"
-                    )
-                    await safe_floodwait_sleep(fw)
-                except ChannelPrivate:
-                    logger.error(f"[INDEX] Channel {chat_id} is private.")
-                    raise asyncio.CancelledError
-                except Exception as e:
-                    logger.error(f"[INDEX] get_chat_history error (attempt {_attempt+1}): {e}")
-                    await asyncio.sleep(5)
+            # ── Fetch ─────────────────────────────────────────
+            prev_fw = floodwait_count[0]
+            msgs    = await _fetch_batch(bot, chat_id, id_window, call_delay, floodwait_count)
+            call_count += 1
 
-            if not fetch_ok and not messages:
-                logger.warning("[INDEX] 3 consecutive fetch failures — stopping.")
-                break
+            # Adapt delay based on whether FloodWait occurred
+            if floodwait_count[0] > prev_fw:
+                # FloodWait happened — delay already grown inside _fetch_batch
+                pass
+            else:
+                # Clean call — slowly recover toward MIN_CALL_DELAY
+                call_delay[0] = max(call_delay[0] * _RATE_DECAY, MIN_CALL_DELAY)
 
-            if not messages:
-                logger.info("[INDEX] No more messages returned — index complete.")
-                break
-
-            page_count  += 1
-            page_fetched = 0
-            page_skipped = 0
-
-            for msg in messages:
+            # ── Parse media messages ──────────────────────────
+            for msg in msgs:
                 if msg is None or msg.empty:
                     continue
-
-                msg_id = msg.id
-
-                # Skip messages outside our target range
-                if msg_id > last_id:
-                    continue
-                if msg_id < resume_from_id:
-                    # All subsequent messages will be older — stop
-                    offset_id = -1  # sentinel to break outer loop
-                    break
-
-                page_fetched += 1
-
                 if not (msg.document or msg.video or msg.audio):
-                    page_skipped += 1
+                    total_skipped += 1
                     continue
-
                 doc = await parse_message_to_doc(msg)
                 if doc is not None:
                     doc_buffer.append(doc)
                 else:
-                    page_skipped += 1
+                    total_skipped += 1
 
-            total_fetched += page_fetched
-            total_skipped += page_skipped
+            total_checked += len(id_window)
+            current        = window_end + 1
 
-            # Move offset_id to oldest message in this page
-            if messages and offset_id != -1:
-                oldest_id = min(m.id for m in messages if m and not m.empty)
-                offset_id = oldest_id
-                current_id = oldest_id
-            else:
-                # Hit the resume boundary — done
-                current_id = resume_from_id
-                break
+            # ── Checkpoint ────────────────────────────────────
+            if current != last_checkpoint:
+                await save_bot_state(chat_key, current)
+                last_checkpoint = current
 
-            # Checkpoint
-            await save_bot_state(chat_key, current_id)
-
-            # ── Bulk save when buffer full ────────────────────
-            if len(doc_buffer) >= SAVE_BATCH_SIZE:
+            # ── Bulk save ─────────────────────────────────────
+            is_last = current > last_id
+            if len(doc_buffer) >= SAVE_BATCH_SIZE or (is_last and doc_buffer):
                 to_save, n_dup = await batch_dedup_check(doc_buffer)
                 total_duplicate += n_dup
                 if to_save:
@@ -386,66 +359,49 @@ async def index_files_task(
                         )
                 doc_buffer.clear()
 
-            # ── Console log every 10 pages ────────────────────
-            if page_count % 10 == 0:
-                pct = min(((start_id + total_fetched) / total_range) * 100, 100.0)
+            # ── Console log every 100 calls ───────────────────
+            if call_count % 100 == 0:
+                pct = ((current - start_id) / total_range) * 100
                 logger.info(
-                    f"[INDEX] page={page_count} fetched={total_fetched} "
+                    f"[INDEX] call={call_count} checked={total_checked:,} "
                     f"saved={total_saved} dup={total_duplicate} "
-                    f"skip={total_skipped} delay={page_delay:.2f}s id~{current_id}"
+                    f"skip={total_skipped} {pct:.1f}% delay={call_delay[0]:.2f}s"
                 )
 
-            # ── Progress edit ─────────────────────────────────
+            # ── Progress edit (30s throttle) ──────────────────
             await push_progress()
 
-            # ── Adaptive inter-page delay ─────────────────────
-            page_delay = max(page_delay * _RATE_DECAY, MIN_PAGE_DELAY)
-            await asyncio.sleep(page_delay)
+            # ── Mandatory inter-call delay ────────────────────
+            await asyncio.sleep(call_delay[0])
 
-            # ── Yield event loop every 20 pages ──────────────
-            if page_count % 20 == 0:
+            # ── Yield event loop every 200 calls ─────────────
+            if call_count % 200 == 0:
                 gc.collect()
                 await asyncio.sleep(0)
-
-            if offset_id == -1:
-                break
-
-        # ── Flush remaining buffer ────────────────────────────
-        if doc_buffer:
-            to_save, n_dup = await batch_dedup_check(doc_buffer)
-            total_duplicate += n_dup
-            if to_save:
-                saved = await batch_save_file_docs(to_save, target=target)
-                total_saved += saved
-            doc_buffer.clear()
 
         # ── Done ──────────────────────────────────────────────
         await save_bot_state(chat_key, None)
 
         final_text = (
             f"✅ **Index Complete!**\n\n"
-            f"📄 **Pages**     : `{page_count}` × {PAGE_SIZE} msgs\n"
-            f"📦 **Fetched**   : `{total_fetched:,}` messages\n"
+            f"📦 **Checked**   : `{total_checked:,}` IDs\n"
             f"✅ **Saved**     : `{total_saved:,}` files\n"
             f"⏭ **Skipped**   : `{total_skipped:,}`\n"
             f"🔁 **Duplicate** : `{total_duplicate:,}`\n"
+            f"📞 **API calls** : `{call_count:,}`\n"
         )
-        if floodwait_count:
-            final_text += f"⏸ **FloodWait**  : `{floodwait_count}` times\n"
+        if floodwait_count[0]:
+            final_text += f"⏸ **FloodWait**  : `{floodwait_count[0]}` times\n"
         final_text += f"\n🎯 **Target** : `{target_label}`"
 
-        await safe_edit(
-            status_msg, final_text,
-            parse_mode=enums.ParseMode.MARKDOWN,
-        )
+        await safe_edit(status_msg, final_text, parse_mode=enums.ParseMode.MARKDOWN)
         logger.info(
-            f"[INDEX] ✅ Done — fetched={total_fetched} saved={total_saved} "
-            f"dup={total_duplicate} skipped={total_skipped} "
-            f"pages={page_count} target={target}"
+            f"[INDEX] ✅ Done — checked={total_checked} saved={total_saved} "
+            f"dup={total_duplicate} skip={total_skipped} calls={call_count}"
         )
 
     except asyncio.CancelledError:
-        await save_bot_state(chat_key, current_id)
+        await save_bot_state(chat_key, current)
 
         if doc_buffer:
             try:
@@ -457,23 +413,18 @@ async def index_files_task(
             except Exception:
                 pass
 
-        cancel_text = (
+        await safe_edit(
+            status_msg,
             f"⛔ **Index Cancelled**\n\n"
-            f"📦 **Fetched**   : `{total_fetched:,}` messages\n"
+            f"📦 **Checked**   : `{total_checked:,}` IDs\n"
             f"✅ **Saved**     : `{total_saved:,}` files\n"
             f"⏭ **Skipped**   : `{total_skipped:,}`\n"
             f"🔁 **Duplicate** : `{total_duplicate:,}`\n"
-            f"\n⏹ Stopped at ID: `{current_id}`\n"
-            f"🎯 **Target** : `{target_label}`"
-        )
-        await safe_edit(
-            status_msg, cancel_text,
+            f"\n⏹ Stopped at ID: `{current}`\n"
+            f"🎯 **Target** : `{target_label}`",
             parse_mode=enums.ParseMode.MARKDOWN,
         )
-        logger.info(
-            f"[INDEX] Cancelled at id={current_id} "
-            f"saved={total_saved} dup={total_duplicate}"
-        )
+        logger.info(f"[INDEX] Cancelled at id={current} saved={total_saved}")
 
     finally:
         await set_global_setting(INDEX_STATUS_KEY, "IDLE")
@@ -482,7 +433,7 @@ async def index_files_task(
 
 
 # ─────────────────────────────────────────────────────────────
-# EFFECTIVE START CALCULATOR
+# EFFECTIVE START
 # ─────────────────────────────────────────────────────────────
 
 async def compute_effective_start(chat_id: int, default_start: int):
@@ -491,14 +442,13 @@ async def compute_effective_start(chat_id: int, default_start: int):
         skip_id = int(skip_raw)
     except Exception:
         skip_id = 0
-
     last_processed = await get_bot_state(f"index_{chat_id}")
     lp = int(last_processed) if last_processed else 0
     return max(default_start, skip_id + 1, lp)
 
 
 # ─────────────────────────────────────────────────────────────
-# REGISTER HANDLERS
+# HANDLERS
 # ─────────────────────────────────────────────────────────────
 
 def register_index_handlers(cyber: Client):
@@ -513,19 +463,19 @@ def register_index_handlers(cyber: Client):
             file = msg.document or msg.video or msg.audio or msg.photo
             if not file:
                 return
-            ok, cnt = await save_series_file_for_bulk_index(msg, target="both")
+            ok, _ = await save_series_file_for_bulk_index(msg, target="both")
             if ok:
                 from utils.cyber_index import parse_file_name
-                file_name = getattr(file, "file_name", None) or "No_Name"
-                meta      = parse_file_name(file_name)
+                fn   = getattr(file, "file_name", None) or "No_Name"
+                meta = parse_file_name(fn)
                 logger.info(
-                    f"[RTI] ✅ Saved │ {meta['normalized_name']!r} │ "
-                    f"S{meta['season']:02d}E{meta['episode']:02d} │ "
-                    f"{meta['quality']} │ {meta['language']} │ File: {file_name}"
+                    f"[RTI] ✅ {meta['normalized_name']!r} "
+                    f"S{meta['season']:02d}E{meta['episode']:02d} "
+                    f"{meta['quality']} {meta['language']} | {fn}"
                 )
             else:
-                file_name = getattr(file, "file_name", None) or "No_Name"
-                logger.debug(f"[RTI] ⏭ Skipped: {file_name}")
+                fn = getattr(file, "file_name", None) or "No_Name"
+                logger.debug(f"[RTI] ⏭ Skipped: {fn}")
         except Exception as e:
             logger.error(f"[RTI] error: {e}")
 
@@ -539,7 +489,6 @@ def register_index_handlers(cyber: Client):
         chat_id   = origin.chat.id
         last_id   = origin.message_id
         eff_start = await compute_effective_start(chat_id, 2)
-
         kb = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("📁 DB1",    callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|db1"),
@@ -553,7 +502,7 @@ def register_index_handlers(cyber: Client):
             f"📦 **Index Target?**\n"
             f"Channel: `{chat_id}`\n"
             f"Range: **{eff_start}** → **{last_id}**\n\n"
-            f"📄 `{PAGE_SIZE}` msgs/page · `{MIN_PAGE_DELAY}s` min delay\n"
+            f"⚙️ `{FETCH_BATCH_SIZE}` IDs/call · `{MIN_CALL_DELAY}s` min delay\n\n"
             f"Choose which MongoDB to write files into:",
             parse_mode=enums.ParseMode.MARKDOWN,
             reply_markup=kb,
@@ -579,7 +528,7 @@ def register_index_handlers(cyber: Client):
             f"📦 **Index Target?**\n"
             f"Channel: `{chat_id}`\n"
             f"Range: **{eff_start}** → **{last_id}**\n\n"
-            f"📄 `{PAGE_SIZE}` msgs/page · `{MIN_PAGE_DELAY}s` min delay\n"
+            f"⚙️ `{FETCH_BATCH_SIZE}` IDs/call · `{MIN_CALL_DELAY}s` min delay\n\n"
             f"Choose which MongoDB to write files into:",
             parse_mode=enums.ParseMode.MARKDOWN,
             reply_markup=kb,
@@ -592,7 +541,7 @@ def register_index_handlers(cyber: Client):
         _, chat_id, start_id, last_id, target = parts
         chat_id, start_id, last_id = int(chat_id), int(start_id), int(last_id)
         total_ids = last_id - start_id + 1
-        n_pages   = (total_ids + PAGE_SIZE - 1) // PAGE_SIZE
+        n_calls   = (total_ids + FETCH_BATCH_SIZE - 1) // FETCH_BATCH_SIZE
         label = {"db1": "📁 DB1 only", "db2": "📁 DB2 only", "both": "📁📁 DB1 + DB2"}.get(target, target)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Proceed", callback_data=f"startidx|{chat_id}|{start_id}|{last_id}|{target}")],
@@ -604,8 +553,8 @@ def register_index_handlers(cyber: Client):
                 f"Channel  : `{chat_id}`\n"
                 f"Range    : **{start_id}** → **{last_id}** ({total_ids:,} IDs)\n"
                 f"Target   : **{label}**\n"
-                f"Pages    : ~**{n_pages}** × {PAGE_SIZE} msgs\n"
-                f"Min delay: **{MIN_PAGE_DELAY}s** / page\n\n"
+                f"API Calls: ~**{n_calls:,}** × {FETCH_BATCH_SIZE} IDs\n"
+                f"Min delay: **{MIN_CALL_DELAY}s** / call\n\n"
                 f"Tap Proceed to start.",
                 parse_mode=enums.ParseMode.MARKDOWN,
                 reply_markup=kb,
@@ -617,11 +566,9 @@ def register_index_handlers(cyber: Client):
     async def start_index(bot, query):
         global index_task
         await query.answer()
-
         if index_task and not index_task.done():
             await query.answer("Index already running.", show_alert=True)
             return
-
         try:
             parts    = query.data.split("|")
             chat_id  = int(parts[1])
@@ -629,15 +576,10 @@ def register_index_handlers(cyber: Client):
             last_id  = int(parts[3])
             target   = parts[4]
         except Exception as e:
-            logger.error(f"[INDEX] start_index parse error: {e} | data={query.data!r}")
-            try:
-                await query.message.edit_text(f"❌ Failed to parse index data.\n`{query.data}`", parse_mode=enums.ParseMode.MARKDOWN)
-            except Exception:
-                pass
+            logger.error(f"[INDEX] parse error: {e}")
             return
 
         label = {"db1": "DB1 only", "db2": "DB2 only", "both": "DB1 + DB2"}.get(target, target)
-        logger.info(f"[INDEX] Starting — chat={chat_id} {start_id}→{last_id} target={target}")
 
         skip_raw = await get_global_setting(INDEX_SKIP_ID_KEY, None)
         try:
@@ -664,7 +606,7 @@ def register_index_handlers(cyber: Client):
             f"Channel: `{chat_id}`\n"
             f"Range: **{start_id}** → **{last_id}**\n"
             f"Target: **{label}**\n"
-            f"📄 `{PAGE_SIZE}` msgs/page · adaptive rate\n\n"
+            f"⚙️ `{FETCH_BATCH_SIZE}` IDs/call · adaptive delay\n\n"
             f"_Progress updates every 30 seconds..._",
             parse_mode=enums.ParseMode.MARKDOWN,
             reply_markup=_cancel_kb(),
@@ -700,7 +642,7 @@ def register_index_handlers(cyber: Client):
     async def resume_yes(bot, query):
         global index_task
         if index_task and not index_task.done():
-            await query.answer("⚠️ Index is already running!", show_alert=True)
+            await query.answer("⚠️ Index already running!", show_alert=True)
             return
         await query.answer("▶️ Resuming...")
         try:
@@ -716,7 +658,6 @@ def register_index_handlers(cyber: Client):
             except Exception:
                 pass
             return
-
         label = {"db1": "DB1 only", "db2": "DB2 only", "both": "DB1 + DB2"}.get(target, target)
         try:
             await query.message.edit_text(
@@ -730,7 +671,6 @@ def register_index_handlers(cyber: Client):
             )
         except Exception:
             pass
-
         index_task = asyncio.create_task(
             index_files_task(bot, query.message, chat_id, start_msg_id, last_msg_id, target=target)
         )
@@ -738,14 +678,14 @@ def register_index_handlers(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^resume_no$"))
     async def resume_no(bot, query):
-        await query.answer("🗑 Discarding interrupted index.")
+        await query.answer("🗑 Discarding.")
         try:
             await set_global_setting(INDEX_STATUS_KEY, "IDLE")
         except Exception:
             pass
         try:
             await query.message.edit_text(
-                "🗑 **Interrupted index discarded.**\nStart a fresh index with /index or by forwarding a message.",
+                "🗑 **Interrupted index discarded.**\nStart fresh by forwarding a message.",
                 parse_mode=enums.ParseMode.MARKDOWN,
             )
         except Exception:
