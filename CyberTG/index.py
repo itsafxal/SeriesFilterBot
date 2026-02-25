@@ -54,18 +54,19 @@ from utils.cyber_filter import extract_links
 # TUNABLE CONSTANTS
 # ─────────────────────────────────────────────────────────────
 
-FETCH_BATCH_SIZE    = 100    # IDs per call — Pyrogram handles channel rate limits internally
-MIN_CALL_DELAY      = 0.5    # small courtesy delay — Pyrogram adds its own wait if needed
-INTRA_BATCH_PAUSE   = 0.2    # pause every 20 messages within a batch
-STARTUP_DELAY       = 3.0    # brief cold-start delay
-SAVE_BATCH_SIZE     = 400    # accumulate docs before one DB write
+FETCH_BATCH_SIZE    = 200    # IDs per call — maximise each fetch since we pay per call anyway
+MIN_CALL_DELAY      = 0.0    # no artificial delay — let Telegram's FloodWait pace us naturally
+INTRA_BATCH_PAUSE   = 0.1    # tiny yield every 20 messages
+STARTUP_DELAY       = 0.0    # no startup delay needed
+SAVE_BATCH_SIZE     = 600    # accumulate docs before one DB write
 PROGRESS_EDIT_EVERY = 30     # seconds between Telegram message edits
 
-# Pyrogram's session layer handles channels.GetMessages rate limits automatically.
-# Our FloodWait handler catches any that bubble up past Pyrogram (rare).
-_RATE_INCREASE   = 2.0    # multiply delay if FloodWait reaches our handler
-_RATE_DECAY      = 0.98   # slow recovery
-_MAX_CALL_DELAY  = 60.0   # cap
+# Strategy: go as fast as Telegram allows.
+# When FloodWait hits, sleep exactly what Telegram asks, then continue.
+# No artificial slowdown — Telegram itself is the rate limiter.
+_RATE_INCREASE   = 1.0    # don't multiply — FloodWait sleep IS the penalty
+_RATE_DECAY      = 1.0    # no decay needed — no extra delay to decay
+_MAX_CALL_DELAY  = 0.0    # unused
 
 INDEX_SKIP_ID_KEY = "INDEX_SKIP_ID"
 INDEX_STATUS_KEY  = "CURRENT_INDEX_TASK"
@@ -197,11 +198,7 @@ async def _fetch_batch(
             return msgs
         except FloodWait as fw:
             floodwait_count[0] += 1
-            call_delay[0] = min(call_delay[0] * _RATE_INCREASE, _MAX_CALL_DELAY)
-            logger.warning(
-                f"[INDEX] FloodWait {fw.value}s — sleeping, "
-                f"new delay → {call_delay[0]:.1f}s"
-            )
+            logger.warning(f"[INDEX] FloodWait {fw.value}s — sleeping...")
             await asyncio.sleep(fw.value + 1)
             # retry same batch after flood wait
         except ChannelPrivate:
@@ -306,11 +303,6 @@ async def index_files_task(
         f"{FETCH_BATCH_SIZE} IDs/call, {MIN_CALL_DELAY}s/call)"
     )
 
-    # Startup delay — lets the Telegram session settle before first API call
-    # Prevents FloodWait on the very first request (cold session issue)
-    logger.info(f"[INDEX] Waiting {STARTUP_DELAY}s before first call (cold-start delay)...")
-    await asyncio.sleep(STARTUP_DELAY)
-
     try:
         while current <= last_id:
 
@@ -323,13 +315,9 @@ async def index_files_task(
             msgs    = await _fetch_batch(bot, chat_id, id_window, call_delay, floodwait_count)
             call_count += 1
 
-            # Adapt delay based on whether FloodWait occurred
-            if floodwait_count[0] > prev_fw:
-                # FloodWait happened — delay already grown inside _fetch_batch
-                pass
-            else:
-                # Clean call — slowly recover toward MIN_CALL_DELAY
-                call_delay[0] = max(call_delay[0] * _RATE_DECAY, MIN_CALL_DELAY)
+            # Rate limiting is handled entirely by Telegram's FloodWait responses.
+            # _fetch_batch sleeps exactly fw.value seconds when throttled.
+            # No artificial delay needed — Telegram itself paces us.
 
             # ── Parse media messages (intra-batch pause every 20) ───
             for i, msg in enumerate(msgs):
@@ -384,13 +372,10 @@ async def index_files_task(
             # ── Progress edit (30s throttle) ──────────────────
             await push_progress()
 
-            # ── Mandatory inter-call delay ────────────────────
-            await asyncio.sleep(call_delay[0])
-
-            # ── Yield event loop every 200 calls ─────────────
-            if call_count % 200 == 0:
+            # ── Yield event loop every 100 calls ─────────────
+            if call_count % 100 == 0:
                 gc.collect()
-                await asyncio.sleep(0)
+            await asyncio.sleep(0)  # yield to event loop every call
 
         # ── Done ──────────────────────────────────────────────
         await save_bot_state(chat_key, None)
