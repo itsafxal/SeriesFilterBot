@@ -134,6 +134,7 @@ def create_sql_schema(conn):
             language       TEXT    NOT NULL,
             file_id        TEXT,
             media_type     TEXT    DEFAULT 'document',
+            caption        TEXT    DEFAULT '',
             UNIQUE(channel_id, message_id),
             UNIQUE(normalized_name, season, episode, quality, language)
         )
@@ -144,6 +145,8 @@ def create_sql_schema(conn):
     existing_cols = {row[1] for row in cursor.fetchall()}
     if "media_type" not in existing_cols:
         cursor.execute("ALTER TABLE files ADD COLUMN media_type TEXT DEFAULT 'document'")
+    if "caption" not in existing_cols:
+        cursor.execute("ALTER TABLE files ADD COLUMN caption TEXT DEFAULT ''")
 
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_series_lookup
@@ -186,7 +189,8 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
     mongo_docs = files_collection.find({}, {
         "channel_id": 1, "message_id": 1, "file_name": 1,
         "normalized_name": 1, "season": 1, "episode": 1,
-        "quality": 1, "language": 1, "file_id": 1, "media_type": 1, "_id": 0
+        "quality": 1, "language": 1, "file_id": 1, "media_type": 1,
+        "caption": 1, "_id": 0
     })
 
     batch = []
@@ -207,14 +211,15 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
             doc.get("language", "English"),
             doc.get("file_id"),
             doc.get("media_type", "document"),
+            doc.get("caption", ""),
         ))
 
         if len(batch) >= BATCH_SIZE:
             cursor.executemany("""
                 INSERT OR IGNORE INTO files
                 (channel_id, message_id, file_name, normalized_name,
-                 season, episode, quality, language, file_id, media_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 season, episode, quality, language, file_id, media_type, caption)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, batch)
             conn.commit()
             total += len(batch)
@@ -229,8 +234,8 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
         cursor.executemany("""
             INSERT OR IGNORE INTO files
             (channel_id, message_id, file_name, normalized_name,
-             season, episode, quality, language, file_id, media_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             season, episode, quality, language, file_id, media_type, caption)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, batch)
         conn.commit()
         total += len(batch)
@@ -429,8 +434,8 @@ def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
         cursor.execute("""
             INSERT OR IGNORE INTO files
             (channel_id, message_id, file_name, normalized_name,
-             season, episode, quality, language, file_id, media_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             season, episode, quality, language, file_id, media_type, caption)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             file_doc["channel_id"],
             file_doc["message_id"],
@@ -442,6 +447,7 @@ def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
             file_doc["language"],
             file_doc.get("file_id"),
             file_doc.get("media_type", "document"),
+            file_doc.get("caption", ""),
         ))
 
         inserted = cursor.rowcount
