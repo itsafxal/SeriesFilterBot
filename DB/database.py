@@ -550,8 +550,6 @@ async def repair_normalized_names_in_mongo():
     automatically on the first restart after the normalizer update.
     Safe to run multiple times — no-ops when names are already correct.
     """
-    from utils.sqlite_db import _normalized_series_from_filename  # shared normalizer
-
     def _repair_col(col):
         updated = 0
         skipped = 0
