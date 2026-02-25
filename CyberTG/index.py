@@ -288,13 +288,20 @@ async def index_files_task(
 
         while True:
             # ── Fetch one page ────────────────────────────────
-            while True:
+            # ── Fetch one page via get_chat_history (async generator) ──
+            # Pyrogram 2.x: get_chat_history returns AsyncGenerator.
+            # We collect up to PAGE_SIZE messages with offset_id to page backwards.
+            messages = []
+            fetch_ok = False
+            for _attempt in range(3):
                 try:
-                    messages = await bot.get_history(
+                    async for msg in bot.get_chat_history(
                         chat_id,
                         limit=PAGE_SIZE,
                         offset_id=offset_id,
-                    )
+                    ):
+                        messages.append(msg)
+                    fetch_ok = True
                     break
                 except FloodWait as fw:
                     floodwait_count += 1
@@ -307,9 +314,12 @@ async def index_files_task(
                     logger.error(f"[INDEX] Channel {chat_id} is private.")
                     raise asyncio.CancelledError
                 except Exception as e:
-                    logger.error(f"[INDEX] get_history error: {e}")
+                    logger.error(f"[INDEX] get_chat_history error (attempt {_attempt+1}): {e}")
                     await asyncio.sleep(5)
-                    break
+
+            if not fetch_ok and not messages:
+                logger.warning("[INDEX] 3 consecutive fetch failures — stopping.")
+                break
 
             if not messages:
                 logger.info("[INDEX] No more messages returned — index complete.")
