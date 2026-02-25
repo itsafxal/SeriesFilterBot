@@ -66,16 +66,20 @@ from utils.cyber_filter import extract_links
 # ─────────────────────────────────────────────────────────────
 
 FETCH_BATCH_SIZE    = 200    # IDs per get_messages() call (Telegram max)
-CONCURRENT_FETCHES  = 3      # max parallel fetchers (safe default; raise if no FloodWaits)
-STAGGER_DELAY       = 0.5    # seconds between launching each fetcher in a group
-MIN_INTER_BATCH     = 0.3    # minimum gap between consecutive fetch completions
-SAVE_BATCH_SIZE     = 600    # accumulate this many docs before one DB write
+CONCURRENT_FETCHES  = 2      # parallel fetchers — 2 is the safe sweet spot
+STAGGER_DELAY       = 1.5    # seconds between launching fetchers in a group
+MIN_INTER_BATCH     = 1.0    # minimum pause between groups (Telegram breathing room)
+SAVE_BATCH_SIZE     = 400    # accumulate this many docs before one DB write
 PROGRESS_EDIT_EVERY = 30     # seconds between Telegram message edits
 
 # Adaptive back-off: after FloodWait → multiply delay; each clean batch → decay toward MIN
-_RATE_INCREASE   = 2.5   # multiply inter-batch delay by this on FloodWait
-_RATE_DECAY      = 0.92  # multiply inter-batch delay by this each clean batch
-_MAX_INTER_BATCH = 45.0  # never wait more than this between batches
+_RATE_INCREASE   = 3.0   # multiply inter-batch delay on FloodWait (aggressive back-off)
+_RATE_DECAY      = 0.95  # multiply inter-batch delay each clean batch (slow recovery)
+_MAX_INTER_BATCH = 60.0  # never wait more than this between batches
+
+# Warm-up: first N groups run at concurrency=1, then ramp to CONCURRENT_FETCHES
+# This avoids FloodWait on the very first requests when the session is cold.
+_WARMUP_GROUPS   = 5     # groups to run single-threaded before enabling parallelism
 
 INDEX_SKIP_ID_KEY = "INDEX_SKIP_ID"
 INDEX_STATUS_KEY  = "CURRENT_INDEX_TASK"
@@ -325,11 +329,12 @@ async def index_files_task(
 
     await push_progress(force=True)
 
-    # ── Semaphore limits concurrent Telegram API calls ────────
-    semaphore = asyncio.Semaphore(CONCURRENT_FETCHES)
+    # ── Semaphore — starts at 1 (warm-up), ramps to CONCURRENT_FETCHES ──
+    semaphore = asyncio.Semaphore(1)   # warm-up: single fetcher to probe rate limit
 
     # ── Adaptive inter-batch delay — starts at MIN, grows on FloodWait ──
     inter_batch_delay = [MIN_INTER_BATCH]   # mutable so inner scope can write it
+    current_concurrency = [1]               # actual concurrency in use right now
 
     try:
         # Build list of ALL windows upfront
@@ -344,21 +349,33 @@ async def index_files_task(
         logger.info(
             f"[INDEX] Starting staggered parallel index: "
             f"{total_windows} windows × {FETCH_BATCH_SIZE} IDs, "
-            f"up to {CONCURRENT_FETCHES} concurrent, stagger={STAGGER_DELAY}s"
+            f"warm-up={_WARMUP_GROUPS} groups, then up to {CONCURRENT_FETCHES}× "
+            f"concurrent with {STAGGER_DELAY}s stagger"
         )
 
         doc_buffer: list[dict] = []
         last_checkpoint = current
         prev_fw_count   = 0   # track FloodWait growth for rate adaptation
+        group_index     = 0   # counts groups processed (for warm-up logic)
 
-        for group_start in range(0, total_windows, CONCURRENT_FETCHES):
-            group = windows[group_start : group_start + CONCURRENT_FETCHES]
+        for group_start in range(0, total_windows, current_concurrency[0]):
+            # ── Ramp up concurrency after warm-up phase ───────
+            if group_index == _WARMUP_GROUPS and current_concurrency[0] < CONCURRENT_FETCHES:
+                current_concurrency[0] = CONCURRENT_FETCHES
+                # Release extra semaphore slots
+                for _ in range(CONCURRENT_FETCHES - 1):
+                    semaphore.release()
+                logger.info(
+                    f"[INDEX] Warm-up complete — ramping to "
+                    f"{CONCURRENT_FETCHES}× concurrency"
+                )
+
+            group = windows[group_start : group_start + current_concurrency[0]]
 
             # ── Staggered parallel fetches ────────────────────
-            # Each coroutine gets a stagger_offset = i * STAGGER_DELAY
-            # so fetcher 0 fires immediately, fetcher 1 fires 0.5s later, etc.
-            # This spreads the Telegram API load over CONCURRENT_FETCHES * 0.5s
-            # instead of hammering it all at once.
+            # Each fetcher is offset by i * STAGGER_DELAY so they never
+            # all fire at the same instant. Fetcher 0 fires immediately,
+            # fetcher 1 fires 1.5s later, etc.
             results = await asyncio.gather(
                 *[
                     _fetch_one_window(
@@ -370,17 +387,26 @@ async def index_files_task(
                 return_exceptions=False,
             )
 
+            group_index += 1
+
             # ── Adaptive rate adjustment ──────────────────────
             new_fw = floodwait_count[0] - prev_fw_count
             if new_fw > 0:
-                # FloodWait(s) occurred in this group → slow down
+                # FloodWait(s) occurred → slow down AND drop back to 1 fetcher
                 inter_batch_delay[0] = min(
                     inter_batch_delay[0] * _RATE_INCREASE,
                     _MAX_INTER_BATCH,
                 )
+                if current_concurrency[0] > 1:
+                    # Re-acquire excess semaphore slots to reduce concurrency
+                    for _ in range(current_concurrency[0] - 1):
+                        await semaphore.acquire()
+                    current_concurrency[0] = 1
+                    # Reset warm-up counter so ramp happens again after recovery
+                    group_index = 0
                 logger.warning(
-                    f"[INDEX] FloodWait detected — inter-batch delay "
-                    f"→ {inter_batch_delay[0]:.1f}s"
+                    f"[INDEX] FloodWait × {new_fw} — "
+                    f"concurrency → 1, inter-batch delay → {inter_batch_delay[0]:.1f}s"
                 )
             else:
                 # Clean batch → gradually speed back up
@@ -410,7 +436,7 @@ async def index_files_task(
             doc_buffer += group_docs
 
             # ── Bulk save when buffer is large enough ─────────
-            is_last_group = (group_start + CONCURRENT_FETCHES) >= total_windows
+            is_last_group = (group_start + current_concurrency[0]) >= total_windows
             if len(doc_buffer) >= SAVE_BATCH_SIZE or (is_last_group and doc_buffer):
                 to_save, n_dup = await batch_dedup_check(doc_buffer)
                 total_duplicate += n_dup
