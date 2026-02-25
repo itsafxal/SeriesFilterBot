@@ -48,51 +48,69 @@ def _get_conn() -> sqlite3.Connection:
 
 # ── Junk-word cleanup ─────────────────────────────────────────
 
-_CLEAN_TAGS = [
-    "4K","1080P","720P","HDRIP","WEB-DL","WEBRIP","BLURAY","HDTV",
-    "AMZN","NETFLIX","HULU","DDP5.1","X265","X264","10BIT","HEVC",
-    "MKV","AAC","PSA","REPACK","COMPLETE","WEB",
-]
-
-_JUNK_WORDS = r"""
-\b(
-collection|pack|set|series|season|episode|ep|vol|volume|
-batch|complete|full|release|mux|rip|hq|ultra|
-theatre|theater|bluray|remux|webdl|webrip|web|
-netflix|prime|amzn|hulu|hotstar|disney|hbo|
-tgx|yts|subs|dub|audio|team|group|
-4k|1080p|720p|480p|360p|
-x264|x265|hevc|hdrip|aac|ddp5\.1|
-rz
-)\b
-"""
-
-
-def _clean_series_name_local(name: str) -> str:
-    if not name:
-        return ""
-    name = re.sub(r"[._\-]+", " ", name)
-    name = re.sub(r"\[.*?\]|\(.*?\)|@\S+", " ", name)
-    name = re.sub(r"[sS]\d+\s*[eE]\d+", " ", name)
-    name = re.sub(_JUNK_WORDS, " ", name, flags=re.IGNORECASE | re.VERBOSE)
-    name = re.sub(r"\b(19|20)\d{2}\b", " ", name)
-    name = re.sub(r"[^a-zA-Z0-9\s]", " ", name)
-    name = re.sub(r"\s+", " ", name).strip()
-    name = re.sub(r"\b[a-zA-Z]{1,2}\b$", "", name).strip()
-    return name.title()
+# ── Normalizer regexes (mirrors cyber_index.py exactly) ──────
+_SE_RE_SQL        = re.compile(r"[sS](\d{1,3})[._\-\s]*[eE](\d{1,3})", re.IGNORECASE)
+_SEASON_ONLY_SQL  = re.compile(r"\b(?:season[\s._\-]*\d{1,3}|[sS]\d{1,3})\b", re.IGNORECASE)
+_EP_ONLY_SQL      = re.compile(r"(?:[eE][pP]?|[eE]pisode[\s._\-]*)\d{1,3}", re.IGNORECASE)
+_BRACKET_SQL      = re.compile(r"\[.*?\]|\(.*?\)|{.*?}")
+_SEP_SQL          = re.compile(r"[._\-]+")
+_MENTION_SQL      = re.compile(r"@\S+")
+_YEAR_SQL         = re.compile(r"\b(19|20)\d{2}\b")
+_NON_WORD_SQL     = re.compile(r"[^a-zA-Z0-9\s]")
+_MULTI_SPC_SQL    = re.compile(r"\s+")
+_PART_SQL         = re.compile(r"\b(?:part|pt)[\s._\-]*\d+\b", re.IGNORECASE)
+_BARE_NUM_SQL     = re.compile(r"\b\d+\b")
+_JUNK_SQL         = re.compile(r"""
+    \b(4k|2160p|1080p|720p|480p|360p|bluray|blu\-ray|bdrip|bdremux|
+    webrip|webdl|web\-dl|web|hdrip|hq|hdtv|x264|x265|hevc|avc|h264|h265|
+    aac|ac3|dts|ddp|ddp5\.1|mp3|opus|10bit|8bit|hdr|sdr|dovi|dolby|
+    amzn|netflix|prime|hotstar|hulu|disney|hbo|sony|tgx|yts|rip|rz|strife|
+    psa|repack|proper|subs|sub|dubbed|dub|multi|dual|complete|full|batch|
+    pack|collection|set|vol|volume|episode|ep|season|mkv|mp4|avi|mov)\b
+""", re.IGNORECASE | re.VERBOSE)
 
 
 def _normalized_series_from_filename(file_name: str) -> str:
+    """
+    Identical logic to cyber_index._normalized_series_name().
+    Used during migration so normalized_name is consistent.
+
+    Cut-point priority: SxxExx > Sxx > Exx
+    Also strips: Part N, bare numbers, leading ALL-CAPS channel tags.
+    """
     if not file_name:
         return ""
-    m = re.search(r"[sS](\d+)[._\-\s]*[eE](\d+)", file_name)
-    base = file_name[:m.start()] if m else file_name
-    base = _clean_series_name_local(base)
+
+    name = file_name
+    name = re.sub(r"\.(mkv|mp4|avi|mov|wmv|flv|webm)$", "", name, flags=re.IGNORECASE)
+    name = _MENTION_SQL.sub(" ", name)
+
+    cut_match = (
+        _SE_RE_SQL.search(name)
+        or _SEASON_ONLY_SQL.search(name)
+        or _EP_ONLY_SQL.search(name)
+    )
+    base = name[: cut_match.start()] if cut_match else name
+
+    base = _BRACKET_SQL.sub(" ", base)
+    base = _SEP_SQL.sub(" ", base)
+    base = _YEAR_SQL.sub(" ", base)
+    base = _PART_SQL.sub(" ", base)
+    base = _JUNK_SQL.sub(" ", base)
+    base = _NON_WORD_SQL.sub(" ", base)
+    base = _BARE_NUM_SQL.sub(" ", base)
+    base = _MULTI_SPC_SQL.sub(" ", base).strip()
+
+    words = base.split()
+    while words and re.fullmatch(r"[A-Z]{1,4}", words[0]):
+        words.pop(0)
+    base = " ".join(words)
+
+    base = re.sub(r"\b[a-zA-Z]{1,2}$", "", base).strip()
     parts = base.split()
     if len(parts) > 4:
-        base = " ".join(parts[:4])
-    return base.strip()
-
+        parts = parts[:4]
+    return " ".join(parts).title()
 
 def _extract_language_local(file_name: str) -> str:
     name = (file_name or "").upper()
