@@ -10,7 +10,7 @@ from CyberTG.index import index_files_task, lock, INDEX_STATUS_KEY, register_ind
 from CyberTG.filters import register_filters
 from CyberTG.fsub import load_fsub_settings, register_fsub_handlers
 from utils.cyber_delete import start_scheduler
-from DB.database import initialize_sql_db, get_global_setting, set_global_setting
+from DB.database import initialize_sql_db, get_global_setting, set_global_setting, repair_normalized_names_in_mongo
 from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -160,6 +160,15 @@ def main():
     except Exception as e:
         logger.error(f"[INIT] ❌ Critical failure during SQL DB init: {e}")
         return
+
+    # Repair stale normalized_name values in MongoDB (safe no-op if already correct)
+    logger.info("[INIT] Repairing normalized_name in MongoDB (post-normalizer upgrade)...")
+    try:
+        import asyncio as _asyncio
+        _asyncio.get_event_loop().run_until_complete(repair_normalized_names_in_mongo())
+        logger.info("[INIT] ✅ MongoDB normalized_name repair complete.")
+    except Exception as e:
+        logger.error(f"[INIT] ⚠️ MongoDB repair failed (non-fatal): {e}")
 
     cyber = Client(
         "SeriesBot",
