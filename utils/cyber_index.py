@@ -63,6 +63,15 @@ _QUALITY_MAP = [
     (re.compile(r"\b360[pP]\b"),                        "360P"),
 ]
 
+# Codec tokens — ordered by priority (more specific first)
+_CODEC_MAP = [
+    (re.compile(r"H\.?265|HEVC|x265",    re.IGNORECASE), "H.265"),
+    (re.compile(r"H\.?264|AVC|x264",     re.IGNORECASE), "H.264"),
+    (re.compile(r"AV1",                           re.IGNORECASE), "AV1"),
+    (re.compile(r"VP9",                           re.IGNORECASE), "VP9"),
+    (re.compile(r"HDR|DOVI|Dolby.?Vision",re.IGNORECASE), "HDR"),
+]
+
 # Language patterns — ordered: full words first (most reliable), then 3-letter codes.
 # NOTE: 2-letter codes like HI / EN removed — too many false positives
 #       (HI matches "HI-DEF", EN matches "NETFLIX", etc.)
@@ -205,6 +214,18 @@ def _quality_from_resolution(width: int, height: int) -> str:
     if long_side > 0:
         return "360P"
     return "Unknown"
+
+
+def _parse_codec(name: str, caption: str = "") -> str:
+    """
+    Detect codec from filename and caption.
+    Returns e.g. "H.265", "H.264", "AV1" or "" if unknown.
+    """
+    combined = f"{name} {caption}"
+    for pattern, label in _CODEC_MAP:
+        if pattern.search(combined):
+            return label
+    return ""
 
 
 def _parse_language(name: str, caption: str = "") -> str:
@@ -496,6 +517,7 @@ async def save_series_file_for_bulk_index(
 
         season, episode = _parse_season_episode(file_name)
         quality         = _parse_quality(file_name, caption)   # caption always used for quality
+        codec           = _parse_codec(file_name, caption)     # e.g. "H.265", "H.264", ""
 
         # CAPTION_LANG setting: if enabled, use caption text as extra signal for language.
         # If disabled, detect language from filename only — caption is ignored.
@@ -559,6 +581,7 @@ async def save_series_file_for_bulk_index(
             "file_id":         file_obj.file_id,
             "media_type":      media_type,
             "caption":         caption,                   # saved for downstream use
+            "codec":           codec,                     # e.g. "H.265", "H.264", ""
         }
 
         # ── Save ───────────────────────────────────────────────
