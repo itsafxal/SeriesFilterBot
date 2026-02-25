@@ -262,6 +262,7 @@ async def index_files_task(
     call_count      = 0
     floodwait_count = [0]
     call_delay      = [MIN_CALL_DELAY]
+    prev_fw         = 0
 
     last_edit_time  = [0.0]
 
@@ -406,9 +407,20 @@ async def index_files_task(
                 )
                 gc.collect()
 
+            # ── Adaptive inter-call delay ─────────────────────
+            # 35s between calls keeps us below Telegram's FloodWait threshold.
+            # During this sleep the event loop is free for all other bot tasks.
+            if floodwait_count[0] > prev_fw:
+                # Unexpected FloodWait slipped through — back off a bit more
+                call_delay[0] = min(call_delay[0] * _RATE_INCREASE, _MAX_CALL_DELAY)
+            else:
+                # Clean call — slowly decay back toward MIN_CALL_DELAY
+                call_delay[0] = max(call_delay[0] * _RATE_DECAY, MIN_CALL_DELAY)
+            prev_fw = floodwait_count[0]
+
             # ── Progress edit ─────────────────────────────────
             await push_progress()
-            await asyncio.sleep(0)
+            await asyncio.sleep(call_delay[0])
 
         # ── Done ──────────────────────────────────────────────
         await save_bot_state(chat_key, None)
