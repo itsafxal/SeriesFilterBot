@@ -1,6 +1,7 @@
-# main.py — MULTI-DB EDITION
-# Changes: check_and_resume_index now parses 5-part status string
-# (includes `target` field added by multi-DB index.py)
+# main.py — MULTI-DB EDITION + YES/NO RESUME PROMPT
+# Changes:
+#   - check_and_resume_index now sends admin a Yes/No prompt instead of auto-resuming
+#   - Resume callbacks (resume_yes | resume_no) are handled in index.py handlers
 
 import asyncio
 from pyrogram import Client, enums
@@ -16,7 +17,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
 # ─────────────────────────────────────────────────────────────
-# INDEX RESUME
+# INDEX RESUME — sends Yes/No prompt to admin
 # ─────────────────────────────────────────────────────────────
 
 async def check_and_resume_index(cyber: Client):
@@ -52,44 +53,56 @@ async def check_and_resume_index(cyber: Client):
 
         label = {"db1": "DB1", "db2": "DB2", "both": "DB1 + DB2"}.get(target, target)
         logger.warning(
-            f"[STARTUP] Resuming interrupted index for chat={chat_id} "
-            f"from checkpoint {start_msg_id} → {last_msg_id} | target={label}"
+            f"[STARTUP] Found interrupted index for chat={chat_id} "
+            f"range {start_msg_id}→{last_msg_id} | target={label}"
         )
 
         admin_id = ADMIN_USERS[0] if ADMIN_USERS else None
 
         if not admin_id:
+            # No admin to ask — auto-resume silently as fallback
+            logger.warning("[STARTUP] No admin configured — auto-resuming index.")
             asyncio.create_task(
                 index_files_task(cyber, None, chat_id, start_msg_id, last_msg_id, target=target)
             )
             return
 
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("❌ Cancel Indexing", callback_data="cancel_index")
-        ]])
+        # ── Send Yes/No prompt ─────────────────────────────────
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "▶️ Yes, Resume",
+                    callback_data=f"resume_yes|{chat_id}|{start_msg_id}|{last_msg_id}|{target}",
+                ),
+                InlineKeyboardButton(
+                    "🗑 No, Discard",
+                    callback_data="resume_no",
+                ),
+            ]
+        ])
 
         try:
-            msg = await cyber.send_message(
+            await cyber.send_message(
                 admin_id,
-                f"**♻️ [RESUMED INDEX]**\n"
-                f"Channel: `{chat_id}`\n"
-                f"Resuming from **{start_msg_id}** → **{last_msg_id}**\n"
-                f"Target: **{label}**\n\n"
-                f"Press cancel to stop.",
-                reply_markup=kb,
+                f"♻️ **Interrupted Index Detected!**\n\n"
+                f"The bot was restarted while an index was running.\n\n"
+                f"📡 **Channel** : `{chat_id}`\n"
+                f"📌 **Range**   : `{start_msg_id}` → `{last_msg_id}`\n"
+                f"🎯 **Target**  : `{label}`\n\n"
+                f"Do you want to **resume** from the last checkpoint?",
                 parse_mode=enums.ParseMode.MARKDOWN,
+                reply_markup=kb,
             )
+            logger.info(f"[STARTUP] Resume prompt sent to admin {admin_id}.")
         except Exception as e:
-            logger.error(f"[STARTUP] Could not send resume notification to admin: {e}")
-            msg = None
-
-        asyncio.create_task(
-            index_files_task(cyber, msg, chat_id, start_msg_id, last_msg_id, target=target)
-        )
-        logger.info("[STARTUP] Index resumption task started successfully.")
+            logger.error(f"[STARTUP] Could not send resume prompt to admin: {e}")
+            # Fall back to auto-resume if we can't reach admin
+            asyncio.create_task(
+                index_files_task(cyber, None, chat_id, start_msg_id, last_msg_id, target=target)
+            )
 
     except Exception as e:
-        logger.error(f"[STARTUP] Failed to resume index task: {e} — clearing status.")
+        logger.error(f"[STARTUP] Failed to parse interrupted index state: {e} — clearing status.")
         try:
             await set_global_setting(INDEX_STATUS_KEY, "IDLE")
         except Exception as e2:
