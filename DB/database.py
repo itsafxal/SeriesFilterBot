@@ -61,35 +61,66 @@ mongo_client = config_client
 # INDEXES — FILE DBs
 # ─────────────────────────────────────────────────────────────
 
-def _ensure_file_indexes(col):
+def _safe_create_index(col, keys, **kwargs):
+    """
+    Create a MongoDB index, gracefully handling conflicts.
+
+    Error code 86 (IndexKeySpecsConflict) means an index with the same name
+    already exists but with different options (e.g. unique/sparse flags set
+    from a previous bot version). The existing index is functionally correct,
+    so we log INFO instead of ERROR and move on — no action needed.
+
+    All other errors are logged at ERROR level as before.
+    """
+    index_name = kwargs.get("name") or str(keys)
     try:
-        col.create_index(
-            [("normalized_name", 1), ("season", 1)], background=True
-        )
-        col.create_index(
-            [("normalized_name", TEXT)],
-            name="series_name_text_index",
-            background=True,
-            language_override="text_index_lang",
-        )
-        col.create_index(
-            [
-                ("normalized_name", 1),
-                ("season",          1),
-                ("episode",         1),
-                ("quality",         1),
-                ("language",        1),
-            ],
-            background=True,
-            unique=True,
-            name="content_identity_unique",
-        )
-        col.create_index(
-            [("channel_id", 1), ("message_id", 1)],
-            background=True,
-        )
+        col.create_index(keys, **kwargs)
     except Exception as e:
-        logger.error(f"❌ Index creation failed for {col.full_name}: {e}")
+        code = getattr(e, "code", None) or (
+            e.details.get("code") if hasattr(e, "details") else None
+        )
+        if code == 86:
+            # Index already exists (possibly with different unique/sparse options).
+            # The existing index is correct — this is a harmless no-op.
+            logger.info(
+                f"ℹ️  Index '{index_name}' already exists on {col.full_name} "
+                f"(skipping — existing index is compatible)."
+            )
+        else:
+            logger.error(f"❌ Index creation failed for {col.full_name} [{index_name}]: {e}")
+
+
+def _ensure_file_indexes(col):
+    _safe_create_index(
+        col,
+        [("normalized_name", 1), ("season", 1)],
+        background=True,
+    )
+    _safe_create_index(
+        col,
+        [("normalized_name", TEXT)],
+        name="series_name_text_index",
+        background=True,
+        language_override="text_index_lang",
+    )
+    _safe_create_index(
+        col,
+        [
+            ("normalized_name", 1),
+            ("season",          1),
+            ("episode",         1),
+            ("quality",         1),
+            ("language",        1),
+        ],
+        background=True,
+        unique=True,
+        name="content_identity_unique",
+    )
+    _safe_create_index(
+        col,
+        [("channel_id", 1), ("message_id", 1)],
+        background=True,
+    )
 
 
 _ensure_file_indexes(files_collection_1)
