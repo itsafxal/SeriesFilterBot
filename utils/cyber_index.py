@@ -139,6 +139,10 @@ _MENTION_RE   = re.compile(r"@\S+")
 _YEAR_RE      = re.compile(r"\b(19|20)\d{2}\b")
 _NON_WORD_RE  = re.compile(r"[^a-zA-Z0-9\s]")
 _MULTI_SPC_RE = re.compile(r"\s+")
+# "Part 2", "Part2", "Pt.3" — season sub-labels that are NOT part of the series title
+_PART_RE      = re.compile(r"\b(?:part|pt)[\s._\-]*\d+\b", re.IGNORECASE)
+# Bare standalone numbers left over after all cleaning (e.g. "22021" in bad filenames)
+_BARE_NUM_RE  = re.compile(r"\b\d+\b")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -349,8 +353,17 @@ async def _get_language_from_api(normalized_name: str) -> str:
 
 def _normalized_series_name(file_name: str) -> str:
     """
-    Strips everything AFTER the SxxExx marker, then cleans junk
-    to leave only the series title words.
+    Extract clean series title from a filename.
+
+    Cut-point priority (highest to lowest confidence):
+      1. SxxExx  e.g. S01E01, S05E03
+      2. Sxx     e.g. S05 (season-only, no adjacent episode)
+      3. Exx/EPxx e.g. E01, EP04 (episode-only, rare)
+
+    After cutting, also strips:
+      - "Part N" / "Pt N"  -- season sub-labels (not part of title)
+      - Bare numbers        -- stray digits left after cleaning
+      - Leading ALL-CAPS channel tags <=4 chars (SDW, NF, TGX, etc.)
     """
     if not file_name:
         return ""
@@ -363,18 +376,25 @@ def _normalized_series_name(file_name: str) -> str:
     # Strip @mentions
     name = _MENTION_RE.sub(" ", name)
 
-    # Cut at SxxExx
-    m = _SE_RE.search(name)
-    base = name[: m.start()] if m else name
+    # Cut at first season/episode marker (priority: SxxExx > Sxx > Exx)
+    cut_match = (
+        _SE_RE.search(name)
+        or _SEASON_ONLY_RE.search(name)
+        or _EP_ONLY_RE.search(name)
+    )
+    base = name[: cut_match.start()] if cut_match else name
 
     # Brackets
     base = _BRACKET_RE.sub(" ", base)
 
-    # Separators → spaces
+    # Separators to spaces
     base = _CLEAN_SEP_RE.sub(" ", base)
 
     # Year
     base = _YEAR_RE.sub(" ", base)
+
+    # "Part 2", "Part2", "Pt.3" -- season sub-labels, not part of the title
+    base = _PART_RE.sub(" ", base)
 
     # Junk tokens
     base = _JUNK_RE.sub(" ", base)
@@ -382,19 +402,28 @@ def _normalized_series_name(file_name: str) -> str:
     # Non-word chars
     base = _NON_WORD_RE.sub(" ", base)
 
-    # Collapse
+    # Bare standalone numbers left after all cleaning
+    base = _BARE_NUM_RE.sub(" ", base)
+
+    # Collapse spaces
     base = _MULTI_SPC_RE.sub(" ", base).strip()
+
+    # Strip leading ALL-CAPS channel/group tags (<=4 uppercase letters)
+    # e.g. "SDW Lucifer" -> "Lucifer",  "NF The Crown" -> "The Crown"
+    words = base.split()
+    while words and __import__("re").fullmatch(r"[A-Z]{1,4}", words[0]):
+        words.pop(0)
+    base = " ".join(words)
 
     # Drop trailing 1-2 char stubs
     base = re.sub(r"\b[a-zA-Z]{1,2}$", "", base).strip()
 
-    # Title-case and cap at 4 words (enough for series titles)
+    # Title-case and cap at 4 words (enough for any series title)
     parts = base.split()
     if len(parts) > 4:
         parts = parts[:4]
 
     return " ".join(parts).title()
-
 
 # ─────────────────────────────────────────────────────────────
 # MEDIA TYPE DETECTOR
