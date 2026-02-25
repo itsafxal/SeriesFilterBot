@@ -467,6 +467,7 @@ async def save_series_file_for_bulk_index(
             "language":        language,
             "file_id":         file_obj.file_id,
             "media_type":      media_type,
+            "caption":         caption,                   # ← saved for downstream use
         }
 
         # ── Save ───────────────────────────────────────────────
