@@ -107,7 +107,7 @@ from .sqlite_db import (
     create_sql_schema,
     migrate_data_from_mongo_to_sql_sync,
     repair_normalized_names_in_sqlite_sync,
-    repair_codec_from_filenames_sync,          # ← NEW: codec backfill
+    repair_codec_from_filenames_sync,          # ← codec backfill
     get_series_summary_sync,
     search_series_sync,
     get_unique_languages_by_name_sync,
@@ -125,6 +125,7 @@ from .sqlite_db import (
     get_all_series_sync,
     _normalized_series_from_filename,
     save_file_to_sql_sync,
+    save_file_docs_batch_sync,                 # ← NEW: batch save
     clear_all_caches,
     episode_exists_sync,
 )
@@ -431,11 +432,7 @@ def _mongo_upsert(col, file_doc: dict):
 async def save_file_to_db(file_doc: dict, target: str = "both"):
     """
     Inserts/updates a single file document.
-
-    target:
-        "db1"  → write to FILE_DB_1 + SQLite
-        "db2"  → write to FILE_DB_2 + SQLite
-        "both" → write to FILE_DB_1 + FILE_DB_2 + SQLite  (default)
+    target: "db1" | "db2" | "both"
     """
     def _sync():
         mongo_ok = False
@@ -454,6 +451,66 @@ async def save_file_to_db(file_doc: dict, target: str = "both"):
             clear_all_caches()
 
         return sql_ok
+
+    return await asyncio.to_thread(_sync)
+
+
+async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
+    """
+    Bulk-save a list of already-parsed file_doc dicts.
+    Used by the batch indexer — one call saves up to 200 docs.
+
+    Mongo:  one bulk_write per DB (single round-trip)
+    SQLite: one executemany transaction (single round-trip)
+
+    Returns the number of docs saved/updated.
+    """
+    if not docs:
+        return 0
+
+    def _sync():
+        from pymongo import UpdateOne
+
+        # ── MongoDB bulk_write ────────────────────────────────
+        def _build_ops(docs_list):
+            ops = []
+            for doc in docs_list:
+                codec      = (doc.get("codec") or "").strip()
+                set_fields = {k: v for k, v in doc.items() if k != "codec"}
+                if codec:
+                    set_fields["codec"] = codec
+                ops.append(UpdateOne(
+                    {
+                        "normalized_name": doc["normalized_name"],
+                        "season":          doc["season"],
+                        "episode":         doc["episode"],
+                        "quality":         doc["quality"],
+                        "language":        doc["language"],
+                    },
+                    {"$set": set_fields},
+                    upsert=True,
+                ))
+            return ops
+
+        ops = _build_ops(docs)
+
+        if target in ("db1", "both"):
+            try:
+                files_collection_1.bulk_write(ops, ordered=False)
+            except Exception as e:
+                logger.error(f"[BATCH] Mongo bulk_write DB1 error: {e}")
+
+        if target in ("db2", "both"):
+            try:
+                files_collection_2.bulk_write(ops, ordered=False)
+            except Exception as e:
+                logger.error(f"[BATCH] Mongo bulk_write DB2 error: {e}")
+
+        # ── SQLite executemany ────────────────────────────────
+        saved = save_file_docs_batch_sync(docs, logger)
+        if saved:
+            clear_all_caches()
+        return saved
 
     return await asyncio.to_thread(_sync)
 
