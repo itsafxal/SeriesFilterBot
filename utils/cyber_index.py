@@ -27,7 +27,7 @@ LANGUAGE DETECTION PRIORITY:
 
 import re
 import asyncio
-from DB.database import save_file_to_db
+from DB.database import save_file_to_db, episode_exists
 from config import logger
 
 
@@ -528,6 +528,17 @@ async def save_series_file_for_bulk_index(
                 logger.debug(
                     f"[cyber_index] API resolved lang: {normalized_name!r} → {language}"
                 )
+
+        # ── Duplicate pre-check ────────────────────────────────
+        # Skip if this exact episode slot (series+season+episode+quality+language)
+        # is already in the DB — handles re-uploads, mirrors, and repeated bulk index.
+        norm_lower = normalized_name.lower()
+        if await episode_exists(norm_lower, season, episode, quality, language):
+            logger.debug(
+                f"[cyber_index] ⏭ Already exists: {normalized_name!r} "
+                f"S{season:02d}E{episode:02d} {quality} [{language}] — skipped"
+            )
+            return False, 0
 
         # ── Build document ─────────────────────────────────────
         file_doc = {
