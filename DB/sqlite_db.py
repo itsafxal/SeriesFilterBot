@@ -441,6 +441,28 @@ def get_file_by_message_id_and_channel_id_sync(channel_id: int, message_id: int)
     return dict(row) if row else None
 
 
+def episode_exists_sync(normalized_name: str, season: int, episode: int,
+                        quality: str, language: str) -> bool:
+    """
+    Check if an episode slot is already filled.
+    Returns True if ANY file with this series+season+episode+quality+language exists.
+    Used as a fast pre-check before attempting to save — avoids duplicate inserts
+    even when channel_id/message_id differ (re-uploads, mirrors, etc.).
+    """
+    conn   = _get_conn()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 1 FROM files
+        WHERE normalized_name = ?
+          AND season   = ?
+          AND episode  = ?
+          AND quality  = ?
+          AND language = ?
+        LIMIT 1
+    """, (normalized_name.lower(), season, episode, quality, language))
+    return cursor.fetchone() is not None
+
+
 def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
     try:
         conn   = _get_conn()
