@@ -1,24 +1,25 @@
 """
-index.py — BATCH EDITION (NO SLEEP / NO EDIT SPAM)
+index.py — PROGRESS EDITION
 =====================================================
-BATCH INDEXING DESIGN:
-  1. Collects a window of up to FETCH_BATCH_SIZE (200) message IDs.
-  2. Calls bot.get_messages(chat_id, list_of_ids) — one Telegram API call
-     that returns all 200 messages at once (Telegram's native batch endpoint).
-  3. Parses every media message in the batch (pure CPU, zero I/O).
-  4. Bulk-saves all parsed docs to SQLite (one executemany) and MongoDB
-     (one bulk_write per DB) — massive reduction in round-trips.
-  5. NO fixed sleep between batches — runs as fast as Telegram allows.
-     If Telegram sends a FloodWait, fetch_batch retries automatically after
-     the required wait time. Zero unnecessary delays otherwise.
+IMPROVEMENTS OVER PREVIOUS VERSION:
+  1. Rich progress message: Batched, Saved, Skipped, Duplicate, FloodWait status
+  2. Progress edits throttled to every 30 seconds (avoids FloodWait + edit errors)
+  3. Cancel button always visible on status message during indexing
+  4. On bot restart with interrupted index → sends Yes/No resume prompt to admin
+     (instead of auto-resuming silently)
+  5. "Yes" resumes the index, "No" clears the state cleanly
 
-  Status message: updated ONLY via logger every batch. The Telegram message
-  is edited only at start, on FloodWait, and at completion/cancel.
-  This eliminates edit errors entirely.
+BATCH INDEXING DESIGN (unchanged):
+  1. Collects a window of up to FETCH_BATCH_SIZE (200) message IDs.
+  2. Calls bot.get_messages(chat_id, list_of_ids) — one Telegram API call.
+  3. Parses every media message in the batch (pure CPU, zero I/O).
+  4. Bulk-saves all parsed docs to SQLite + MongoDB (one bulk_write per DB).
+  5. No fixed sleep — runs full speed. FloodWait handled in fetch_batch.
 """
 
 import asyncio
 import gc
+import time
 from typing import Optional
 
 from pyrogram import Client, filters, enums
@@ -45,9 +46,10 @@ from utils.cyber_filter import extract_links
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────
 
-FETCH_BATCH_SIZE  = 200    # IDs per get_messages() call (Telegram max)
-LOG_EVERY         = 5      # log progress every N batches (no Telegram edits)
-YIELD_EVERY       = 10     # asyncio.sleep(0) every N batches (keeps event loop alive)
+FETCH_BATCH_SIZE      = 200    # IDs per get_messages() call (Telegram max)
+LOG_EVERY             = 5      # log to console every N batches
+YIELD_EVERY           = 10     # asyncio.sleep(0) every N batches
+PROGRESS_EDIT_EVERY   = 30     # seconds between Telegram message edits
 
 INDEX_SKIP_ID_KEY = "INDEX_SKIP_ID"
 INDEX_STATUS_KEY  = "CURRENT_INDEX_TASK"
@@ -84,13 +86,13 @@ _last_edit_text: dict[int, str] = {}   # msg_id -> last text sent
 async def safe_edit(msg: Message, text: str, **kwargs):
     """
     Edit only if the text changed since last edit.
-    Prevents edit errors entirely — no exception needed.
+    Prevents MessageNotModified errors entirely.
     """
     if msg is None:
         return
     mid = msg.id
     if _last_edit_text.get(mid) == text:
-        return  # identical — skip, zero API call, zero error
+        return
     try:
         await msg.edit_text(text, **kwargs)
         _last_edit_text[mid] = text
@@ -106,19 +108,67 @@ async def safe_edit(msg: Message, text: str, **kwargs):
 
 
 # ─────────────────────────────────────────────────────────────
-# BATCH FETCH  — get up to 200 messages in a single API call
+# PROGRESS BUILDER
+# ─────────────────────────────────────────────────────────────
+
+def _build_progress_text(
+    *,
+    current: int,
+    start_id: int,
+    last_id: int,
+    total_checked: int,
+    total_saved: int,
+    total_skipped: int,
+    total_duplicate: int,
+    batch_count: int,
+    target_label: str,
+    floodwait_count: int,
+    status_line: str = "⚡ Indexing...",
+) -> str:
+    total_range = max(last_id - start_id, 1)
+    pct = min(((current - start_id) / total_range) * 100, 100.0)
+
+    # Progress bar (20 chars wide)
+    filled = int(pct / 5)
+    bar    = "█" * filled + "░" * (20 - filled)
+
+    lines = [
+        f"{status_line}",
+        f"",
+        f"[{bar}] **{pct:.1f}%**",
+        f"ID: `{current}` / `{last_id}`",
+        f"",
+        f"📦 **Batched**   : `{total_checked:,}` msgs  (`{batch_count}` batches)",
+        f"✅ **Saved**     : `{total_saved:,}` files",
+        f"⏭ **Skipped**   : `{total_skipped:,}`",
+        f"🔁 **Duplicate** : `{total_duplicate:,}`",
+    ]
+
+    if floodwait_count:
+        lines.append(f"⏸ **FloodWait**  : `{floodwait_count}` times")
+
+    lines += [
+        f"",
+        f"🎯 **Target** : `{target_label}`",
+    ]
+
+    return "\n".join(lines)
+
+
+def _cancel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("⛔ Cancel Indexing", callback_data="cancel_index")
+    ]])
+
+
+# ─────────────────────────────────────────────────────────────
+# BATCH FETCH — get up to 200 messages in a single API call
 # ─────────────────────────────────────────────────────────────
 
 async def fetch_batch(bot: Client, chat_id: int, ids: list[int]) -> list:
-    """
-    Fetch a list of message IDs in one Telegram API call.
-    Retries automatically on FloodWait.
-    Returns list of Message objects (may include None for missing IDs).
-    """
     while True:
         try:
             msgs = await bot.get_messages(chat_id, ids)
-            # get_messages with a list always returns a list
             if not isinstance(msgs, list):
                 msgs = [msgs]
             return msgs
@@ -134,7 +184,7 @@ async def fetch_batch(bot: Client, chat_id: int, ids: list[int]) -> list:
 
 
 # ─────────────────────────────────────────────────────────────
-# CORE INDEX ENGINE — BATCH VERSION (NO SLEEP)
+# CORE INDEX ENGINE — BATCH VERSION WITH RICH PROGRESS
 # ─────────────────────────────────────────────────────────────
 
 async def index_files_task(
@@ -167,25 +217,48 @@ async def index_files_task(
 
     current = max(candidates)
 
-    # Edit status message ONCE at start — no repeated edits during run
-    await safe_edit(
-        status_msg,
-        f"⚡ **Batch Index Running**\n"
-        f"From: `{current}` → `{last_id}`\n"
-        f"Batch: **{FETCH_BATCH_SIZE}** msgs/call  |  No sleep\n"
-        f"Target: **{target_label}**\n\n"
-        f"Progress logged to console. Final count sent on completion.",
-        parse_mode=enums.ParseMode.MARKDOWN,
-    )
-
     await set_global_setting(
         INDEX_STATUS_KEY,
         f"RUNNING|{chat_id}|{start_id}|{last_id}|{target}",
     )
 
-    total_checked = 0
-    total_saved   = 0
-    batch_count   = 0
+    total_checked   = 0
+    total_saved     = 0
+    total_skipped   = 0    # media msgs with no filename / no series name
+    total_duplicate = 0    # already-in-db duplicates
+    batch_count     = 0
+    floodwait_count = 0
+
+    # Time-throttled progress edit (every 30s)
+    last_edit_time = 0.0
+
+    async def push_progress(force: bool = False, status_line: str = "⚡ Indexing..."):
+        nonlocal last_edit_time
+        now = time.monotonic()
+        if not force and (now - last_edit_time) < PROGRESS_EDIT_EVERY:
+            return
+        text = _build_progress_text(
+            current=current,
+            start_id=start_id,
+            last_id=last_id,
+            total_checked=total_checked,
+            total_saved=total_saved,
+            total_skipped=total_skipped,
+            total_duplicate=total_duplicate,
+            batch_count=batch_count,
+            target_label=target_label,
+            floodwait_count=floodwait_count,
+            status_line=status_line,
+        )
+        await safe_edit(
+            status_msg, text,
+            parse_mode=enums.ParseMode.MARKDOWN,
+            reply_markup=_cancel_kb(),
+        )
+        last_edit_time = time.monotonic()
+
+    # Initial edit
+    await push_progress(force=True)
 
     try:
         while current <= last_id:
@@ -195,10 +268,16 @@ async def index_files_task(
             id_window  = list(range(current, window_end + 1))
 
             # ── Fetch batch from Telegram (1 API call) ────────
-            messages = await fetch_batch(bot, chat_id, id_window)
+            try:
+                messages = await fetch_batch(bot, chat_id, id_window)
+            except FloodWait as fw:
+                floodwait_count += 1
+                await safe_floodwait_sleep(fw)
+                continue
 
             # ── Parse all media messages in batch ─────────────
-            docs = []
+            docs          = []
+            batch_skipped = 0
             for msg in messages:
                 if msg is None or msg.empty:
                     continue
@@ -207,13 +286,21 @@ async def index_files_task(
                 doc = await parse_message_to_doc(msg)
                 if doc is not None:
                     docs.append(doc)
+                else:
+                    batch_skipped += 1
 
-            total_checked += len(id_window)
+            total_checked  += len(id_window)
+            total_skipped  += batch_skipped
 
             # ── Bulk save to Mongo + SQLite ───────────────────
             if docs:
+                # batch_save_file_docs returns count of actually-saved docs.
+                # docs that were rejected as duplicates = len(docs) - saved
                 saved_count = await batch_save_file_docs(docs, target=target)
-                total_saved += saved_count
+                dup_count   = len(docs) - saved_count
+                total_saved     += saved_count
+                total_duplicate += dup_count
+
                 for doc in docs:
                     logger.info(
                         f"[BULK INDEX] ✅ Saved │ "
@@ -229,58 +316,66 @@ async def index_files_task(
             # ── Checkpoint after every batch ─────────────────
             await save_bot_state(chat_key, current)
 
-            # ── Live progress every N batches ─────────────────
-            # safe_edit deduplicates — only fires when text changes
+            # ── Console log every N batches ───────────────────
             if batch_count % LOG_EVERY == 0:
                 pct = ((current - start_id) / max(last_id - start_id, 1)) * 100
-                progress_text = (
-                    f"⚡ **Indexing...**\n"
-                    f"Checked: **{total_checked:,}** msgs\n"
-                    f"Saved: **{total_saved:,}** files\n"
-                    f"Progress: **{pct:.1f}%**  (ID {current}/{last_id})\n"
-                    f"Target: **{target_label}**"
-                )
-                await safe_edit(
-                    status_msg, progress_text, parse_mode=enums.ParseMode.MARKDOWN
-                )
                 logger.info(
                     f"[INDEX] batch={batch_count} checked={total_checked} "
-                    f"saved={total_saved} {pct:.1f}% id={current}/{last_id}"
+                    f"saved={total_saved} dup={total_duplicate} "
+                    f"skipped={total_skipped} {pct:.1f}% id={current}/{last_id}"
                 )
+
+            # ── Time-throttled Telegram progress edit (30s) ──
+            await push_progress()
 
             # ── Yield event loop every N batches ─────────────
             if batch_count % YIELD_EVERY == 0:
                 await asyncio.sleep(0)
                 gc.collect()
 
-            # No sleep — run full speed, FloodWait handled in fetch_batch
-
-        # ── Done — edit message ONCE with final count ─────────
+        # ── Done — final edit ─────────────────────────────────
         await save_bot_state(chat_key, None)
+
+        final_text = (
+            f"✅ **Index Complete!**\n\n"
+            f"📦 **Batched**   : `{total_checked:,}` msgs  (`{batch_count}` batches)\n"
+            f"✅ **Saved**     : `{total_saved:,}` files\n"
+            f"⏭ **Skipped**   : `{total_skipped:,}`\n"
+            f"🔁 **Duplicate** : `{total_duplicate:,}`\n"
+        )
+        if floodwait_count:
+            final_text += f"⏸ **FloodWait**  : `{floodwait_count}` times\n"
+        final_text += f"\n🎯 **Target** : `{target_label}`"
+
         await safe_edit(
-            status_msg,
-            f"✅ **Index Complete!**\n"
-            f"Checked: **{total_checked:,}** messages\n"
-            f"Saved: **{total_saved:,}** files\n"
-            f"Batches: **{batch_count}**\n"
-            f"Target: **{target_label}**",
+            status_msg, final_text,
             parse_mode=enums.ParseMode.MARKDOWN,
         )
         logger.info(
             f"[INDEX] ✅ Done — checked={total_checked} saved={total_saved} "
+            f"dup={total_duplicate} skipped={total_skipped} "
             f"batches={batch_count} target={target}"
         )
 
     except asyncio.CancelledError:
         await save_bot_state(chat_key, current)
+        cancel_text = (
+            f"⛔ **Index Cancelled**\n\n"
+            f"📦 **Batched**   : `{total_checked:,}` msgs\n"
+            f"✅ **Saved**     : `{total_saved:,}` files\n"
+            f"⏭ **Skipped**   : `{total_skipped:,}`\n"
+            f"🔁 **Duplicate** : `{total_duplicate:,}`\n"
+            f"\n⏹ Stopped at ID: `{current}`\n"
+            f"🎯 **Target** : `{target_label}`"
+        )
         await safe_edit(
-            status_msg,
-            f"⛔ **Index Cancelled**\n"
-            f"Stopped at ID: **{current}**\n"
-            f"Saved so far: **{total_saved:,}** files",
+            status_msg, cancel_text,
             parse_mode=enums.ParseMode.MARKDOWN,
         )
-        logger.info(f"[INDEX] Cancelled at id={current} saved={total_saved}")
+        logger.info(
+            f"[INDEX] Cancelled at id={current} "
+            f"saved={total_saved} dup={total_duplicate} skipped={total_skipped}"
+        )
 
     finally:
         await set_global_setting(INDEX_STATUS_KEY, "IDLE")
@@ -497,10 +592,6 @@ def register_index_handlers(cyber: Client):
 
         await save_bot_state(f"index_{chat_id}", start_id)
 
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("⛔ Cancel Indexing", callback_data="cancel_index")
-        ]])
-
         try:
             await query.message.edit_text(
                 f"⏳ **Starting batch index...**\nTarget: **{label}**",
@@ -512,13 +603,13 @@ def register_index_handlers(cyber: Client):
         status_msg = await safe_send(
             bot,
             query.from_user.id,
-            f"⚡ **Batch Index Started**\n"
+            f"⚡ **Batch Index Starting**\n"
             f"Channel: `{chat_id}`\n"
             f"Range: **{start_id}** → **{last_id}**\n"
-            f"Target: **{label}**\n"
-            f"Batch: **{FETCH_BATCH_SIZE}** msgs/call  |  Full speed",
+            f"Target: **{label}**\n\n"
+            f"_Progress updates every 30 seconds..._",
             parse_mode=enums.ParseMode.MARKDOWN,
-            reply_markup=kb,
+            reply_markup=_cancel_kb(),
         )
 
         index_task = asyncio.create_task(
@@ -527,24 +618,91 @@ def register_index_handlers(cyber: Client):
         logger.info(f"[INDEX] Batch task created — chat={chat_id} target={target}")
 
     # ── CANCEL INDEX ──────────────────────────────────────────
-    @cyber.on_callback_query(filters.regex("cancel_index"))
+    @cyber.on_callback_query(filters.regex("^cancel_index$"))
     async def cancel(bot, query):
         global index_task
         if index_task and not index_task.done():
             index_task.cancel()
-            await query.answer("Cancelling...")
+            await query.answer("⛔ Cancelling index...", show_alert=True)
         else:
-            await query.message.edit_text("No active index to cancel.")
-            await query.answer("Nothing running.")
+            await query.answer("No active index to cancel.", show_alert=True)
+            try:
+                await query.message.edit_text(
+                    "ℹ️ No active index was running.",
+                    parse_mode=enums.ParseMode.MARKDOWN,
+                )
+            except Exception:
+                pass
 
     # ── CANCEL PROMPT ─────────────────────────────────────────
-    @cyber.on_callback_query(filters.regex("cancel_prompt"))
+    @cyber.on_callback_query(filters.regex("^cancel_prompt$"))
     async def cancel_prompt(bot, query):
         try:
             await query.message.delete()
         except Exception:
             pass
         await query.answer("Cancelled.")
+
+    # ── RESUME YES ────────────────────────────────────────────
+    @cyber.on_callback_query(filters.regex(r"^resume_yes\|"))
+    async def resume_yes(bot, query):
+        global index_task
+        await query.answer("▶️ Resuming index...")
+
+        try:
+            parts        = query.data.split("|")
+            chat_id      = int(parts[1])
+            start_msg_id = int(parts[2])
+            last_msg_id  = int(parts[3])
+            target       = parts[4]
+        except Exception as e:
+            logger.error(f"[INDEX] resume_yes parse error: {e}")
+            try:
+                await query.message.edit_text("❌ Failed to parse resume data.")
+            except Exception:
+                pass
+            return
+
+        label = {"db1": "DB1 only", "db2": "DB2 only", "both": "DB1 + DB2"}.get(target, target)
+
+        try:
+            await query.message.edit_text(
+                f"▶️ **Resuming Index...**\n"
+                f"Channel: `{chat_id}`\n"
+                f"Range: **{start_msg_id}** → **{last_msg_id}**\n"
+                f"Target: **{label}**\n\n"
+                f"_Progress updates every 30 seconds..._",
+                parse_mode=enums.ParseMode.MARKDOWN,
+                reply_markup=_cancel_kb(),
+            )
+        except Exception:
+            pass
+
+        index_task = asyncio.create_task(
+            index_files_task(
+                bot, query.message,
+                chat_id, start_msg_id, last_msg_id,
+                target=target,
+            )
+        )
+        logger.info(f"[INDEX] Resume task started via button — chat={chat_id} target={target}")
+
+    # ── RESUME NO ─────────────────────────────────────────────
+    @cyber.on_callback_query(filters.regex("^resume_no$"))
+    async def resume_no(bot, query):
+        await query.answer("🗑 Discarding interrupted index.")
+        try:
+            await set_global_setting(INDEX_STATUS_KEY, "IDLE")
+        except Exception:
+            pass
+        try:
+            await query.message.edit_text(
+                "🗑 **Interrupted index discarded.**\n"
+                "Start a fresh index with /index or by forwarding a message.",
+                parse_mode=enums.ParseMode.MARKDOWN,
+            )
+        except Exception:
+            pass
 
     # ── /setskip ──────────────────────────────────────────────
     @cyber.on_message(
@@ -571,5 +729,7 @@ def register_index_handlers(cyber: Client):
 
     return [
         rti, forwarded, indexlink, idx_db_chosen,
-        start_index, cancel, cancel_prompt, setskip, getskip,
+        start_index, cancel, cancel_prompt,
+        resume_yes, resume_no,
+        setskip, getskip,
     ]
