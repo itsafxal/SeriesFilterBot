@@ -65,10 +65,17 @@ from utils.cyber_filter import extract_links
 # TUNABLE CONSTANTS
 # ─────────────────────────────────────────────────────────────
 
-FETCH_BATCH_SIZE    = 200   # IDs per get_messages() call (Telegram max)
-CONCURRENT_FETCHES  = 5     # parallel get_messages() calls at once
-SAVE_BATCH_SIZE     = 1000  # accumulate this many docs before one DB write
-PROGRESS_EDIT_EVERY = 30    # seconds between Telegram message edits
+FETCH_BATCH_SIZE    = 200    # IDs per get_messages() call (Telegram max)
+CONCURRENT_FETCHES  = 3      # max parallel fetchers (safe default; raise if no FloodWaits)
+STAGGER_DELAY       = 0.5    # seconds between launching each fetcher in a group
+MIN_INTER_BATCH     = 0.3    # minimum gap between consecutive fetch completions
+SAVE_BATCH_SIZE     = 600    # accumulate this many docs before one DB write
+PROGRESS_EDIT_EVERY = 30     # seconds between Telegram message edits
+
+# Adaptive back-off: after FloodWait → multiply delay; each clean batch → decay toward MIN
+_RATE_INCREASE   = 2.5   # multiply inter-batch delay by this on FloodWait
+_RATE_DECAY      = 0.92  # multiply inter-batch delay by this each clean batch
+_MAX_INTER_BATCH = 45.0  # never wait more than this between batches
 
 INDEX_SKIP_ID_KEY = "INDEX_SKIP_ID"
 INDEX_STATUS_KEY  = "CURRENT_INDEX_TASK"
@@ -77,7 +84,7 @@ lock         = asyncio.Lock()
 media_filter = filters.document | filters.video | filters.audio
 index_task: Optional[asyncio.Task] = None
 
-_SENTINEL = object()   # signals saver that all fetchers are done
+_SENTINEL = object()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -166,7 +173,7 @@ def _build_progress_text(
     lines += [
         f"",
         f"🎯 **Target** : `{target_label}`",
-        f"🚀 **Parallel**: `{CONCURRENT_FETCHES}` fetchers",
+        f"🚀 **Mode**   : `{CONCURRENT_FETCHES}×` parallel · `{STAGGER_DELAY}s` stagger",
     ]
 
     return "\n".join(lines)
@@ -179,7 +186,7 @@ def _cancel_kb() -> InlineKeyboardMarkup:
 
 
 # ─────────────────────────────────────────────────────────────
-# SINGLE BATCH FETCHER — runs concurrently
+# SINGLE BATCH FETCHER — staggered, runs concurrently
 # ─────────────────────────────────────────────────────────────
 
 async def _fetch_one_window(
@@ -187,13 +194,20 @@ async def _fetch_one_window(
     chat_id: int,
     id_window: list[int],
     semaphore: asyncio.Semaphore,
-    floodwait_counter: list,   # mutable [int] shared ref
+    floodwait_counter: list,    # mutable [int] shared ref
+    stagger_offset: float = 0.0,  # seconds to sleep before acquiring semaphore
 ) -> tuple[list, int, int]:
     """
-    Fetch one window of message IDs, parse all media docs.
+    Fetch one window, parse all media docs.
     Returns: (docs, n_checked, n_skipped)
-    Guarded by semaphore to limit concurrent Telegram API calls.
+
+    stagger_offset: each fetcher in a group is launched with a small delay
+    (0s, 0.5s, 1.0s, ...) so they don't all hit Telegram at the same instant.
     """
+    # Stagger: wait before competing for the semaphore
+    if stagger_offset > 0:
+        await asyncio.sleep(stagger_offset)
+
     async with semaphore:
         # ── Fetch from Telegram ───────────────────────────────
         while True:
@@ -314,6 +328,9 @@ async def index_files_task(
     # ── Semaphore limits concurrent Telegram API calls ────────
     semaphore = asyncio.Semaphore(CONCURRENT_FETCHES)
 
+    # ── Adaptive inter-batch delay — starts at MIN, grows on FloodWait ──
+    inter_batch_delay = [MIN_INTER_BATCH]   # mutable so inner scope can write it
+
     try:
         # Build list of ALL windows upfront
         windows = []
@@ -325,32 +342,53 @@ async def index_files_task(
 
         total_windows = len(windows)
         logger.info(
-            f"[INDEX] Starting parallel index: "
+            f"[INDEX] Starting staggered parallel index: "
             f"{total_windows} windows × {FETCH_BATCH_SIZE} IDs, "
-            f"{CONCURRENT_FETCHES} concurrent fetchers"
+            f"up to {CONCURRENT_FETCHES} concurrent, stagger={STAGGER_DELAY}s"
         )
 
-        # ── Process windows in groups of CONCURRENT_FETCHES ──
-        # Each group is a gather() of N fetch+parse coroutines.
-        # After each group, bulk-save the accumulated docs.
-        # This is the "staggered pipeline" — fetch and save overlap
-        # across groups but within a group fetches are truly parallel.
-
         doc_buffer: list[dict] = []
-        windows_done = 0
         last_checkpoint = current
+        prev_fw_count   = 0   # track FloodWait growth for rate adaptation
 
         for group_start in range(0, total_windows, CONCURRENT_FETCHES):
             group = windows[group_start : group_start + CONCURRENT_FETCHES]
 
-            # ── Fire N parallel fetches ───────────────────────
+            # ── Staggered parallel fetches ────────────────────
+            # Each coroutine gets a stagger_offset = i * STAGGER_DELAY
+            # so fetcher 0 fires immediately, fetcher 1 fires 0.5s later, etc.
+            # This spreads the Telegram API load over CONCURRENT_FETCHES * 0.5s
+            # instead of hammering it all at once.
             results = await asyncio.gather(
                 *[
-                    _fetch_one_window(bot, chat_id, win, semaphore, floodwait_count)
-                    for win in group
+                    _fetch_one_window(
+                        bot, chat_id, win, semaphore, floodwait_count,
+                        stagger_offset=i * STAGGER_DELAY,
+                    )
+                    for i, win in enumerate(group)
                 ],
                 return_exceptions=False,
             )
+
+            # ── Adaptive rate adjustment ──────────────────────
+            new_fw = floodwait_count[0] - prev_fw_count
+            if new_fw > 0:
+                # FloodWait(s) occurred in this group → slow down
+                inter_batch_delay[0] = min(
+                    inter_batch_delay[0] * _RATE_INCREASE,
+                    _MAX_INTER_BATCH,
+                )
+                logger.warning(
+                    f"[INDEX] FloodWait detected — inter-batch delay "
+                    f"→ {inter_batch_delay[0]:.1f}s"
+                )
+            else:
+                # Clean batch → gradually speed back up
+                inter_batch_delay[0] = max(
+                    inter_batch_delay[0] * _RATE_DECAY,
+                    MIN_INTER_BATCH,
+                )
+            prev_fw_count = floodwait_count[0]
 
             # ── Merge results ─────────────────────────────────
             group_docs    = []
@@ -365,19 +403,15 @@ async def index_files_task(
             total_checked += group_checked
             total_skipped += group_skipped
             batch_count   += len(group)
-            windows_done  += len(group)
 
-            # Track furthest ID processed in this group
-            last_window_end = group[-1][-1]  # last ID of last window in group
+            last_window_end = group[-1][-1]
             current = last_window_end + 1
 
             doc_buffer += group_docs
 
             # ── Bulk save when buffer is large enough ─────────
-            # or when this is the last group
             is_last_group = (group_start + CONCURRENT_FETCHES) >= total_windows
             if len(doc_buffer) >= SAVE_BATCH_SIZE or (is_last_group and doc_buffer):
-                # Fast batch dedup check — single SQL IN() query
                 to_save, n_dup = await batch_dedup_check(doc_buffer)
                 total_duplicate += n_dup
 
@@ -402,20 +436,25 @@ async def index_files_task(
                 last_checkpoint = current
 
             # ── Console log ───────────────────────────────────
-            if batch_count % (CONCURRENT_FETCHES * 2) == 0:
+            if batch_count % max(CONCURRENT_FETCHES * 2, 6) == 0:
                 pct = ((current - start_id) / max(last_id - start_id, 1)) * 100
                 logger.info(
                     f"[INDEX] batch={batch_count} checked={total_checked} "
                     f"saved={total_saved} dup={total_duplicate} "
-                    f"skip={total_skipped} {pct:.1f}% id={current}/{last_id}"
+                    f"skip={total_skipped} {pct:.1f}% id={current}/{last_id} "
+                    f"delay={inter_batch_delay[0]:.2f}s"
                 )
 
             # ── Throttled Telegram progress edit ─────────────
             await push_progress()
 
+            # ── Adaptive inter-batch pause ────────────────────
+            # This is the key: we always sleep between groups,
+            # and the delay grows after FloodWaits, shrinks when clean.
+            await asyncio.sleep(inter_batch_delay[0])
+
             # ── Yield event loop ──────────────────────────────
-            if batch_count % (CONCURRENT_FETCHES * 4) == 0:
-                await asyncio.sleep(0)
+            if batch_count % (CONCURRENT_FETCHES * 6) == 0:
                 gc.collect()
 
         # ── Flush any remaining buffer ────────────────────────
@@ -441,7 +480,7 @@ async def index_files_task(
             final_text += f"⏸ **FloodWait**  : `{floodwait_count[0]}` times\n"
         final_text += (
             f"\n🎯 **Target** : `{target_label}`\n"
-            f"🚀 **Parallel**: `{CONCURRENT_FETCHES}` fetchers"
+            f"🚀 **Mode**   : `{CONCURRENT_FETCHES}×` parallel · `{STAGGER_DELAY}s` stagger"
         )
 
         await safe_edit(
