@@ -177,6 +177,32 @@ def _parse_quality(name: str, caption: str = "") -> str:
     return "Unknown"
 
 
+def _quality_from_resolution(width: int, height: int) -> str:
+    """
+    Derive quality label from actual video resolution (Telegram metadata).
+    Uses the longer dimension to handle both landscape and portrait videos.
+
+      ≥ 2160  →  4K
+      ≥ 1080  →  1080P
+      ≥  720  →  720P
+      ≥  480  →  480P
+      >    0  →  360P
+         0,0  →  Unknown  (no metadata available — document, audio)
+    """
+    long_side = max(width or 0, height or 0)
+    if long_side >= 2160:
+        return "4K"
+    if long_side >= 1080:
+        return "1080P"
+    if long_side >= 720:
+        return "720P"
+    if long_side >= 480:
+        return "480P"
+    if long_side > 0:
+        return "360P"
+    return "Unknown"
+
+
 def _parse_language(name: str, caption: str = "") -> str:
     """
     Detect language from filename AND caption text.
@@ -448,6 +474,20 @@ async def save_series_file_for_bulk_index(
             logger.debug(f"[cyber_index] Skipped (no series name): {file_name}")
             return False, 0
 
+        # ── Resolution fallback for quality ────────────────────
+        # If filename + caption both failed to detect quality,
+        # use Telegram's actual video resolution metadata.
+        # Only available for video files — documents have no width/height.
+        if quality == "Unknown" and media_type == "video":
+            width  = getattr(file_obj, "width",  0) or 0
+            height = getattr(file_obj, "height", 0) or 0
+            if width or height:
+                quality = _quality_from_resolution(width, height)
+                logger.debug(
+                    f"[cyber_index] Resolution fallback: {file_name!r} "
+                    f"{width}x{height} → {quality}"
+                )
+
         # ── TMDB / OMDB language fallback ──────────────────────
         # If filename + caption both failed to detect language,
         # resolve via TMDB/OMDB using the series title.
@@ -472,6 +512,7 @@ async def save_series_file_for_bulk_index(
             "language":        language,
             "file_id":         file_obj.file_id,
             "media_type":      media_type,
+            "caption":         caption,                   # saved for downstream use
         }
 
         # ── Save ───────────────────────────────────────────────
