@@ -505,6 +505,139 @@ async def save_series_file_for_bulk_index(
 
 
 # ─────────────────────────────────────────────────────────────
+# BATCH API — used by index.py batch engine
+# ─────────────────────────────────────────────────────────────
+
+async def parse_message_to_doc(msg) -> dict | None:
+    """
+    Parse a single Pyrogram Message into a file_doc dict WITHOUT saving.
+    Returns None if the message should be skipped (no media, no filename, etc.)
+
+    This is the pure-CPU parse step used by the batch indexer:
+      200 messages are fetched at once, then each is passed through here,
+      then all resulting docs are bulk-saved in one DB round-trip.
+    """
+    try:
+        file_obj, media_type = _get_media_info(msg)
+        if not file_obj:
+            return None
+
+        file_name = getattr(file_obj, "file_name", None)
+        if not file_name or not file_name.strip():
+            return None
+
+        file_name  = file_name.strip()
+        channel_id = msg.chat.id if msg.chat else None
+        message_id = msg.id
+
+        if not channel_id:
+            return None
+
+        caption = getattr(msg, "caption", None) or ""
+        if not isinstance(caption, str):
+            caption = str(caption)
+
+        season, episode = _parse_season_episode(file_name)
+        quality         = _parse_quality(file_name, caption)
+        codec           = _parse_codec(file_name, caption)
+
+        # Resolution fallback for quality (video metadata)
+        if quality == "Unknown" and media_type == "video":
+            width  = getattr(file_obj, "width",  0) or 0
+            height = getattr(file_obj, "height", 0) or 0
+            if width or height:
+                quality = _quality_from_resolution(width, height)
+
+        # Language detection (caption flag respected)
+        use_caption_lang = await get_global_setting("CAPTION_LANG", True)
+        lang_caption     = caption if use_caption_lang else ""
+        language         = _parse_language(file_name, lang_caption)
+        normalized_name  = _normalized_series_name(file_name)
+
+        if not normalized_name:
+            return None
+
+        # Language API fallback
+        if language == "Unknown":
+            language = await _get_language_from_api(normalized_name)
+
+        return {
+            "channel_id":      channel_id,
+            "message_id":      message_id,
+            "file_name":       file_name,
+            "normalized_name": normalized_name.lower(),
+            "season":          season,
+            "episode":         episode,
+            "quality":         quality,
+            "language":        language,
+            "file_id":         file_obj.file_id,
+            "media_type":      media_type,
+            "caption":         caption,
+            "codec":           codec,
+        }
+
+    except Exception as e:
+        logger.error(f"[cyber_index] parse_message_to_doc error: {e}")
+        return None
+
+
+async def batch_save_file_docs(docs: list[dict], target: str = "both") -> int:
+    """
+    Bulk-save a list of already-parsed file_doc dicts.
+
+    Flow:
+      1. Deduplicate within the batch itself (same episode slot → keep last).
+      2. Filter out docs whose episode already exists in DB with a codec
+         (genuine duplicates — nothing to update).
+      3. Bulk-insert to SQLite via executemany (one transaction).
+      4. Bulk-upsert to MongoDB via bulk_write (one round-trip per DB).
+
+    Returns the number of docs actually saved/updated.
+    """
+    from DB.database import save_file_docs_batch
+
+    if not docs:
+        return 0
+
+    # ── Step 1: deduplicate within batch ─────────────────────
+    # Key = (normalized_name, season, episode, quality, language)
+    # Later doc in the list wins (last-write in batch is fine)
+    seen_keys: dict[tuple, dict] = {}
+    for doc in docs:
+        key = (
+            doc["normalized_name"],
+            doc["season"],
+            doc["episode"],
+            doc["quality"],
+            doc["language"],
+        )
+        seen_keys[key] = doc   # last one wins
+
+    deduped = list(seen_keys.values())
+
+    # ── Step 2: filter genuine duplicates (has codec already) ─
+    to_save = []
+    for doc in deduped:
+        is_dup = await _episode_exists_with_codec_check(
+            doc["normalized_name"],
+            doc["season"],
+            doc["episode"],
+            doc["quality"],
+            doc["language"],
+            doc["codec"],
+        )
+        if not is_dup:
+            to_save.append(doc)
+
+    if not to_save:
+        return 0
+
+    # ── Step 3+4: bulk save ───────────────────────────────────
+    saved = await save_file_docs_batch(to_save, target=target)
+    return saved
+
+
+# ─────────────────────────────────────────────────────────────
 # STANDALONE PARSE HELPER
 # ─────────────────────────────────────────────────────────────
 
