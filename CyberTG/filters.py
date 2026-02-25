@@ -203,7 +203,7 @@ def build_season_pages(seasons, uid, series, page=0):
 
 def register_filters(cyber: Client):
 
-    @cyber.on_message(filters.text & (filters.private | filters.group) & ~filters.bot & ~filters.via_bot)
+    @cyber.on_message(filters.text & (filters.private | filters.group) & ~filters.bot & ~filters.via_bot & ~filters.outgoing)
     async def search_handler(_, m):
         if not m.text or m.text.startswith("/"):
             return
