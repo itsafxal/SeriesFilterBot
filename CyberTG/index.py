@@ -54,22 +54,24 @@ from utils.cyber_filter import extract_links
 # TUNABLE CONSTANTS
 # ─────────────────────────────────────────────────────────────
 
-FETCH_BATCH_SIZE    = 50     # IDs per call — small batches are lighter on the rate limiter
-MIN_CALL_DELAY      = 3.0    # seconds between calls — conservative and stable
-INTRA_BATCH_PAUSE   = 0.5    # pause every 20 messages within a batch
-STARTUP_DELAY       = 10.0   # longer cold-start delay
-SAVE_BATCH_SIZE     = 200    # accumulate docs before one DB write
+FETCH_BATCH_SIZE    = 100    # IDs per call — Pyrogram handles channel rate limits internally
+MIN_CALL_DELAY      = 0.5    # small courtesy delay — Pyrogram adds its own wait if needed
+INTRA_BATCH_PAUSE   = 0.2    # pause every 20 messages within a batch
+STARTUP_DELAY       = 3.0    # brief cold-start delay
+SAVE_BATCH_SIZE     = 400    # accumulate docs before one DB write
 PROGRESS_EDIT_EVERY = 30     # seconds between Telegram message edits
 
-_RATE_INCREASE   = 2.0    # after FloodWait sleep, just double the delay
-_RATE_DECAY      = 0.99   # very slow recovery — stay slow once throttled
-_MAX_CALL_DELAY  = 120.0  # cap
+# Pyrogram's session layer handles channels.GetMessages rate limits automatically.
+# Our FloodWait handler catches any that bubble up past Pyrogram (rare).
+_RATE_INCREASE   = 2.0    # multiply delay if FloodWait reaches our handler
+_RATE_DECAY      = 0.98   # slow recovery
+_MAX_CALL_DELAY  = 60.0   # cap
 
 INDEX_SKIP_ID_KEY = "INDEX_SKIP_ID"
 INDEX_STATUS_KEY  = "CURRENT_INDEX_TASK"
 
 lock         = asyncio.Lock()
-media_filter = filters.document | filters.video 
+media_filter = filters.document | filters.video | filters.audio
 index_task: Optional[asyncio.Task] = None
 
 
