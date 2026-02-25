@@ -173,12 +173,15 @@ async def owner_menu_handler(_, query):
 
 
 async def global_settings_router(_, query):
+    cap_lang = await get_global_setting("CAPTION_LANG", True)
+    cap_lang_status = "✅ ON" if cap_lang else "❌ OFF"
     keyboard = InlineKeyboardMarkup([
         [BTN("📂 Index Channels",   callback_data="index|index")],
         [BTN("📝 File Caption",     callback_data="caption|caption")],
         [BTN("⏳ Auto Delete",      callback_data="autodel|autodel")],
         [BTN("📦 File Auto Delete", callback_data="filedel|filedel")],
         [BTN("📡 FSub Settings",    callback_data="fsub|main")],
+        [BTN(f"🌐 Caption Language  {cap_lang_status}", callback_data="caplang|toggle")],
         [BTN("🔙 Back",             callback_data="admin|menu")],
     ])
     await safe_edit(query.message, caption="<b>⚙️ Global Settings</b>",
@@ -651,6 +654,22 @@ async def admin_input_handler(bot, message: Message):
 
 
 # ══════════════════════════════════════════════════════════════
+# CAPTION LANGUAGE TOGGLE
+# ══════════════════════════════════════════════════════════════
+
+async def caplang_toggle_router(_, query: CallbackQuery):
+    """Toggle CAPTION_LANG on/off and refresh Global Settings."""
+    current = await get_global_setting("CAPTION_LANG", True)
+    # Flip the value
+    new_val = not current
+    await set_global_setting("CAPTION_LANG", new_val)
+    status  = "✅ ON" if new_val else "❌ OFF"
+    await query.answer(f"Caption Language Detection: {status}", show_alert=True)
+    # Refresh the Global Settings page with updated button
+    await global_settings_router(_, query)
+
+
+# ══════════════════════════════════════════════════════════════
 # REGISTER ALL HANDLERS
 # ══════════════════════════════════════════════════════════════
 
@@ -691,6 +710,9 @@ def register_menu_handlers(cyber: Client):
 
     @cyber.on_callback_query(filters.regex(r"^fsub\|") & filters.user(ADMIN_USERS))
     async def _(c, q): await fsub_router(c, q)
+
+    @cyber.on_callback_query(filters.regex(r"^caplang\|") & filters.user(ADMIN_USERS))
+    async def _(c, q): await caplang_toggle_router(c, q)
 
     @cyber.on_callback_query(filters.regex(r"^close\|menu$"))
     async def _(c, q):
