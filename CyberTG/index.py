@@ -303,62 +303,98 @@ async def index_files_task(
         f"{FETCH_BATCH_SIZE} IDs/call, {MIN_CALL_DELAY}s/call)"
     )
 
-    try:
-        while current <= last_id:
+    async def _parse_and_buffer(msgs: list) -> tuple[list, int, int]:
+        """Pure CPU: parse a fetched batch into docs. No I/O."""
+        docs    = []
+        skipped = 0
+        for msg in msgs:
+            if msg is None or msg.empty:
+                continue
+            if not (msg.document or msg.video or msg.audio):
+                skipped += 1
+                continue
+            doc = await parse_message_to_doc(msg)
+            if doc is not None:
+                docs.append(doc)
+            else:
+                skipped += 1
+        return docs, len(msgs), skipped
 
-            # ── Build ID window ───────────────────────────────
+    async def _flush_buffer(buf: list) -> tuple[int, int]:
+        """Dedup + save a buffer to DB. Returns (saved, n_dup)."""
+        if not buf:
+            return 0, 0
+        to_save, n_dup = await batch_dedup_check(buf)
+        saved = 0
+        if to_save:
+            saved = await batch_save_file_docs(to_save, target=target)
+            for doc in to_save:
+                logger.info(
+                    f"[BULK INDEX] ✅ {doc['normalized_name']!r} "
+                    f"S{doc['season']:02d}E{doc['episode']:02d} "
+                    f"{doc['quality']} {doc['language']}"
+                )
+        return saved, n_dup
+
+    try:
+        # PIPELINE: overlap Telegram fetch with DB save using asyncio.gather.
+        #
+        # Normal sequential flow:  [fetch]→[parse]→[save]→[fetch]→[parse]→[save]
+        # Pipelined flow:          [fetch] overlaps with [save from previous batch]
+        #
+        # During a FloodWait (20-30s sleep), the DB save runs concurrently,
+        # so we waste zero time on writes while waiting for Telegram to recover.
+        #
+        # Sequence:
+        #   1. fetch batch N          (Telegram call — may hit FloodWait)
+        #   2. parse batch N          (pure CPU, fast)
+        #   3. gather(fetch N+1, save buffer if full)  ← KEY: overlap I/O
+        #   4. repeat
+
+        while current <= last_id:
+            # ── Fetch current window ──────────────────────────
             window_end = min(current + FETCH_BATCH_SIZE - 1, last_id)
             id_window  = list(range(current, window_end + 1))
 
-            # ── Fetch ─────────────────────────────────────────
-            prev_fw = floodwait_count[0]
-            msgs    = await _fetch_batch(bot, chat_id, id_window, call_delay, floodwait_count)
+            # Determine if we should flush the buffer NOW (overlapped with next fetch)
+            is_last      = window_end >= last_id
+            flush_needed = len(doc_buffer) >= SAVE_BATCH_SIZE or (is_last and doc_buffer)
+            next_start   = window_end + 1
+
+            if flush_needed and not is_last:
+                # OVERLAP: fetch this window AND flush previous buffer simultaneously
+                next_window_end = min(next_start + FETCH_BATCH_SIZE - 1, last_id)
+                next_id_window  = list(range(next_start, next_window_end + 1))
+
+                fetch_coro = _fetch_batch(bot, chat_id, id_window, call_delay, floodwait_count)
+                flush_coro = _flush_buffer(list(doc_buffer))
+
+                msgs, (flushed, n_dup) = await asyncio.gather(fetch_coro, flush_coro)
+                total_saved     += flushed
+                total_duplicate += n_dup
+                doc_buffer.clear()
+            else:
+                # Just fetch — nothing to flush yet (or it's the last window)
+                msgs = await _fetch_batch(bot, chat_id, id_window, call_delay, floodwait_count)
+
             call_count += 1
+            current     = window_end + 1
 
-            # Rate limiting is handled entirely by Telegram's FloodWait responses.
-            # _fetch_batch sleeps exactly fw.value seconds when throttled.
-            # No artificial delay needed — Telegram itself paces us.
+            # ── Parse fetched messages ────────────────────────
+            docs, n_checked, n_skipped = await _parse_and_buffer(msgs)
+            doc_buffer    += docs
+            total_checked += n_checked
+            total_skipped += n_skipped
 
-            # ── Parse media messages (intra-batch pause every 20) ───
-            for i, msg in enumerate(msgs):
-                if msg is None or msg.empty:
-                    continue
-                if not (msg.document or msg.video or msg.audio):
-                    total_skipped += 1
-                    continue
-                doc = await parse_message_to_doc(msg)
-                if doc is not None:
-                    doc_buffer.append(doc)
-                else:
-                    total_skipped += 1
-
-                # Tiny pause every 20 messages — matches reference impl
-                if i > 0 and i % 20 == 0:
-                    await asyncio.sleep(INTRA_BATCH_PAUSE)
-
-            total_checked += len(id_window)
-            current        = window_end + 1
+            # ── Flush if last window (not already flushed above) ──
+            if is_last and doc_buffer:
+                flushed, n_dup  = await _flush_buffer(list(doc_buffer))
+                total_saved     += flushed
+                total_duplicate += n_dup
+                doc_buffer.clear()
 
             # ── Checkpoint ────────────────────────────────────
-            if current != last_checkpoint:
-                await save_bot_state(chat_key, current)
-                last_checkpoint = current
-
-            # ── Bulk save ─────────────────────────────────────
-            is_last = current > last_id
-            if len(doc_buffer) >= SAVE_BATCH_SIZE or (is_last and doc_buffer):
-                to_save, n_dup = await batch_dedup_check(doc_buffer)
-                total_duplicate += n_dup
-                if to_save:
-                    saved = await batch_save_file_docs(to_save, target=target)
-                    total_saved += saved
-                    for doc in to_save:
-                        logger.info(
-                            f"[BULK INDEX] ✅ {doc['normalized_name']!r} "
-                            f"S{doc['season']:02d}E{doc['episode']:02d} "
-                            f"{doc['quality']} {doc['language']}"
-                        )
-                doc_buffer.clear()
+            await save_bot_state(chat_key, current)
 
             # ── Console log every 100 calls ───────────────────
             if call_count % 100 == 0:
@@ -366,16 +402,13 @@ async def index_files_task(
                 logger.info(
                     f"[INDEX] call={call_count} checked={total_checked:,} "
                     f"saved={total_saved} dup={total_duplicate} "
-                    f"skip={total_skipped} {pct:.1f}% delay={call_delay[0]:.2f}s"
+                    f"skip={total_skipped} {pct:.1f}%"
                 )
-
-            # ── Progress edit (30s throttle) ──────────────────
-            await push_progress()
-
-            # ── Yield event loop every 100 calls ─────────────
-            if call_count % 100 == 0:
                 gc.collect()
-            await asyncio.sleep(0)  # yield to event loop every call
+
+            # ── Progress edit ─────────────────────────────────
+            await push_progress()
+            await asyncio.sleep(0)
 
         # ── Done ──────────────────────────────────────────────
         await save_bot_state(chat_key, None)
