@@ -7,6 +7,8 @@ FIXES:
   3. safe_edit handles FloodWait in addition to MessageNotModified
   4. AUTO_DELETE_DELAY fetched once at handler level, not per-branch
   5. Removed duplicate imports
+  6. _quality_label: safely handles empty/None codec and normalizes quality key lookup
+     so "720p", "1080p" etc. always display correctly when no codec is detected
 """
 
 import math
@@ -215,9 +217,15 @@ QUALITY_DISPLAY = {
 
 
 def _quality_label(quality: str, codec: str) -> str:
-    """Format button label: 'H.265 1080p' or just '720p' if no codec."""
-    disp = QUALITY_DISPLAY.get(quality.upper(), quality)
-    return f"{codec} {disp}".strip() if codec else disp
+    """
+    Format button label.
+    With codec:    'H.265 1080p'
+    Without codec: '720p'   (never shows empty codec prefix)
+    """
+    disp = QUALITY_DISPLAY.get((quality or "").upper().strip(), quality)
+    if codec and codec.strip():
+        return f"{codec.strip()} {disp}"
+    return disp
 
 
 def register_filters(cyber: Client):
@@ -367,7 +375,7 @@ def register_filters(cyber: Client):
         poster, year, genre, rating = await get_series_info(series)
         back = BTN("⬅️ Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
 
-        # Build buttons: label shows "H.265 1080P" but callback still carries plain quality
+        # Build buttons: label shows codec + quality (or just quality if no codec found)
         rows, row = [], []
         for quality, codec in qc_pairs:
             label = _quality_label(quality, codec)
