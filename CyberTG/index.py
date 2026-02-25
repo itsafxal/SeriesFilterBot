@@ -11,7 +11,7 @@ The FloodWait was caused by fetching 200 IDs per call — too heavy.
 
 SOLUTION:
   - Fetch 50 IDs per call (not 200) — 4× lighter per request
-  - Mandatory MIN_CALL_DELAY (1.5s) between every single API call
+  - 0.5s delay between batches (proven safe by reference implementation)
   - Adaptive: FloodWait → delay grows, clean calls → delay decays
   - No parallelism — one call at a time, steady and safe
 
@@ -54,14 +54,15 @@ from utils.cyber_filter import extract_links
 # TUNABLE CONSTANTS
 # ─────────────────────────────────────────────────────────────
 
-FETCH_BATCH_SIZE    = 50     # IDs per get_messages() call — keep small to avoid FloodWait
-MIN_CALL_DELAY      = 1.5    # seconds between every API call (mandatory floor)
-SAVE_BATCH_SIZE     = 300    # accumulate docs before one DB write
+FETCH_BATCH_SIZE    = 200    # IDs per get_messages() call (proven safe with 0.5s delay)
+MIN_CALL_DELAY      = 0.5    # seconds between batches (matches reference implementation)
+INTRA_BATCH_PAUSE   = 0.2    # tiny pause every 20 messages within a batch
+SAVE_BATCH_SIZE     = 400    # accumulate docs before one DB write
 PROGRESS_EDIT_EVERY = 30     # seconds between Telegram message edits
 
 # Adaptive pacing
-_RATE_INCREASE   = 3.0    # multiply delay on FloodWait
-_RATE_DECAY      = 0.98   # multiply delay each clean call (slow recovery)
+_RATE_INCREASE   = 2.0    # multiply delay on FloodWait
+_RATE_DECAY      = 0.95   # multiply delay each clean call (slow recovery)
 _MAX_CALL_DELAY  = 120.0  # cap
 
 INDEX_SKIP_ID_KEY = "INDEX_SKIP_ID"
@@ -181,11 +182,12 @@ async def _fetch_batch(
     floodwait_count: list,   # mutable [int]
 ) -> list:
     """
-    Fetch one window of message IDs.
-    On FloodWait: sleep required time, grow call_delay, retry.
-    Returns list of Message objects (may be empty on persistent error).
+    Fetch one batch of message IDs using the proven reference pattern:
+      - get_messages(200 IDs) — Telegram's native batch endpoint
+      - FloodWait: sleep the required time + grow delay, then retry
+      - Tiny intra-batch pause every 20 messages during processing
     """
-    for _attempt in range(4):
+    while True:
         try:
             msgs = await bot.get_messages(chat_id, id_window)
             if not isinstance(msgs, list):
@@ -195,18 +197,18 @@ async def _fetch_batch(
             floodwait_count[0] += 1
             call_delay[0] = min(call_delay[0] * _RATE_INCREASE, _MAX_CALL_DELAY)
             logger.warning(
-                f"[INDEX] FloodWait — call_delay → {call_delay[0]:.1f}s"
+                f"[INDEX] FloodWait {fw.value}s — sleeping, "
+                f"new delay → {call_delay[0]:.1f}s"
             )
-            await safe_floodwait_sleep(fw)
+            await asyncio.sleep(fw.value + 1)
+            # retry same batch after flood wait
         except ChannelPrivate:
             logger.error(f"[INDEX] Channel {chat_id} is private/inaccessible.")
             return []
         except Exception as e:
-            logger.error(f"[INDEX] get_messages error (attempt {_attempt+1}): {e}")
+            logger.error(f"[INDEX] get_messages error: {e}")
             await asyncio.sleep(5)
-
-    logger.warning("[INDEX] 4 fetch attempts failed — skipping window.")
-    return []
+            return []  # skip this batch on non-FloodWait error
 
 
 # ─────────────────────────────────────────────────────────────
@@ -322,8 +324,8 @@ async def index_files_task(
                 # Clean call — slowly recover toward MIN_CALL_DELAY
                 call_delay[0] = max(call_delay[0] * _RATE_DECAY, MIN_CALL_DELAY)
 
-            # ── Parse media messages ──────────────────────────
-            for msg in msgs:
+            # ── Parse media messages (intra-batch pause every 20) ───
+            for i, msg in enumerate(msgs):
                 if msg is None or msg.empty:
                     continue
                 if not (msg.document or msg.video or msg.audio):
@@ -334,6 +336,10 @@ async def index_files_task(
                     doc_buffer.append(doc)
                 else:
                     total_skipped += 1
+
+                # Tiny pause every 20 messages — matches reference impl
+                if i > 0 and i % 20 == 0:
+                    await asyncio.sleep(INTRA_BATCH_PAUSE)
 
             total_checked += len(id_window)
             current        = window_end + 1
