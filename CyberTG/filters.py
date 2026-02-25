@@ -29,6 +29,7 @@ from DB.database import (
     get_series_summary,
     get_unique_languages_by_season,
     get_unique_qualities_by_lang_season,
+    get_unique_qualities_with_codec,
     get_global_setting
 )
 
@@ -201,15 +202,29 @@ def build_season_pages(seasons, uid, series, page=0):
 # REGISTER FILTERS
 # =================================================
 
+# Quality label display map — stored as uppercase, shown with lowercase p
+QUALITY_DISPLAY = {
+    "4K":      "4K",
+    "2160P":   "2160p",
+    "1080P":   "1080p",
+    "720P":    "720p",
+    "480P":    "480p",
+    "360P":    "360p",
+    "UNKNOWN": "Unknown",
+}
+
+
+def _quality_label(quality: str, codec: str) -> str:
+    """Format button label: 'H.265 1080p' or just '720p' if no codec."""
+    disp = QUALITY_DISPLAY.get(quality.upper(), quality)
+    return f"{codec} {disp}".strip() if codec else disp
+
+
 def register_filters(cyber: Client):
 
-    @cyber.on_message(filters.text & (filters.private | filters.group) & ~filters.bot & ~filters.via_bot & ~filters.outgoing)
+    @cyber.on_message(filters.text & (filters.private | filters.group))
     async def search_handler(_, m):
         if not m.text or m.text.startswith("/"):
-            return
-
-        # Ignore messages with no sender or sent by any bot
-        if not m.from_user or m.from_user.is_bot:
             return
 
         uid = m.from_user.id
@@ -346,11 +361,25 @@ def register_filters(cyber: Client):
         _, uid, series, season, lang = q.data.split("|")
         if not await check_owner(q, uid):
             return
-        qs = await get_unique_qualities_by_lang_season(series, lang, int(season))
+        # Get (quality, codec) pairs for rich button labels e.g. "H.265 1080P"
+        qc_pairs = await get_unique_qualities_with_codec(series, lang, int(season))
+        qs       = [qc[0] for qc in qc_pairs]   # plain quality list for caption
         poster, year, genre, rating = await get_series_info(series)
-        # Back → Language select for this season
         back = BTN("⬅️ Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
-        kb = build_grid_keyboard(qs, lambda x: f"gqs|{uid}|{series}|{season}|{lang}|{x}", back_btn=back)
+
+        # Build buttons: label shows "H.265 1080P" but callback still carries plain quality
+        rows, row = [], []
+        for quality, codec in qc_pairs:
+            label = _quality_label(quality, codec)
+            row.append(BTN(label, callback_data=f"gqs|{uid}|{series}|{season}|{lang}|{quality}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([back])
+        kb = InlineKeyboardMarkup(rows)
+
         await safe_edit(
             q.message.edit_caption(
                 build_caption(series, year, genre, rating,
@@ -437,10 +466,21 @@ def register_filters(cyber: Client):
         _, uid, series, season, lang = q.data.split("|")
         if not await check_owner(q, uid):
             return
-        qs = await get_unique_qualities_by_lang_season(series, lang, int(season))
+        qc_pairs = await get_unique_qualities_with_codec(series, lang, int(season))
+        qs       = [qc[0] for qc in qc_pairs]
         poster, year, genre, rating = await get_series_info(series)
         back = BTN("⬅️ Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
-        kb = build_grid_keyboard(qs, lambda x: f"gqs|{uid}|{series}|{season}|{lang}|{x}", back_btn=back)
+        rows, row = [], []
+        for quality, codec in qc_pairs:
+            label = _quality_label(quality, codec)
+            row.append(BTN(label, callback_data=f"gqs|{uid}|{series}|{season}|{lang}|{quality}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([back])
+        kb = InlineKeyboardMarkup(rows)
         await safe_edit(
             q.message.edit_caption(
                 build_caption(series, year, genre, rating,
