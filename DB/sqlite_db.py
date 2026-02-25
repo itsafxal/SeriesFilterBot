@@ -572,6 +572,87 @@ def episode_exists_sync(normalized_name: str, season: int, episode: int,
     return cursor.fetchone() is not None
 
 
+def save_file_docs_batch_sync(docs: list[dict], logger) -> int:
+    """
+    Bulk-insert/update a list of file_doc dicts in a single SQLite transaction.
+
+    Uses the same ON CONFLICT DO UPDATE logic as save_file_to_sql_sync so
+    codec backfills work correctly.  Processes up to BATCH_SIZE docs per
+    executemany call to avoid hitting SQLite variable limits.
+
+    Returns the number of rows actually inserted or updated.
+    """
+    if not docs:
+        return 0
+
+    try:
+        conn   = _get_conn()
+        cursor = conn.cursor()
+
+        rows = []
+        for doc in docs:
+            normalized = (doc.get("normalized_name") or "").strip().lower()
+            codec      = (doc.get("codec") or "").strip()
+            if not codec:
+                codec = _parse_codec_from_filename(doc.get("file_name", ""))
+            rows.append((
+                doc["channel_id"],
+                doc["message_id"],
+                doc["file_name"],
+                normalized,
+                doc["season"],
+                doc["episode"],
+                doc["quality"],
+                doc["language"],
+                doc.get("file_id"),
+                doc.get("media_type", "document"),
+                doc.get("caption", ""),
+                codec,
+            ))
+
+        saved = 0
+        # Process in sub-batches to avoid hitting SQLite variable limits
+        for i in range(0, len(rows), BATCH_SIZE):
+            chunk = rows[i : i + BATCH_SIZE]
+            cursor.executemany("""
+                INSERT INTO files
+                    (channel_id, message_id, file_name, normalized_name,
+                     season, episode, quality, language, file_id,
+                     media_type, caption, codec)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(channel_id, message_id) DO UPDATE SET
+                    file_id    = excluded.file_id,
+                    codec      = CASE
+                                     WHEN excluded.codec != '' THEN excluded.codec
+                                     ELSE codec
+                                 END,
+                    media_type = CASE
+                                     WHEN excluded.media_type != '' THEN excluded.media_type
+                                     ELSE media_type
+                                 END
+                ON CONFLICT(normalized_name, season, episode, quality, language) DO UPDATE SET
+                    file_id    = excluded.file_id,
+                    codec      = CASE
+                                     WHEN excluded.codec != '' THEN excluded.codec
+                                     ELSE codec
+                                 END,
+                    media_type = CASE
+                                     WHEN excluded.media_type != '' THEN excluded.media_type
+                                     ELSE media_type
+                                 END
+            """, chunk)
+            saved += cursor.rowcount
+
+        conn.commit()
+        if saved:
+            clear_all_caches()
+        return saved
+
+    except Exception as e:
+        logger.error(f"save_file_docs_batch_sync error: {e}")
+        return 0
+
+
 def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
     """
     CODEC FIX: uses INSERT … ON CONFLICT DO UPDATE instead of INSERT OR IGNORE.
