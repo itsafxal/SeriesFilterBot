@@ -27,7 +27,7 @@ LANGUAGE DETECTION PRIORITY:
 
 import re
 import asyncio
-from DB.database import save_file_to_db, episode_exists
+from DB.database import save_file_to_db, episode_exists, get_global_setting
 from config import logger
 
 
@@ -495,9 +495,15 @@ async def save_series_file_for_bulk_index(
             caption = str(caption)
 
         season, episode = _parse_season_episode(file_name)
-        quality         = _parse_quality(file_name, caption)   # caption = extra signal
-        language        = _parse_language(file_name, caption)  # caption = extra signal
-        normalized_name = _normalized_series_name(file_name)
+        quality         = _parse_quality(file_name, caption)   # caption always used for quality
+
+        # CAPTION_LANG setting: if enabled, use caption text as extra signal for language.
+        # If disabled, detect language from filename only — caption is ignored.
+        # Either way, "Unknown" falls through to TMDB/OMDB API fallback below.
+        use_caption_lang = await get_global_setting("CAPTION_LANG", True)
+        lang_caption     = caption if use_caption_lang else ""
+        language         = _parse_language(file_name, lang_caption)
+        normalized_name  = _normalized_series_name(file_name)
 
         if not normalized_name:
             logger.debug(f"[cyber_index] Skipped (no series name): {file_name}")
