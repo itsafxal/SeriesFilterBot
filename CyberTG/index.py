@@ -54,16 +54,14 @@ from utils.cyber_filter import extract_links
 # TUNABLE CONSTANTS
 # ─────────────────────────────────────────────────────────────
 
-FETCH_BATCH_SIZE    = 100    # IDs per get_messages() call — halved to reduce per-call weight
-MIN_CALL_DELAY      = 1.0    # seconds between batches — doubled from reference for safety
+FETCH_BATCH_SIZE    = 100    # IDs per get_messages() call
+MIN_CALL_DELAY      = 2.0    # seconds between batches — 2s is safe for most bots
 INTRA_BATCH_PAUSE   = 0.3    # tiny pause every 20 messages within a batch
+STARTUP_DELAY       = 5.0    # seconds to wait before the very first API call (cold session)
 SAVE_BATCH_SIZE     = 400    # accumulate docs before one DB write
 PROGRESS_EDIT_EVERY = 30     # seconds between Telegram message edits
 
-# Adaptive pacing
-# On FloodWait: delay jumps to fw.value territory (already slept), then we add
-# extra headroom so next call is slower. 4× means 1.0s → 4.0s after first FloodWait.
-_RATE_INCREASE   = 4.0    # multiply delay on FloodWait (aggressive back-off)
+_RATE_INCREASE   = 4.0    # multiply delay on FloodWait
 _RATE_DECAY      = 0.97   # multiply delay each clean call (slow recovery)
 _MAX_CALL_DELAY  = 120.0  # cap
 
@@ -305,6 +303,11 @@ async def index_files_task(
         f"({total_range:,} IDs, ~{total_calls} calls, "
         f"{FETCH_BATCH_SIZE} IDs/call, {MIN_CALL_DELAY}s/call)"
     )
+
+    # Startup delay — lets the Telegram session settle before first API call
+    # Prevents FloodWait on the very first request (cold session issue)
+    logger.info(f"[INDEX] Waiting {STARTUP_DELAY}s before first call (cold-start delay)...")
+    await asyncio.sleep(STARTUP_DELAY)
 
     try:
         while current <= last_id:
