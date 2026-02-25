@@ -165,9 +165,14 @@ def _parse_season_episode(name: str) -> tuple[int, int]:
     return season, episode
 
 
-def _parse_quality(name: str) -> str:
+def _parse_quality(name: str, caption: str = "") -> str:
+    """
+    Detect quality from filename first, then caption as fallback.
+    e.g. caption "1080p WEB-DL" will be picked up if filename has no quality tag.
+    """
+    combined = f"{name} {caption}"
     for pattern, label in _QUALITY_MAP:
-        if pattern.search(name):
+        if pattern.search(combined):
             return label
     return "Unknown"
 
@@ -435,7 +440,7 @@ async def save_series_file_for_bulk_index(
             caption = str(caption)
 
         season, episode = _parse_season_episode(file_name)
-        quality         = _parse_quality(file_name)
+        quality         = _parse_quality(file_name, caption)   # caption = extra signal
         language        = _parse_language(file_name, caption)  # caption = extra signal
         normalized_name = _normalized_series_name(file_name)
 
@@ -467,7 +472,6 @@ async def save_series_file_for_bulk_index(
             "language":        language,
             "file_id":         file_obj.file_id,
             "media_type":      media_type,
-            "caption":         caption,                   # ← saved for downstream use
         }
 
         # ── Save ───────────────────────────────────────────────
@@ -492,7 +496,7 @@ async def save_series_file_for_bulk_index(
 # STANDALONE PARSE HELPER  (used by command.py stats / admin)
 # ─────────────────────────────────────────────────────────────
 
-def parse_file_name(file_name: str) -> dict:
+def parse_file_name(file_name: str, caption: str = "") -> dict:
     """
     Returns parsed metadata dict without saving.
     Useful for previewing what would be indexed.
@@ -503,6 +507,6 @@ def parse_file_name(file_name: str) -> dict:
         "normalized_name": _normalized_series_name(file_name),
         "season":          season,
         "episode":         episode,
-        "quality":         _parse_quality(file_name),
-        "language":        _parse_language(file_name),  # no caption in standalone mode
+        "quality":         _parse_quality(file_name, caption),
+        "language":        _parse_language(file_name, caption),
     }
