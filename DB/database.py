@@ -72,15 +72,24 @@ def _ensure_file_indexes(col):
             background=True,
             language_override="text_index_lang",
         )
+        # Content-identity unique index — prevents duplicate episodes
+        # (same series+season+episode+quality+language from different uploads)
         col.create_index(
-            [("normalized_name", 1), ("season", 1), ("quality", 1), ("language", 1)],
+            [
+                ("normalized_name", 1),
+                ("season",          1),
+                ("episode",         1),
+                ("quality",         1),
+                ("language",        1),
+            ],
             background=True,
+            unique=True,
+            name="content_identity_unique",
         )
+        # Keep channel+message index for lookups (non-unique now)
         col.create_index(
             [("channel_id", 1), ("message_id", 1)],
             background=True,
-            unique=True,
-            sparse=True,
         )
     except Exception as e:
         logger.error(f"❌ Index creation failed for {col.full_name}: {e}")
@@ -118,6 +127,7 @@ from .sqlite_db import (
     _normalized_series_from_filename,
     save_file_to_sql_sync,
     clear_all_caches,
+    episode_exists_sync,
 )
 
 
@@ -345,15 +355,37 @@ async def get_file_by_message_id_and_channel_id(channel_id: int, message_id: int
         )
 
 
+async def episode_exists(normalized_name: str, season: int, episode: int,
+                         quality: str, language: str) -> bool:
+    """
+    Async wrapper — returns True if this episode slot is already filled.
+    Called from cyber_index before attempting to save.
+    """
+    async with sql_db_lock:
+        return await asyncio.to_thread(
+            episode_exists_sync, normalized_name, season, episode, quality, language
+        )
+
+
 # ─────────────────────────────────────────────────────────────
 # FILE CRUD — target-aware
 # ─────────────────────────────────────────────────────────────
 
 def _mongo_upsert(col, file_doc: dict):
-    """Helper: upsert one file_doc into a pymongo collection."""
+    """
+    Upsert one file_doc into a pymongo collection.
+    Keyed on content identity (normalized_name + season + episode + quality + language)
+    so re-uploads and mirror copies of the same episode are deduplicated.
+    """
     try:
         col.update_one(
-            {"channel_id": file_doc["channel_id"], "message_id": file_doc["message_id"]},
+            {
+                "normalized_name": file_doc["normalized_name"],
+                "season":          file_doc["season"],
+                "episode":         file_doc["episode"],
+                "quality":         file_doc["quality"],
+                "language":        file_doc["language"],
+            },
             {"$set": file_doc},
             upsert=True,
         )
