@@ -118,6 +118,7 @@ from .sqlite_db import (
     get_all_files_by_season_and_quality_sync,
     get_unique_languages_by_season_sync,
     get_unique_qualities_by_lang_season_sync,
+    get_unique_qualities_with_codec_sync,
     get_file_by_message_id_and_channel_id_sync,
     delete_all_files_sync,
     delete_one_file_sync,
@@ -346,6 +347,14 @@ async def get_unique_languages_by_season(series_name: str, season: int):
 async def get_unique_qualities_by_lang_season(series_name: str, language: str, season: int):
     async with sql_db_lock:
         return await asyncio.to_thread(get_unique_qualities_by_lang_season_sync, series_name, language, season)
+
+
+async def get_unique_qualities_with_codec(series_name: str, language: str, season: int):
+    """Returns list of (quality, codec) tuples for building quality buttons."""
+    async with sql_db_lock:
+        return await asyncio.to_thread(
+            get_unique_qualities_with_codec_sync, series_name, language, season
+        )
 
 
 async def get_file_by_message_id_and_channel_id(channel_id: int, message_id: int):
