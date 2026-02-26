@@ -1,23 +1,34 @@
 """
-utils/cyber_index.py — ULTRA-FAST PARALLEL EDITION
-====================================================
-SPEED IMPROVEMENTS vs previous version:
+utils/cyber_index.py — FIXED EDITION
+======================================
 
-  1. CAPTION_LANG CACHED — set_caption_lang_cache() stores the flag once
-     at index start. Eliminates one MongoDB round-trip per document
-     (was the #1 bottleneck — 200+ DB calls per 200-msg batch!).
+FIXES IN THIS VERSION:
 
-  2. batch_dedup_check() — replaces N individual _episode_exists_with_codec_check()
-     calls with a SINGLE SQLite IN() query for the whole batch.
-     Example: 200 docs → was 200 SQL queries → now 1 query.
+  1. FALSE DUPLICATE BUG FIXED — batch_dedup_check now checks existence
+     using BOTH the full key (name+season+ep+quality+lang) AND a language-
+     agnostic key (name+season+ep+quality). If the language-agnostic key
+     matches, we treat it as a duplicate regardless of what language the
+     parser detected this run.
 
-  3. parse_message_to_doc() uses cached CAPTION_LANG — zero DB calls during parse.
+     Root cause: _get_language_from_api() can return "Unknown" if the TMDB
+     API is slow/down, while the same file was previously stored as "Hindi".
+     The full key doesn't match → dedup misses it → second row inserted with
+     language="Unknown" → users see duplicates in search results.
 
-  4. _get_language_from_api() unchanged — still cached in _LANG_CACHE dict
-     (in-memory, zero network calls for seen names).
+  2. API CALLS NO LONGER BLOCK BATCH PROCESSING — _get_language_from_api()
+     is now capped by a semaphore (max 3 concurrent HTTP calls). During bulk
+     index, if the semaphore would block, we return "Unknown" immediately
+     and let the existing language (from the DB, via dedup logic) win.
+     The TMDB cache still fills up over time so repeat lookups are instant.
 
-All existing public functions (save_series_file_for_bulk_index, batch_save_file_docs,
-parse_file_name) are fully backward-compatible.
+  3. CAPTION_LANG CACHED — unchanged from previous version.
+     set_caption_lang_cache() stores the flag once at index start.
+     Eliminates one MongoDB round-trip per document.
+
+  4. batch_dedup_check() — SINGLE SQLite IN() query for the whole batch
+     PLUS language-agnostic secondary check. Returns correct duplicate count.
+
+All existing public functions are fully backward-compatible.
 """
 
 import re
@@ -47,7 +58,6 @@ _QUALITY_MAP = [
     (re.compile(r"\b360[pP]\b"),    "360P"),
 ]
 
-# Codec: word-boundary guards prevent false positives (e.g. AVC inside INAVCODED)
 _CODEC_MAP = [
     (re.compile(r"H\.?265|\bHEVC\b|\bx265\b",         re.IGNORECASE), "H.265"),
     (re.compile(r"H\.?264|\bAVC\b|\bx264\b",          re.IGNORECASE), "H.264"),
@@ -131,31 +141,18 @@ _BARE_NUM_RE  = re.compile(r"\b\d+\b")
 
 
 # ─────────────────────────────────────────────────────────────
-# CAPTION_LANG CACHE  ← NEW
-# Eliminates MongoDB round-trip on every parse_message_to_doc() call.
-# index.py calls set_caption_lang_cache(True/False) once at index start,
-# and set_caption_lang_cache(None) when done to revert to live DB lookups.
+# CAPTION_LANG CACHE
 # ─────────────────────────────────────────────────────────────
 
-_CAPTION_LANG_CACHE: bool | None = None   # None = not cached, use DB
+_CAPTION_LANG_CACHE: bool | None = None
 
 
 def set_caption_lang_cache(value: bool | None):
-    """
-    Call with True/False to lock the CAPTION_LANG flag for the duration
-    of a bulk index run (zero DB calls per doc).
-    Call with None to clear the cache and revert to live DB reads.
-    """
     global _CAPTION_LANG_CACHE
     _CAPTION_LANG_CACHE = value
 
 
 async def _get_caption_lang_flag() -> bool:
-    """
-    Returns CAPTION_LANG setting.
-    Uses cached value if set (fast path during bulk index).
-    Falls back to MongoDB only when cache is None (RTI / normal ops).
-    """
     if _CAPTION_LANG_CACHE is not None:
         return _CAPTION_LANG_CACHE
     flag = await get_global_setting("CAPTION_LANG", True)
@@ -242,12 +239,20 @@ def _parse_language(name: str, caption: str = "") -> str:
 
 # ─────────────────────────────────────────────────────────────
 # TMDB / OMDB LANGUAGE FALLBACK
+# FIX: semaphore limits concurrent HTTP calls to prevent blocking
 # ─────────────────────────────────────────────────────────────
 
 _LANG_CACHE: dict[str, str] = {}
+_LANG_API_SEM = asyncio.Semaphore(3)   # max 3 concurrent HTTP calls
 
 
 async def _get_language_from_api(normalized_name: str) -> str:
+    """
+    Returns language from cache or TMDB/OMDB API.
+    Semaphore prevents more than 3 concurrent HTTP calls.
+    If called during bulk index and semaphore would block, returns "Unknown"
+    immediately — the batch is not held up by a slow API call.
+    """
     if not normalized_name:
         return "Unknown"
 
@@ -256,6 +261,7 @@ async def _get_language_from_api(normalized_name: str) -> str:
     if key in _LANG_CACHE:
         return _LANG_CACHE[key]
 
+    # ── SQLite cache (instant) ────────────────────────────────
     try:
         from utils.cyber_poster import get_cached
         cached = await asyncio.to_thread(get_cached, key)
@@ -267,29 +273,39 @@ async def _get_language_from_api(normalized_name: str) -> str:
     except Exception as e:
         logger.debug(f"[LANG] SQLite lookup failed for {key!r}: {e}")
 
+    # ── HTTP API (rate-limited) ───────────────────────────────
+    # During bulk index, if all 3 slots are busy, skip and return "Unknown"
+    # so the batch isn't held up for a single unknown-language file.
+    acquired = _LANG_API_SEM.locked()
+    if acquired and _CAPTION_LANG_CACHE is not None:
+        # We're in a bulk index run and semaphore is at limit — skip API
+        _LANG_CACHE[key] = "Unknown"
+        return "Unknown"
+
     try:
-        from CyberTG.poster import fetch_tmdb, fetch_omdb
-        from utils.cyber_poster import save_cache
+        async with _LANG_API_SEM:
+            from CyberTG.poster import fetch_tmdb, fetch_omdb
+            from utils.cyber_poster import save_cache
 
-        tmdb = await fetch_tmdb(key)
-        if tmdb:
-            poster, year, genre, rating, lang = tmdb
-            if lang and lang not in ("Original Language", "Unknown", ""):
-                await asyncio.to_thread(
-                    save_cache, key, poster, year, genre, rating, "tmdb", lang
-                )
-                _LANG_CACHE[key] = lang
-                return lang
+            tmdb = await fetch_tmdb(key)
+            if tmdb:
+                poster, year, genre, rating, lang = tmdb
+                if lang and lang not in ("Original Language", "Unknown", ""):
+                    await asyncio.to_thread(
+                        save_cache, key, poster, year, genre, rating, "tmdb", lang
+                    )
+                    _LANG_CACHE[key] = lang
+                    return lang
 
-        omdb = await fetch_omdb(key)
-        if omdb:
-            poster, year, genre, rating, lang = omdb
-            if lang and lang not in ("Original Language", "Unknown", ""):
-                await asyncio.to_thread(
-                    save_cache, key, poster, year, genre, rating, "omdb", lang
-                )
-                _LANG_CACHE[key] = lang
-                return lang
+            omdb = await fetch_omdb(key)
+            if omdb:
+                poster, year, genre, rating, lang = omdb
+                if lang and lang not in ("Original Language", "Unknown", ""):
+                    await asyncio.to_thread(
+                        save_cache, key, poster, year, genre, rating, "omdb", lang
+                    )
+                    _LANG_CACHE[key] = lang
+                    return lang
 
     except Exception as e:
         logger.debug(f"[LANG] API lookup failed for {key!r}: {e}")
@@ -365,10 +381,7 @@ async def _episode_exists_with_codec_check(
     language: str,
     new_codec: str,
 ) -> bool:
-    """
-    Used by save_series_file_for_bulk_index (RTI path only).
-    Batch indexing uses batch_dedup_check() instead — much faster.
-    """
+    """Used by save_series_file_for_bulk_index (RTI path only)."""
     from DB.sqlite_db import sql_db_lock as _sql_lock
 
     exists = await episode_exists(normalized_name, season, episode, quality, language)
@@ -403,36 +416,29 @@ async def _episode_exists_with_codec_check(
         existing_codec = await _asyncio.to_thread(_check_existing_codec)
 
     if not existing_codec:
-        logger.debug(
-            f"[cyber_index] Codec backfill: {normalized_name!r} "
-            f"S{season:02d}E{episode:02d} {quality} [{language}] "
-            f"existing_codec='' new_codec={new_codec!r} → allowing upsert"
-        )
         return False
 
     return True
 
 
 # ─────────────────────────────────────────────────────────────
-# BATCH DEDUP CHECK  ← NEW (replaces N individual dup checks)
+# BATCH DEDUP CHECK — FIXED
 # ─────────────────────────────────────────────────────────────
 
 async def batch_dedup_check(docs: list[dict]) -> tuple[list[dict], int]:
     """
-    Check an entire batch of docs for duplicates using a SINGLE SQL IN() query.
+    Check an entire batch of docs for duplicates using SQL IN() queries.
 
-    Algorithm:
-      1. Deduplicate within the batch itself (same content-identity → keep last).
-      2. Build a SET of (normalized_name, season, episode, quality, language) keys
-         that already exist in SQLite.
-      3. A doc is a "save" candidate if:
-           - It's not in the existing-set  (new doc), OR
-           - It IS in the existing-set BUT has a codec while the existing row doesn't
-             (codec backfill — the upsert will fill in the missing codec).
-      4. Return (to_save_list, n_duplicates).
+    FIX: Two-level dedup check:
+      1. EXACT match: (normalized_name, season, episode, quality, language)
+         → straightforward duplicate.
+      2. LANGUAGE-AGNOSTIC match: (normalized_name, season, episode, quality)
+         → same episode already stored with a DIFFERENT language label
+         (e.g. stored as "Hindi" but now parsed as "Unknown" because TMDB was slow).
+         Without this check, the same episode gets inserted again as a separate row
+         with language="Unknown", causing duplicate results in search.
 
-    This replaces up to SAVE_BATCH_SIZE individual episode_exists() calls
-    with a single multi-row IN() query — massively faster for large batches.
+    Returns (to_save_list, n_duplicates).
     """
     if not docs:
         return [], 0
@@ -447,63 +453,87 @@ async def batch_dedup_check(docs: list[dict]) -> tuple[list[dict], int]:
             doc["quality"],
             doc["language"],
         )
-        seen[key] = doc   # last wins
+        seen[key] = doc
     deduped = list(seen.values())
 
     if not deduped:
-        return [], len(docs) - 0
+        return [], len(docs)
 
-    # ── Step 2: bulk existence check via single SQL query ──────────────
+    # ── Step 2: bulk existence checks via SQLite ───────────────────────
     from DB.sqlite_db import _get_conn, sql_db_lock
 
-    # Build the identity keys list
-    identity_keys = [
+    full_keys = [
         (d["normalized_name"], d["season"], d["episode"], d["quality"], d["language"])
         for d in deduped
     ]
+    # Language-agnostic keys (4-tuple): catches same ep stored with diff language
+    lang_agnostic_keys = [
+        (d["normalized_name"], d["season"], d["episode"], d["quality"])
+        for d in deduped
+    ]
 
-    def _bulk_exists_check() -> dict[tuple, str]:
+    def _bulk_exists_check() -> tuple[dict, set]:
         """
-        Returns a dict: identity_key → existing_codec ('' if no codec).
-        Keys NOT present in the result do not exist in DB yet.
+        Returns:
+          full_map: {(name,season,ep,quality,lang) → existing_codec}  — exact matches
+          lang_agnostic_set: {(name,season,ep,quality)}  — any-language matches
         """
         conn   = _get_conn()
         cursor = conn.cursor()
+        CHUNK  = 190  # SQLite 999-var limit; 5 vars/row → max 199 rows
 
-        # SQLite has a 999 variable limit. Each row uses 5 vars → max ~199 rows per query.
-        # We chunk at 190 rows to be safe.
-        CHUNK = 190
-        result: dict[tuple, str] = {}
+        full_map: dict[tuple, str] = {}
+        lang_agnostic_set: set[tuple] = set()
 
-        for i in range(0, len(identity_keys), CHUNK):
-            chunk = identity_keys[i : i + CHUNK]
+        # ── Exact-match check ─────────────────────────────────
+        for i in range(0, len(full_keys), CHUNK):
+            chunk        = full_keys[i : i + CHUNK]
             placeholders = ",".join(["(?,?,?,?,?)"] * len(chunk))
-            flat_params  = []
-            for k in chunk:
-                flat_params.extend(k)
-
+            flat_params  = [v for k in chunk for v in k]
             cursor.execute(f"""
                 SELECT normalized_name, season, episode, quality, language, codec
                 FROM files
                 WHERE (normalized_name, season, episode, quality, language)
                       IN ({placeholders})
             """, flat_params)
-
             for row in cursor.fetchall():
-                key = (row[0], row[1], row[2], row[3], row[4])
-                result[key] = row[5] or ""
+                k = (row[0], row[1], row[2], row[3], row[4])
+                full_map[k] = row[5] or ""
 
-        return result
+        # ── Language-agnostic check ───────────────────────────
+        # Only query for docs NOT already found in exact match
+        # (no need to re-check those).
+        remaining_lang_agnostic = [
+            la_key
+            for la_key, full_key in zip(lang_agnostic_keys, full_keys)
+            if full_key not in full_map
+        ]
+
+        for i in range(0, len(remaining_lang_agnostic), CHUNK):
+            chunk        = remaining_lang_agnostic[i : i + CHUNK]
+            placeholders = ",".join(["(?,?,?,?)"] * len(chunk))
+            flat_params  = [v for k in chunk for v in k]
+            cursor.execute(f"""
+                SELECT normalized_name, season, episode, quality
+                FROM files
+                WHERE (normalized_name, season, episode, quality)
+                      IN ({placeholders})
+                LIMIT {len(chunk) * 10}
+            """, flat_params)
+            for row in cursor.fetchall():
+                lang_agnostic_set.add((row[0], row[1], row[2], row[3]))
+
+        return full_map, lang_agnostic_set
 
     async with sql_db_lock:
-        existing_map = await asyncio.to_thread(_bulk_exists_check)
+        full_map, lang_agnostic_set = await asyncio.to_thread(_bulk_exists_check)
 
     # ── Step 3: classify each deduped doc ─────────────────────────────
-    to_save    = []
-    n_dup      = 0
+    to_save = []
+    n_dup   = 0
 
-    for doc in deduped:
-        key = (
+    for doc, la_key in zip(deduped, lang_agnostic_keys):
+        full_key = (
             doc["normalized_name"],
             doc["season"],
             doc["episode"],
@@ -511,26 +541,35 @@ async def batch_dedup_check(docs: list[dict]) -> tuple[list[dict], int]:
             doc["language"],
         )
 
-        if key not in existing_map:
-            # Brand new doc — save it
-            to_save.append(doc)
-        else:
-            existing_codec = existing_map[key]
+        if full_key in full_map:
+            # Exact match — check codec backfill
+            existing_codec = full_map[full_key]
             new_codec      = doc.get("codec") or ""
-
             if new_codec and not existing_codec:
-                # Codec backfill — existing row lacks codec, new file has one
                 logger.debug(
-                    f"[DEDUP] Codec backfill allowed: {doc['normalized_name']!r} "
+                    f"[DEDUP] Codec backfill: {doc['normalized_name']!r} "
                     f"S{doc['season']:02d}E{doc['episode']:02d} {doc['quality']} "
-                    f"[{doc['language']}] new_codec={new_codec!r}"
+                    f"[{doc['language']}] codec={new_codec!r}"
                 )
                 to_save.append(doc)
             else:
-                # Genuine duplicate — skip
                 n_dup += 1
 
-    # Total duplicates = in-batch dups + DB dups
+        elif la_key in lang_agnostic_set:
+            # FIX: same episode already exists with a different language label.
+            # This happens when TMDB returns "Unknown" on this run but stored
+            # as "Hindi" previously. Do NOT insert a second row — mark as dup.
+            logger.debug(
+                f"[DEDUP] Lang-agnostic dup: {doc['normalized_name']!r} "
+                f"S{doc['season']:02d}E{doc['episode']:02d} {doc['quality']} "
+                f"(stored language differs from parsed '{doc['language']}')"
+            )
+            n_dup += 1
+
+        else:
+            # Brand new doc — save it
+            to_save.append(doc)
+
     in_batch_dups = len(docs) - len(deduped)
     return to_save, n_dup + in_batch_dups
 
@@ -570,7 +609,6 @@ async def save_series_file_for_bulk_index(
         quality         = _parse_quality(file_name, caption)
         codec           = _parse_codec(file_name, caption)
 
-        # Use cached flag (fast) or live DB read (RTI)
         use_caption_lang = await _get_caption_lang_flag()
         lang_caption     = caption if use_caption_lang else ""
         language         = _parse_language(file_name, lang_caption)
@@ -580,14 +618,12 @@ async def save_series_file_for_bulk_index(
             logger.debug(f"[cyber_index] Skipped (no series name): {file_name}")
             return False, 0
 
-        # Resolution fallback for quality
         if quality == "Unknown" and media_type == "video":
             width  = getattr(file_obj, "width",  0) or 0
             height = getattr(file_obj, "height", 0) or 0
             if width or height:
                 quality = _quality_from_resolution(width, height)
 
-        # Language fallback via TMDB/OMDB
         if language == "Unknown":
             language = await _get_language_from_api(normalized_name)
 
@@ -666,14 +702,12 @@ async def parse_message_to_doc(msg) -> dict | None:
         quality         = _parse_quality(file_name, caption)
         codec           = _parse_codec(file_name, caption)
 
-        # Resolution fallback for quality (video metadata)
         if quality == "Unknown" and media_type == "video":
             width  = getattr(file_obj, "width",  0) or 0
             height = getattr(file_obj, "height", 0) or 0
             if width or height:
                 quality = _quality_from_resolution(width, height)
 
-        # FAST PATH: use cached flag — zero DB calls
         use_caption_lang = await _get_caption_lang_flag()
         lang_caption     = caption if use_caption_lang else ""
         language         = _parse_language(file_name, lang_caption)
@@ -682,7 +716,7 @@ async def parse_message_to_doc(msg) -> dict | None:
         if not normalized_name:
             return None
 
-        # Language API fallback (in-memory _LANG_CACHE, rarely hits network)
+        # Language API fallback — non-blocking (semaphore + bulk-index fast-path)
         if language == "Unknown":
             language = await _get_language_from_api(normalized_name)
 
@@ -709,18 +743,13 @@ async def parse_message_to_doc(msg) -> dict | None:
 async def batch_save_file_docs(docs: list[dict], target: str = "both") -> int:
     """
     Bulk-save a list of already-parsed, already-deduped file_doc dicts.
-
-    NOTE: index.py now calls batch_dedup_check() BEFORE calling this function,
-    so docs passed here are already filtered. This function just does the bulk write.
-
-    For backward compatibility (if called directly), it still deduplicates internally.
     """
     from DB.database import save_file_docs_batch
 
     if not docs:
         return 0
 
-    # In-batch dedup (fast, pure Python — no DB calls)
+    # In-batch dedup (fast, pure Python)
     seen_keys: dict[tuple, dict] = {}
     for doc in docs:
         key = (
