@@ -27,6 +27,14 @@ GATE MESSAGE (the "join our channel" message):
   • Sent when user clicks Download but fails FSub
   • Deleted automatically when all slots are satisfied
   • Updated keyboard in real-time as user joins each slot
+
+FIXES IN THIS VERSION:
+  • Bootstrap fallback: if DB returns ch1=None, seeds from config.py values.
+    This fixes "JoinRequest from unknown chat — ignored" on fresh deployments.
+  • Bootstrap only seeds memory — does NOT overwrite existing DB config.
+  • Seed is saved to DB on first successful load so future restarts auto-load it.
+  • FloodWait in _is_member_via_api now retries with proper backoff instead of
+    returning False (which would wrongly fail FSub checks during rate-limit windows).
 """
 
 from __future__ import annotations
@@ -38,6 +46,7 @@ from typing import Optional
 from pyrogram import Client, filters as pyro_filters
 from pyrogram.types import InlineKeyboardMarkup, ChatJoinRequest, ChatMemberUpdated, Message
 from pyrogram.enums import ChatMemberStatus
+from pyrogram.errors import FloodWait
 
 from utils.cyber_font import BTN, UI
 from DB.database import get_global_setting, set_global_setting, mongo_client
@@ -69,8 +78,6 @@ _req_count2: int = 0
 _PENDING_FSUB: dict[int, dict] = {}
 
 # uid → True  (set while delivery is running OR just completed)
-# Cleared when sender_worker finishes naturally
-# Prevents double delivery from race between join_request event + /start click
 _DELIVERY_LOCK: set[int] = set()
 
 
@@ -93,10 +100,6 @@ def _col(slot: int):
 # ═══════════════════════════════════════════════════════════════
 
 def acquire_delivery_lock(uid: int) -> bool:
-    """
-    Returns True if lock was acquired (safe to deliver).
-    Returns False if already locked (delivery in progress or just done).
-    """
     if uid in _DELIVERY_LOCK:
         return False
     _DELIVERY_LOCK.add(uid)
@@ -168,6 +171,18 @@ DB_KEY = "fsub_config_v2"
 
 
 async def load_fsub_settings():
+    """
+    Load FSub config from MongoDB.
+
+    BOOTSTRAP FALLBACK (fix for "JoinRequest from unknown chat — ignored"):
+    If MongoDB returns no config (ch1=None), we seed from config.py values
+    (FSUB_CHANNEL1_ID, FSUB_CHANNEL1_LINK, FSUB_MODE1).
+    This lets the bot work on first boot without needing to configure
+    FSub via admin settings first.
+
+    The seeded config is saved back to MongoDB so future restarts load
+    it automatically and the bootstrap is no longer needed.
+    """
     global FSUB_CHANNEL1, FSUB_LINK1, FSUB_MODE1, FSUB_CHANNEL1_2, FSUB_LINK1_2
     global FSUB_CHANNEL2, FSUB_LINK2, FSUB_MODE2, FSUB_CHANNEL2_2, FSUB_LINK2_2
     global COUNT_THRESHOLD1, COUNT_THRESHOLD2, _req_count1, _req_count2
@@ -192,6 +207,49 @@ async def load_fsub_settings():
     COUNT_THRESHOLD2 = d.get("thr2")
     _req_count1      = d.get("cnt1", 0)
     _req_count2      = d.get("cnt2", 0)
+
+    # ── BOOTSTRAP FALLBACK ────────────────────────────────────
+    # If no channel was loaded from DB, try to seed from config.py.
+    # This fixes the "ignored" join requests on first-boot / mis-configured deployments.
+    _bootstrapped = False
+
+    if FSUB_CHANNEL1 is None:
+        try:
+            from config import FSUB_CHANNEL1_ID, FSUB_CHANNEL1_LINK, FSUB_MODE1 as _mode1
+            if FSUB_CHANNEL1_ID:
+                FSUB_CHANNEL1 = int(FSUB_CHANNEL1_ID)
+                FSUB_LINK1    = FSUB_CHANNEL1_LINK or None
+                FSUB_MODE1    = _mode1 or "request"
+                _bootstrapped = True
+                print(
+                    f"[FSUB] Bootstrap: seeded slot1 from config.py → "
+                    f"ch={FSUB_CHANNEL1} mode={FSUB_MODE1}"
+                )
+        except (ImportError, AttributeError, ValueError) as e:
+            print(f"[FSUB] Bootstrap slot1 skipped: {e}")
+
+    if FSUB_CHANNEL2 is None:
+        try:
+            from config import FSUB_CHANNEL2_ID, FSUB_CHANNEL2_LINK, FSUB_MODE2 as _mode2
+            if FSUB_CHANNEL2_ID:
+                FSUB_CHANNEL2 = int(FSUB_CHANNEL2_ID)
+                FSUB_LINK2    = FSUB_CHANNEL2_LINK or None
+                FSUB_MODE2    = _mode2 or "request"
+                _bootstrapped = True
+                print(
+                    f"[FSUB] Bootstrap: seeded slot2 from config.py → "
+                    f"ch={FSUB_CHANNEL2} mode={FSUB_MODE2}"
+                )
+        except (ImportError, AttributeError, ValueError) as e:
+            print(f"[FSUB] Bootstrap slot2 skipped: {e}")
+
+    # Save bootstrap config to DB so future restarts skip this fallback
+    if _bootstrapped:
+        try:
+            await save_fsub_settings()
+            print("[FSUB] Bootstrap config persisted to MongoDB.")
+        except Exception as e:
+            print(f"[FSUB] Bootstrap save error (non-fatal): {e}")
 
     print(
         f"[FSUB] Loaded: ch1={FSUB_CHANNEL1} mode1={FSUB_MODE1} "
@@ -225,35 +283,43 @@ async def save_fsub_settings():
 
 # ═══════════════════════════════════════════════════════════════
 # TELEGRAM MEMBER CHECK
+# FIX: retry on FloodWait instead of silently returning False,
+#      which would cause FSub to wrongly deny users during rate-limit windows.
 # ═══════════════════════════════════════════════════════════════
 
 async def _is_member_via_api(cyber, channel_id: int, user_id: int) -> bool:
-    try:
-        member = await cyber.get_chat_member(channel_id, user_id)
-        return member.status in (
-            ChatMemberStatus.MEMBER,
-            ChatMemberStatus.ADMINISTRATOR,
-            ChatMemberStatus.OWNER,
-            ChatMemberStatus.RESTRICTED,
-        )
-    except Exception as e:
-        print(f"[FSUB] API error uid={user_id} ch={channel_id}: {e}")
-        return False
+    """
+    Check if user is a member of channel_id.
+    Retries once on FloodWait with the required delay.
+    Returns False only on genuine non-member status or unrecoverable error.
+    """
+    for attempt in range(2):
+        try:
+            member = await cyber.get_chat_member(channel_id, user_id)
+            return member.status in (
+                ChatMemberStatus.MEMBER,
+                ChatMemberStatus.ADMINISTRATOR,
+                ChatMemberStatus.OWNER,
+                ChatMemberStatus.RESTRICTED,
+            )
+        except FloodWait as fw:
+            wait = max(int(getattr(fw, "value", 10)), 5)
+            print(f"[FSUB] FloodWait {wait}s checking uid={user_id} ch={channel_id} — waiting...")
+            await asyncio.sleep(wait + 1)
+            # retry once after waiting
+        except Exception as e:
+            err = str(e)
+            # USER_NOT_PARTICIPANT is a normal non-member response — not an error
+            if "USER_NOT_PARTICIPANT" in err or "user not found" in err.lower():
+                return False
+            print(f"[FSUB] API error uid={user_id} ch={channel_id}: {e}")
+            return False
+    # second attempt failed
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════
 # SLOT STATUS
-#
-# Returns ONE entry per CONFIGURED slot.
-# If no slots configured → returns [] → all() = True → pass.
-#
-# Per slot:
-#   joined    = True  → user is actual Telegram member right now
-#   requested = True  → user sent join request (request mode only), not yet approved
-#
-# PASS LOGIC per slot:
-#   request mode → joined OR requested → pass
-#   invite  mode → joined ONLY         → pass
 # ═══════════════════════════════════════════════════════════════
 
 async def get_slot_statuses(cyber, user_id: int) -> list[dict]:
@@ -334,17 +400,10 @@ def build_fsub_keyboard(
     payload: str,
     statuses: list[dict] | None = None,
 ) -> InlineKeyboardMarkup:
-    """
-    Shows join/request buttons ONLY for slots the user hasn't satisfied yet.
-    Slots already done → hidden completely.
-    All done → empty keyboard (gate msg will be deleted by caller).
-    statuses=None → show all configured slots (initial view, status unknown).
-    """
     m    = _m()
     rows = []
 
     if statuses is None:
-        # Initial view — show all configured slots
         raw_slots = [
             (getattr(m, "FSUB_LINK1", None), getattr(m, "FSUB_MODE1", "request"), "CHANNEL 1"),
             (getattr(m, "FSUB_LINK2", None), getattr(m, "FSUB_MODE2", "request"), "CHANNEL 2"),
@@ -360,7 +419,7 @@ def build_fsub_keyboard(
     # Per-status view
     for s in statuses:
         if _slot_passes(s):
-            continue   # already done — hide button
+            continue
         link  = s["link"]
         mode  = s["mode"]
         label = f"CHANNEL {s['slot']}"
@@ -415,20 +474,9 @@ def clear_pending_fsub(uid: int):
 
 # ═══════════════════════════════════════════════════════════════
 # CORE DELIVERY HELPER
-# Shared by _try_auto_deliver AND command.py /start handler.
-# Uses delivery lock to prevent duplicates from any source.
 # ═══════════════════════════════════════════════════════════════
 
 async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> bool:
-    """
-    Decodes payload, sets session, delivers files.
-    Retry button is sent via on_complete callback AFTER sender_worker finishes.
-
-    LOCK BEHAVIOUR:
-      - First call        → acquires lock → starts delivery → returns True
-      - While running     → lock held → returns False (silently ignored by caller)
-      - After done        → lock released by on_complete → next retry acquires → re-delivers
-    """
     if not acquire_delivery_lock(uid):
         print(f"[FSUB] do_deliver uid={uid} source={source} → LOCKED (delivery in progress)")
         return False
@@ -465,13 +513,10 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
             "quality":  quality,
         })
 
-        # Release lock after delivery completes — allows genuine retry to re-deliver
         async def _after_delivery():
-            """Called by sender_worker when the last file is sent."""
             release_delivery_lock(uid)
             print(f"[FSUB] delivery done uid={uid} — lock released")
 
-        # Pass callback into deliver — sender_worker fires it when done
         await deliver_files_direct(cyber, uid, on_complete=_after_delivery)
         return True
 
@@ -486,18 +531,8 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
 # ═══════════════════════════════════════════════════════════════
 
 async def _try_auto_deliver(cyber, uid: int):
-    """
-    Called when a join_request event fires (request mode) OR
-    when the user is detected as a member in get_slot_statuses (invite mode).
-
-    1. Re-evaluates ALL slot statuses.
-    2. If all satisfied → delete gate msg → deliver.
-    3. If some still pending → update keyboard to show only remaining slots.
-    """
     pending = _PENDING_FSUB.get(uid)
     if not pending:
-        # No pending gate message — nothing to do
-        # (user may have clicked /start directly without going through gate)
         return
 
     msg     = pending["msg"]
@@ -507,18 +542,15 @@ async def _try_auto_deliver(cyber, uid: int):
     done     = all_slots_passed(statuses)
 
     if done:
-        # Delete gate message
         try:
             await msg.delete()
         except Exception:
             pass
         clear_pending_fsub(uid)
 
-        # Deliver (delivery lock prevents duplicate if /start also fires)
         await do_deliver(cyber, uid, payload, source="auto_deliver")
 
     else:
-        # Update keyboard — show only remaining slots
         try:
             bot    = await cyber.get_me()
             new_kb = build_fsub_keyboard(bot.username, payload, statuses)
@@ -561,11 +593,6 @@ def register_fsub_handlers(cyber: Client):
 
     @cyber.on_chat_join_request()
     async def _on_join_request(bot, join_req: ChatJoinRequest):
-        """
-        Fires ONLY for request-mode channels when user taps the join request link.
-        Invite-mode channels do NOT trigger this event — those are handled
-        via get_slot_statuses() API check in /start.
-        """
         m          = _m()
         chat_id    = join_req.chat.id
         uid        = join_req.from_user.id
@@ -594,7 +621,6 @@ def register_fsub_handlers(cyber: Client):
                 print(f"[FSUB] JoinRequest from unknown chat {chat_id} — ignored")
                 return
 
-            # Try auto-deliver now that a slot has been satisfied
             asyncio.create_task(_try_auto_deliver(cyber, uid))
 
         except Exception as e:
@@ -602,24 +628,8 @@ def register_fsub_handlers(cyber: Client):
 
     @cyber.on_chat_member_updated()
     async def _on_member_joined(bot, update: ChatMemberUpdated):
-        """
-        Fires when a user's membership status changes in a channel.
-        Used to auto-deliver for INVITE-mode channels.
-
-        When user joins an invite-mode FSub channel:
-          1. Check if the channel matches any invite-mode slot.
-          2. If yes, check if this user has a pending gate message.
-          3. If yes, call _try_auto_deliver -> re-evaluates all slots -> delivers if all passed.
-
-        This fixes the bug where:
-          - User leaves invite-mode channel
-          - Searches again -> gate msg shown
-          - User joins via invite link
-          - No event was caught -> no auto-deliver -> no retry button
-        """
         m = _m()
 
-        # Only care about new members (joined event, not left/banned/etc.)
         new_status = update.new_chat_member
         if not new_status:
             return
@@ -632,7 +642,6 @@ def register_fsub_handlers(cyber: Client):
         if new_status.status not in joined_statuses:
             return
 
-        # Get user and chat info safely
         try:
             uid     = new_status.user.id if new_status.user else None
             chat_id = update.chat.id     if update.chat     else None
@@ -642,7 +651,6 @@ def register_fsub_handlers(cyber: Client):
         if not uid or not chat_id:
             return
 
-        # Skip bot's own events
         try:
             me = await bot.get_me()
             if uid == me.id:
@@ -669,8 +677,6 @@ def register_fsub_handlers(cyber: Client):
         if not matched:
             return
 
-        # Only auto-deliver if user has a pending gate message
-        # (i.e. they came through the FSub gate, not a random join)
         if uid not in _PENDING_FSUB:
             print(f"[FSUB] uid={uid} joined invite-mode but no pending gate -- skipping")
             return
