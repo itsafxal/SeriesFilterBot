@@ -141,9 +141,9 @@ def _progress(
         s = int(remain / mps)
         eta = f"  ETA ~{s}s" if s < 60 else f"  ETA ~{s//60}m" if s < 3600 else f"  ETA ~{s//3600}h{s%3600//60}m"
 
-    icon = "👤 User" if mode == "user" else "🤖 Bot"
+    icon = "👤 User Session" if mode == "user" else "🤖 Bot"
     lines = [
-        f"{status}  {icon}",
+        f"{status}",
         "",
         f"[{bar}] **{pct:.1f}%**{eta}",
         f"ID `{cid}` / `{last_id}`",
@@ -155,7 +155,7 @@ def _progress(
     ]
     if fw_count:
         lines.append(f"⏸ **FloodWait**  : `{fw_count}` times")
-    lines += ["", f"⚡ **Speed**  : `{mps:.0f}` msg/s", f"🎯 Mode: `{icon}`"]
+    lines += ["", f"⚡ **Speed**  : `{mps:.0f}` msg/s", f"🎯 **Mode** : `{icon}`"]
     return "\n".join(lines)
 
 
