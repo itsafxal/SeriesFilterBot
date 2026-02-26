@@ -188,19 +188,19 @@ async def _user_history(client, chat_id, start_id, last_id, fw_count):
     AsyncGenerator: yields messages from [start_id..last_id] using GetHistory.
     GetHistory is newest-first, so we start at last_id+1 and walk backwards.
     """
-    offset_id = last_id + 1
+    max_id = last_id + 1
     while True:
         batch = []
         stop  = False
         try:
             async for msg in client.get_chat_history(
-                chat_id, limit=USER_BATCH, offset_id=offset_id
+                chat_id, limit=USER_BATCH, max_id=max_id
             ):
                 if msg.id < start_id:
                     stop = True
                     break
                 batch.append(msg)
-                offset_id = msg.id   # walk backwards
+                max_id = msg.id   # walk backwards
         except FloodWait as fw:
             fw_count[0] += 1
             wait = max(int(getattr(fw, "value", 10)), 5)
