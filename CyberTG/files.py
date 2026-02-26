@@ -8,6 +8,9 @@ FIXES:
   4. auto_delay and custom_caption fetched ONCE per delivery (not per-file)
   5. finish_progress edit uses correct \n separator
   6. send_job properly captures loop variable with default arg
+  7. BUG FIX: normalized series name used for DB query — raw series name
+     from session payload did not match normalized_name column in SQLite,
+     causing get_all_files_by_season_and_quality to always return empty.
 """
 
 import time
@@ -190,6 +193,27 @@ def clean_series_name(series: str):
     return re.sub(r"\s+", " ", series).strip()
 
 
+def _normalize_for_query(series: str) -> str:
+    """
+    Reproduce the same normalization applied during indexing so the series
+    name from the session payload matches the normalized_name column in SQLite.
+
+    The indexer stores normalized_name as lowercased output of
+    _normalized_series_name() from cyber_index.py. We must query with the
+    same form — otherwise get_all_files_by_season_and_quality always returns
+    empty even though the files exist.
+    """
+    try:
+        from utils.cyber_index import _normalized_series_name
+        normalized = _normalized_series_name(series)
+        return normalized.lower() if normalized else series.lower()
+    except Exception:
+        # Fallback: basic cleaning + lowercase
+        s = series.replace(".", " ").replace("_", " ")
+        s = re.sub(r"\s+", " ", s).strip().lower()
+        return s
+
+
 # =========================================================
 # SEND QUEUE + PROGRESS SYSTEM
 # =========================================================
@@ -328,14 +352,32 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
     language   = session["language"]
     quality    = session["quality"]
 
+    # FIX: normalize the series name to match the normalized_name column in SQLite.
+    # The payload stores the series name as returned by encode_payload (which gets
+    # it from the filters UI — the display name, not the normalized DB key).
+    # The DB always stores/queries by normalized_name (lowercased, junk-stripped).
+    # Without this fix, the query always returns empty → no files delivered.
+    query_name = _normalize_for_query(raw_series)
+
+    logger.info(
+        f"deliver_files_direct: uid={user_id} raw={raw_series!r} "
+        f"query={query_name!r} season={season} lang={language} quality={quality}"
+    )
+
     files = await get_all_files_by_season_and_quality(
-        raw_series, season, quality, language
+        query_name, season, quality, language
     )
 
     if not files:
+        logger.warning(
+            f"deliver_files_direct: no files found for uid={user_id} "
+            f"query={query_name!r} season={season} lang={language} quality={quality}"
+        )
         await cyber.send_message(user_id, "❌ No files found.")
         clear_session(user_id)
         return
+
+    logger.info(f"deliver_files_direct: found {len(files)} files for uid={user_id}")
 
     # FIX: fetch settings ONCE, not per-file
     auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
@@ -363,14 +405,18 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
             episode    = str(f.get("episode", 0)).zfill(2)
             season_str = str(season).zfill(2)
 
-            caption = custom_caption.format(
-                series=series,
-                file_name=clean_name,
-                season=season_str,
-                episode=episode,
-                language=language,
-                quality=quality,
-            )
+            try:
+                caption = custom_caption.format(
+                    series=series,
+                    file_name=clean_name,
+                    season=season_str,
+                    episode=episode,
+                    language=language,
+                    quality=quality,
+                )
+            except Exception as e:
+                logger.warning(f"Caption format error: {e} — using fallback")
+                caption = f"<b>{series}</b>\nS{season_str}E{episode} • {language} • {quality}"
 
             sent_msg   = None
             media_type = f.get("media_type")
