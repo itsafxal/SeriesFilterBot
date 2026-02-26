@@ -70,6 +70,11 @@ INDEX_STATUS_KEY  = "CURRENT_INDEX_TASK"
 media_filter = filters.document | filters.video | filters.audio
 index_task: Optional[asyncio.Task] = None
 
+# ─────────────────────────────────────────────────────────────
+# LOCK — used by main.py to check if an index is running
+# ─────────────────────────────────────────────────────────────
+lock = asyncio.Lock()
+
 
 # ─────────────────────────────────────────────────────────────
 # TELEGRAM WRAPPERS
@@ -316,154 +321,155 @@ async def index_files_task(
             return None
         return await parse_message_to_doc(msg)
 
-    try:
-        # ══════════════════════════════════════════════════════
-        # USER MODE  —  GetHistory  (fast, nearly no FloodWait)
-        # ══════════════════════════════════════════════════════
-        if mode == "user":
-            async for msg in _user_history(
-                user_client, chat_id, start_from, last_id, fw_count
-            ):
-                cur_id[0]  = msg.id
-                checked   += 1
-                calls     += 1
+    async with lock:
+        try:
+            # ══════════════════════════════════════════════════════
+            # USER MODE  —  GetHistory  (fast, nearly no FloodWait)
+            # ══════════════════════════════════════════════════════
+            if mode == "user":
+                async for msg in _user_history(
+                    user_client, chat_id, start_from, last_id, fw_count
+                ):
+                    cur_id[0]  = msg.id
+                    checked   += 1
+                    calls     += 1
 
-                doc = await _proc(msg)
-                if doc:
-                    buf.append(doc)
-                else:
-                    skipped += 1
-
-                # Flush when buffer full
-                if len(buf) >= SAVE_BATCH_SIZE:
-                    sv, nd = await _flush(list(buf), target)
-                    saved += sv; dup += nd
-                    buf.clear()
-
-                # Lightweight checkpoint (every ~1000 messages)
-                cp_n += 1
-                if cp_n >= 1000:
-                    await save_bot_state(chat_key, cur_id[0])
-                    cp_n = 0
-
-                await push()
-
-            # Final flush
-            if buf:
-                sv, nd = await _flush(list(buf), target)
-                saved += sv; dup += nd
-                buf.clear()
-
-        # ══════════════════════════════════════════════════════
-        # BOT MODE  —  GetMessages  (reliable, slower)
-        # ══════════════════════════════════════════════════════
-        else:
-            current     = start_from
-            total_span  = max(last_id - start_id, 1)
-
-            while current <= last_id:
-                end        = min(current + BOT_BATCH - 1, last_id)
-                id_window  = list(range(current, end + 1))
-                is_last    = end >= last_id
-                flush_now  = len(buf) >= SAVE_BATCH_SIZE or (is_last and buf)
-
-                if flush_now and not is_last:
-                    # Overlap: fetch + flush simultaneously
-                    msgs, (sv, nd) = await asyncio.gather(
-                        _bot_fetch(bot, chat_id, id_window, fw_count),
-                        _flush(list(buf), target),
-                    )
-                    saved += sv; dup += nd
-                    buf.clear()
-                else:
-                    msgs = await _bot_fetch(bot, chat_id, id_window, fw_count)
-
-                calls    += 1
-                current   = end + 1
-                cur_id[0] = current
-
-                for msg in msgs:
-                    checked += 1
                     doc = await _proc(msg)
                     if doc:
                         buf.append(doc)
                     else:
                         skipped += 1
 
-                # Last window flush
-                if is_last and buf:
+                    # Flush when buffer full
+                    if len(buf) >= SAVE_BATCH_SIZE:
+                        sv, nd = await _flush(list(buf), target)
+                        saved += sv; dup += nd
+                        buf.clear()
+
+                    # Lightweight checkpoint (every ~1000 messages)
+                    cp_n += 1
+                    if cp_n >= 1000:
+                        await save_bot_state(chat_key, cur_id[0])
+                        cp_n = 0
+
+                    await push()
+
+                # Final flush
+                if buf:
                     sv, nd = await _flush(list(buf), target)
                     saved += sv; dup += nd
                     buf.clear()
 
-                # Checkpoint
-                cp_n += 1
-                if cp_n >= CHECKPOINT_EVERY or is_last:
-                    await save_bot_state(chat_key, cur_id[0])
-                    cp_n = 0
+            # ══════════════════════════════════════════════════════
+            # BOT MODE  —  GetMessages  (reliable, slower)
+            # ══════════════════════════════════════════════════════
+            else:
+                current     = start_from
+                total_span  = max(last_id - start_id, 1)
 
-                # Log every 100 calls
-                if calls % 100 == 0:
-                    pct = (current - start_id) / total_span * 100
-                    logger.info(
-                        f"[BOT] call={calls} checked={checked:,} saved={saved} "
-                        f"dup={dup} {pct:.1f}% {mps():.0f}msg/s"
-                    )
-                    gc.collect()
+                while current <= last_id:
+                    end        = min(current + BOT_BATCH - 1, last_id)
+                    id_window  = list(range(current, end + 1))
+                    is_last    = end >= last_id
+                    flush_now  = len(buf) >= SAVE_BATCH_SIZE or (is_last and buf)
 
-                await push()
-                await asyncio.sleep(BOT_CALL_DELAY)
+                    if flush_now and not is_last:
+                        # Overlap: fetch + flush simultaneously
+                        msgs, (sv, nd) = await asyncio.gather(
+                            _bot_fetch(bot, chat_id, id_window, fw_count),
+                            _flush(list(buf), target),
+                        )
+                        saved += sv; dup += nd
+                        buf.clear()
+                    else:
+                        msgs = await _bot_fetch(bot, chat_id, id_window, fw_count)
 
-        # ── Done ─────────────────────────────────────────────
-        await save_bot_state(chat_key, None)
+                    calls    += 1
+                    current   = end + 1
+                    cur_id[0] = current
 
-        avg = int(mps())
-        final = (
-            f"✅ **Index Complete!**\n\n"
-            f"🔧 **Mode**      : {'👤 User Session' if mode == 'user' else '🤖 Bot'}\n"
-            f"📦 **Checked**   : `{checked:,}`\n"
-            f"✅ **Saved**     : `{saved:,}` files\n"
-            f"⏭ **Skipped**   : `{skipped:,}`\n"
-            f"🔁 **Duplicate** : `{dup:,}`\n"
-            f"📞 **API calls** : `{calls:,}`\n"
-            f"⚡ **Avg speed** : `{avg:,}` msg/s\n"
-        )
-        if fw_count[0]:
-            final += f"⏸ **FloodWait**  : `{fw_count[0]}` times\n"
-        final += f"\n🎯 **Target** : `{target_label}`"
-        await safe_edit(status_msg, final, parse_mode=enums.ParseMode.MARKDOWN)
-        logger.info(
-            f"[INDEX] ✅ done mode={mode} checked={checked} saved={saved} "
-            f"dup={dup} skip={skipped} calls={calls} speed={avg}msg/s"
-        )
+                    for msg in msgs:
+                        checked += 1
+                        doc = await _proc(msg)
+                        if doc:
+                            buf.append(doc)
+                        else:
+                            skipped += 1
 
-    except asyncio.CancelledError:
-        await save_bot_state(chat_key, cur_id[0])
-        if buf:
-            try:
-                sv, nd = await _flush(buf, target)
-                saved += sv; dup += nd
-            except Exception:
-                pass
-        await safe_edit(
-            status_msg,
-            f"⛔ **Index Cancelled**\n\n"
-            f"🔧 **Mode**      : {'👤 User Session' if mode == 'user' else '🤖 Bot'}\n"
-            f"📦 **Checked**   : `{checked:,}`\n"
-            f"✅ **Saved**     : `{saved:,}` files\n"
-            f"⏭ **Skipped**   : `{skipped:,}`\n"
-            f"🔁 **Duplicate** : `{dup:,}`\n"
-            f"⏹ Stopped at ID : `{cur_id[0]}`\n"
-            f"🎯 **Target** : `{target_label}`",
-            parse_mode=enums.ParseMode.MARKDOWN,
-        )
-        logger.info(f"[INDEX] cancelled at id={cur_id[0]} saved={saved}")
+                    # Last window flush
+                    if is_last and buf:
+                        sv, nd = await _flush(list(buf), target)
+                        saved += sv; dup += nd
+                        buf.clear()
 
-    finally:
-        await terminate_index_client()   # ← ALWAYS disconnect user client
-        await set_global_setting(INDEX_STATUS_KEY, "IDLE")
-        set_caption_lang_cache(None)
-        index_task = None
+                    # Checkpoint
+                    cp_n += 1
+                    if cp_n >= CHECKPOINT_EVERY or is_last:
+                        await save_bot_state(chat_key, cur_id[0])
+                        cp_n = 0
+
+                    # Log every 100 calls
+                    if calls % 100 == 0:
+                        pct = (current - start_id) / total_span * 100
+                        logger.info(
+                            f"[BOT] call={calls} checked={checked:,} saved={saved} "
+                            f"dup={dup} {pct:.1f}% {mps():.0f}msg/s"
+                        )
+                        gc.collect()
+
+                    await push()
+                    await asyncio.sleep(BOT_CALL_DELAY)
+
+            # ── Done ─────────────────────────────────────────────
+            await save_bot_state(chat_key, None)
+
+            avg = int(mps())
+            final = (
+                f"✅ **Index Complete!**\n\n"
+                f"🔧 **Mode**      : {'👤 User Session' if mode == 'user' else '🤖 Bot'}\n"
+                f"📦 **Checked**   : `{checked:,}`\n"
+                f"✅ **Saved**     : `{saved:,}` files\n"
+                f"⏭ **Skipped**   : `{skipped:,}`\n"
+                f"🔁 **Duplicate** : `{dup:,}`\n"
+                f"📞 **API calls** : `{calls:,}`\n"
+                f"⚡ **Avg speed** : `{avg:,}` msg/s\n"
+            )
+            if fw_count[0]:
+                final += f"⏸ **FloodWait**  : `{fw_count[0]}` times\n"
+            final += f"\n🎯 **Target** : `{target_label}`"
+            await safe_edit(status_msg, final, parse_mode=enums.ParseMode.MARKDOWN)
+            logger.info(
+                f"[INDEX] ✅ done mode={mode} checked={checked} saved={saved} "
+                f"dup={dup} skip={skipped} calls={calls} speed={avg}msg/s"
+            )
+
+        except asyncio.CancelledError:
+            await save_bot_state(chat_key, cur_id[0])
+            if buf:
+                try:
+                    sv, nd = await _flush(buf, target)
+                    saved += sv; dup += nd
+                except Exception:
+                    pass
+            await safe_edit(
+                status_msg,
+                f"⛔ **Index Cancelled**\n\n"
+                f"🔧 **Mode**      : {'👤 User Session' if mode == 'user' else '🤖 Bot'}\n"
+                f"📦 **Checked**   : `{checked:,}`\n"
+                f"✅ **Saved**     : `{saved:,}` files\n"
+                f"⏭ **Skipped**   : `{skipped:,}`\n"
+                f"🔁 **Duplicate** : `{dup:,}`\n"
+                f"⏹ Stopped at ID : `{cur_id[0]}`\n"
+                f"🎯 **Target** : `{target_label}`",
+                parse_mode=enums.ParseMode.MARKDOWN,
+            )
+            logger.info(f"[INDEX] cancelled at id={cur_id[0]} saved={saved}")
+
+        finally:
+            await terminate_index_client()   # ← ALWAYS disconnect user client
+            await set_global_setting(INDEX_STATUS_KEY, "IDLE")
+            set_caption_lang_cache(None)
+            index_task = None
 
 
 # ─────────────────────────────────────────────────────────────
