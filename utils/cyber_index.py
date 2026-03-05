@@ -694,10 +694,14 @@ async def parse_message_to_doc(msg) -> dict | None:
     try:
         file_obj, media_type = _get_media_info(msg)
         if not file_obj:
+            # Not a media message (text post, photo, sticker, poll, etc.) — normal
+            logger.debug(f"[SKIP] msg_id={msg.id} — not a document/video/audio")
             return None
 
         file_name = getattr(file_obj, "file_name", None)
         if not file_name or not file_name.strip():
+            # Media with no filename (voice note, video note, unnamed file)
+            logger.info(f"[SKIP] msg_id={msg.id} — media has no file_name (type={media_type})")
             return None
 
         file_name  = file_name.strip()
@@ -705,6 +709,7 @@ async def parse_message_to_doc(msg) -> dict | None:
         message_id = msg.id
 
         if not channel_id:
+            logger.info(f"[SKIP] msg_id={msg.id} file={file_name!r} — no channel_id")
             return None
 
         caption = getattr(msg, "caption", None) or ""
@@ -727,6 +732,8 @@ async def parse_message_to_doc(msg) -> dict | None:
         normalized_name  = _normalized_series_name(file_name)
 
         if not normalized_name:
+            # Normalizer stripped everything — filename has no usable series title
+            logger.info(f"[SKIP] msg_id={msg.id} — normalized_name empty for file: {file_name!r}")
             return None
 
         # Language API fallback — non-blocking (semaphore + bulk-index fast-path)
