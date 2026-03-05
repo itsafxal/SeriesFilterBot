@@ -70,7 +70,7 @@ _JUNK_SQL         = re.compile(r"""
     aac|ac3|dts|ddp|ddp5\.1|mp3|opus|10bit|8bit|hdr|sdr|dovi|dolby|
     amzn|netflix|prime|hotstar|hulu|disney|hbo|sony|tgx|yts|rip|rz|strife|
     psa|repack|proper|subs|sub|dubbed|dub|multi|dual|complete|full|batch|
-    pack|collection|set|vol|volume|episode|ep|season|mkv|mp4|avi|mov)\b
+    pack|collection|mkv|mp4|avi|mov)\b
 """, re.IGNORECASE | re.VERBOSE)
 
 # ── Codec regexes — used for backfill repair ──────────────────
@@ -116,18 +116,24 @@ def _normalized_series_from_filename(file_name: str) -> str:
     base = _PART_SQL.sub(" ", base)
     base = _JUNK_SQL.sub(" ", base)
     base = _NON_WORD_SQL.sub(" ", base)
-    base = _BARE_NUM_SQL.sub(" ", base)
+    # FIX: Do NOT strip bare numbers — they can be part of series names
     base = _MULTI_SPC_SQL.sub(" ", base).strip()
 
+    # Only strip leading ALL-CAPS tokens that are clearly channel/tag prefixes (5+ chars)
     words = base.split()
-    while words and re.fullmatch(r"[A-Z]{1,4}", words[0]):
+    while words and re.fullmatch(r"[A-Z]{5,}", words[0]):
         words.pop(0)
     base = " ".join(words)
 
-    base = re.sub(r"\b[a-zA-Z]{1,2}$", "", base).strip()
+    # FIX: Only strip isolated single-letter suffix (stray "A", "I" at end)
+    # Keep 2-letter words — "Us", "Mr", "Oz", "24" are valid title parts
     parts = base.split()
-    if len(parts) > 4:
-        parts = parts[:4]
+    if len(parts) > 2 and re.fullmatch(r"[a-zA-Z]", parts[-1]):
+        parts = parts[:-1]
+
+    # FIX: Increase from 4 to 6 words
+    if len(parts) > 6:
+        parts = parts[:6]
     return " ".join(parts).title()
 
 
