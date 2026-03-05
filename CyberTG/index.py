@@ -132,23 +132,38 @@ def _progress(
     checked, saved, skipped, dup,
     calls, fw_count, mode, mps, status="⚡ Indexing...",
 ) -> str:
-    span   = max(last_id - start_id, 1)
-    pct    = min((cid - start_id) / span * 100, 100.0)
-    bar    = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
-    remain = max(last_id - cid, 0)
-    eta    = ""
-    if mps > 0 and remain:
-        s = int(remain / mps)
-        eta = f"  ETA ~{s}s" if s < 60 else f"  ETA ~{s//60}m" if s < 3600 else f"  ETA ~{s//3600}h{s%3600//60}m"
+    # ── Progress based on ID position (most reliable for bar) ──
+    span    = max(last_id - start_id, 1)
+    id_pct  = min((cid - start_id) / span * 100, 100.0)
+    bar     = "█" * int(id_pct / 5) + "░" * (20 - int(id_pct / 5))
+
+    # ── ETA based on remaining IDs and current msg/s ──────────
+    # mps = messages checked per second (actual Telegram messages, not IDs)
+    # We estimate remaining IDs → convert to time using current density
+    remaining_ids = max(last_id - cid, 0)
+    eta = ""
+    if mps > 0 and remaining_ids > 0 and checked > 0:
+        # Density: how many IDs we've covered per checked message
+        ids_covered = max(cid - start_id, 1)
+        density     = ids_covered / max(checked, 1)   # IDs per message
+        # Estimate remaining messages from remaining IDs
+        remaining_msgs = remaining_ids / density
+        s   = int(remaining_msgs / mps)
+        if s < 60:
+            eta = f"  ETA ~{s}s"
+        elif s < 3600:
+            eta = f"  ETA ~{s // 60}m {s % 60}s"
+        else:
+            eta = f"  ETA ~{s // 3600}h {s % 3600 // 60}m"
 
     icon = "👤 User Session" if mode == "user" else "🤖 Bot"
     lines = [
         f"{status}",
         "",
-        f"[{bar}] **{pct:.1f}%**{eta}",
-        f"ID `{cid}` / `{last_id}`",
+        f"[{bar}] **{id_pct:.1f}%**{eta}",
+        f"ID `{cid:,}` / `{last_id:,}`",
         "",
-        f"📦 **Checked**   : `{checked:,}`  (`{calls}` calls)",
+        f"📦 **Checked**   : `{checked:,}`  (`{calls:,}` calls)",
         f"✅ **Saved**     : `{saved:,}`",
         f"⏭ **Skipped**   : `{skipped:,}`",
         f"🔁 **Duplicate** : `{dup:,}`",
@@ -274,7 +289,7 @@ async def index_files_task(
     await set_global_setting(INDEX_STATUS_KEY, f"RUNNING|{chat_id}|{start_id}|{last_id}|{target}")
 
     # Cache CAPTION_LANG for the run  (zero per-doc MongoDB calls)
-    cl_flag = await get_global_setting("CAPTION_LANG", False)
+    cl_flag = await get_global_setting("CAPTION_LANG", True)
     set_caption_lang_cache(bool(cl_flag))
 
     # Start user client if session is stored
