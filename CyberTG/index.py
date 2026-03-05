@@ -232,6 +232,14 @@ async def _flush(buf: list, target: str) -> tuple[int, int]:
     if not buf:
         return 0, 0
     to_save, n_dup = await batch_dedup_check(buf)
+    # Log any duplicates at INFO level so admin can see them in /logs
+    dup_docs = [d for d in buf if d not in to_save]
+    for d in dup_docs:
+        logger.info(
+            f"[DUP] Already in DB: {d['normalized_name']!r} "
+            f"S{d['season']:02d}E{d['episode']:02d} {d['quality']} [{d['language']}] "
+            f"file={d['file_name']!r}"
+        )
     saved = 0
     if to_save:
         saved = await batch_save_file_docs(to_save, target=target)
