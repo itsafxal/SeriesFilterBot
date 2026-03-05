@@ -124,7 +124,8 @@ _JUNK_RE = re.compile(r"""
     amzn|netflix|prime|hotstar|hulu|disney|hbo|sony|
     tgx|yts|rip|rz|strife|psa|repack|proper|
     subs|sub|dubbed|dub|multi|dual|
-    complete|full|batch|pack|collection|
+    complete|full|batch|pack|collection|set|
+    vol|volume|episode|ep|season|
     mkv|mp4|avi|mov
     )\b
 """, re.IGNORECASE | re.VERBOSE)
@@ -154,7 +155,7 @@ def set_caption_lang_cache(value: bool | None):
 async def _get_caption_lang_flag() -> bool:
     if _CAPTION_LANG_CACHE is not None:
         return _CAPTION_LANG_CACHE
-    flag = await get_global_setting("CAPTION_LANG", True)
+    flag = await get_global_setting("CAPTION_LANG", False)
     return bool(flag)
 
 
@@ -338,26 +339,18 @@ def _normalized_series_name(file_name: str) -> str:
     base = _PART_RE.sub(" ", base)
     base = _JUNK_RE.sub(" ", base)
     base = _NON_WORD_RE.sub(" ", base)
-    # FIX: Do NOT strip bare numbers — they can be part of series names
-    #      e.g. "24", "9-1-1", "1883", "Suits S1", "Reacher 2"
+    base = _BARE_NUM_RE.sub(" ", base)
     base = _MULTI_SPC_RE.sub(" ", base).strip()
 
-    # Only strip leading ALL-CAPS tokens that are clearly channel/tag prefixes
-    # (4+ chars, all uppercase, not a real word) — reduced from 1-4 to 5+ only
     words = base.split()
-    while words and re.fullmatch(r"[A-Z]{5,}", words[0]):
+    while words and __import__("re").fullmatch(r"[A-Z]{1,4}", words[0]):
         words.pop(0)
     base = " ".join(words)
 
-    # FIX: Only strip isolated single-letter suffix (stray "A", "I" at end)
-    # Keep 2-letter words — "Us", "Mr", "Oz", "24" are valid title parts
+    base = re.sub(r"\b[a-zA-Z]{1,2}$", "", base).strip()
     parts = base.split()
-    if len(parts) > 2 and re.fullmatch(r"[a-zA-Z]", parts[-1]):
-        parts = parts[:-1]
-
-    # FIX: Increase from 4 to 6 words — many series have 5-6 word titles
-    if len(parts) > 6:
-        parts = parts[:6]
+    if len(parts) > 4:
+        parts = parts[:4]
 
     return " ".join(parts).title()
 
@@ -563,21 +556,15 @@ async def batch_dedup_check(docs: list[dict]) -> tuple[list[dict], int]:
                 n_dup += 1
 
         elif la_key in lang_agnostic_set:
-            # FIX: Different language versions of the same episode ARE valid separate files.
-            # e.g. same S01E01 in Hindi AND Tamil AND English should ALL be saved.
-            # Language-agnostic dedup only makes sense when the current doc has
-            # language="Unknown" (i.e. we couldn't detect it) — in that case we
-            # avoid inserting a redundant Unknown-language row alongside a real one.
-            if doc["language"] == "Unknown":
-                logger.debug(
-                    f"[DEDUP] Lang-agnostic dup (Unknown lang): {doc['normalized_name']!r} "
-                    f"S{doc['season']:02d}E{doc['episode']:02d} {doc['quality']} "
-                    f"(already stored with a known language)"
-                )
-                n_dup += 1
-            else:
-                # Has a real language label — save it (it's a different language version)
-                to_save.append(doc)
+            # FIX: same episode already exists with a different language label.
+            # This happens when TMDB returns "Unknown" on this run but stored
+            # as "Hindi" previously. Do NOT insert a second row — mark as dup.
+            logger.debug(
+                f"[DEDUP] Lang-agnostic dup: {doc['normalized_name']!r} "
+                f"S{doc['season']:02d}E{doc['episode']:02d} {doc['quality']} "
+                f"(stored language differs from parsed '{doc['language']}')"
+            )
+            n_dup += 1
 
         else:
             # Brand new doc — save it
@@ -694,14 +681,10 @@ async def parse_message_to_doc(msg) -> dict | None:
     try:
         file_obj, media_type = _get_media_info(msg)
         if not file_obj:
-            # Not a media message (text post, photo, sticker, poll, etc.) — normal
-            logger.debug(f"[SKIP] msg_id={msg.id} — not a document/video/audio")
             return None
 
         file_name = getattr(file_obj, "file_name", None)
         if not file_name or not file_name.strip():
-            # Media with no filename (voice note, video note, unnamed file)
-            logger.info(f"[SKIP] msg_id={msg.id} — media has no file_name (type={media_type})")
             return None
 
         file_name  = file_name.strip()
@@ -709,7 +692,6 @@ async def parse_message_to_doc(msg) -> dict | None:
         message_id = msg.id
 
         if not channel_id:
-            logger.info(f"[SKIP] msg_id={msg.id} file={file_name!r} — no channel_id")
             return None
 
         caption = getattr(msg, "caption", None) or ""
@@ -732,8 +714,6 @@ async def parse_message_to_doc(msg) -> dict | None:
         normalized_name  = _normalized_series_name(file_name)
 
         if not normalized_name:
-            # Normalizer stripped everything — filename has no usable series title
-            logger.info(f"[SKIP] msg_id={msg.id} — normalized_name empty for file: {file_name!r}")
             return None
 
         # Language API fallback — non-blocking (semaphore + bulk-index fast-path)
