@@ -687,47 +687,88 @@ async def repair_normalized_names_in_mongo():
     Re-compute normalized_name for every document in both Mongo
     file DBs and write back only rows that changed.
     Safe to run multiple times.
+
+    FIX: bulk_write with ordered=False raises BulkWriteError when the new
+    normalized_name causes a duplicate key conflict on content_identity_unique.
+    This is expected — two old docs can map to the same new normalized name.
+    We catch error code 11000 and count those as skipped (not errors).
+    The conflicting duplicate documents are deleted to keep DB clean.
     """
     def _repair_col(col):
-        updated = 0
-        skipped = 0
+        updated  = 0
+        skipped  = 0
+        conflict = 0
+
         try:
             docs = list(col.find({}, {"_id": 1, "file_name": 1, "normalized_name": 1}))
         except Exception as e:
             logger.error(f"repair_normalized_names_in_mongo: fetch error ({col.full_name}): {e}")
-            return 0, 0
+            return 0, 0, 0
 
+        from pymongo import UpdateOne
         bulk = []
         for doc in docs:
             file_name = doc.get("file_name") or ""
             old_norm  = doc.get("normalized_name") or ""
             new_norm  = _normalized_series_from_filename(file_name).lower()
             if new_norm and new_norm != old_norm:
-                from pymongo import UpdateOne
                 bulk.append(UpdateOne(
                     {"_id": doc["_id"]},
                     {"$set": {"normalized_name": new_norm}},
                 ))
 
-        if bulk:
-            try:
-                result   = col.bulk_write(bulk, ordered=False)
-                updated  = result.modified_count
-            except Exception as e:
+        if not bulk:
+            skipped = len(docs)
+            return updated, skipped, conflict
+
+        try:
+            result  = col.bulk_write(bulk, ordered=False)
+            updated = result.modified_count
+        except Exception as e:
+            # BulkWriteError — extract partial results and count conflicts
+            from pymongo.errors import BulkWriteError
+            if isinstance(e, BulkWriteError):
+                details   = e.details or {}
+                updated   = details.get("nModified", 0)
+                write_errs = details.get("writeErrors", [])
+                dup_ids   = []
+                for err in write_errs:
+                    if err.get("code") == 11000:
+                        conflict += 1
+                        # The _id of the doc that FAILED to update (it's the duplicate)
+                        op = err.get("op", {})
+                        failed_id = op.get("q", {}).get("_id")
+                        if failed_id:
+                            dup_ids.append(failed_id)
+                    else:
+                        logger.error(
+                            f"repair_normalized_names_in_mongo: non-dup error "
+                            f"({col.full_name}): {err.get('errmsg')}"
+                        )
+                # Delete the conflicting duplicates — they are stale old-norm docs
+                if dup_ids:
+                    try:
+                        del_result = col.delete_many({"_id": {"$in": dup_ids}})
+                        logger.info(
+                            f"[REPAIR] {col.full_name}: deleted {del_result.deleted_count} "
+                            f"conflicting duplicate docs"
+                        )
+                    except Exception as de:
+                        logger.error(f"[REPAIR] Failed to delete duplicates: {de}")
+            else:
                 logger.error(
                     f"repair_normalized_names_in_mongo: bulk_write error ({col.full_name}): {e}"
                 )
-        else:
-            skipped = len(docs)
 
-        return updated, skipped
+        return updated, skipped, conflict
 
     def _sync():
         total_updated = 0
         for col in (files_collection_1, files_collection_2):
-            u, s = _repair_col(col)
+            u, s, c = _repair_col(col)
             logger.info(
-                f"[REPAIR] {col.full_name}: updated={u}, already_correct={s}"
+                f"[REPAIR] {col.full_name}: updated={u}, already_correct={s}, "
+                f"conflicts_skipped={c}"
             )
             total_updated += u
         if total_updated:
