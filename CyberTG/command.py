@@ -38,6 +38,9 @@ from DB.database import (
     get_all_series,
     delete_all_files,
     delete_one_file,
+    get_global_setting,
+    set_global_setting,
+    sql_db_lock,
 )
 from utils.cyber_delete import delete_message_later
 from .fsub import (
@@ -63,6 +66,16 @@ def register_command_handlers(cyber: Client):
     async def start_command(_, message: Message):
         uid = message.from_user.id
         await add_user(uid)
+
+        # ── Maintenance mode check ─────────────────────────────
+        if uid not in ADMIN_USERS:
+            maintenance = await get_global_setting("MAINTENANCE_MODE", False)
+            if maintenance:
+                return await message.reply_text(
+                    "🔧 <b>Bot is currently under maintenance.</b>\n\n"
+                    "We'll be back shortly. Please try again later!",
+                    parse_mode=enums.ParseMode.HTML,
+                )
 
         if len(message.command) > 1:
             payload = message.command[1]
@@ -293,4 +306,226 @@ def register_command_handlers(cyber: Client):
             "<b>🛠 Admin Panel</b>",
             parse_mode=enums.ParseMode.HTML,
             reply_markup=keyboard,
+        )
+
+    # ──────────────────────────────────────────────────────────
+    # /maintenance on | off
+    # ──────────────────────────────────────────────────────────
+    @cyber.on_message(filters.command("maintenance") & filters.user(ADMIN_USERS))
+    async def maintenance_cmd(_, message: Message):
+        args = message.command
+        if len(args) < 2 or args[1].lower() not in ("on", "off"):
+            return await message.reply(
+                "Usage: <code>/maintenance on</code> or <code>/maintenance off</code>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        mode = args[1].lower() == "on"
+        await set_global_setting("MAINTENANCE_MODE", mode)
+
+        if mode:
+            await message.reply(
+                "🔧 <b>Maintenance mode ON</b>\n\n"
+                "✅ Admins can use the bot normally.\n"
+                "🚫 All users are blocked until you run <code>/maintenance off</code>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        else:
+            await message.reply(
+                "✅ <b>Maintenance mode OFF</b>\n\n"
+                "Bot is back online for all users.",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+    # ──────────────────────────────────────────────────────────
+    # /missing  —  find missing seasons & episodes per series
+    # ──────────────────────────────────────────────────────────
+    @cyber.on_message(filters.command("missing") & filters.user(ADMIN_USERS))
+    async def missing_cmd(_, message: Message):
+        import asyncio as _asyncio
+        from DB.database import get_all_series, sql_db_lock
+        from DB.sqlite_db import _get_conn
+        from CyberTG.poster import fetch_tmdb, fetch_omdb
+
+        wait_msg = await message.reply("🔍 <b>Scanning for missing content...</b>", parse_mode=enums.ParseMode.HTML)
+
+        # ── Step 1: get all series names from DB ──────────────
+        series_list = await get_all_series()   # [(name, file_count), ...]
+        if not series_list:
+            return await wait_msg.edit_text("❌ No series in database.")
+
+        # ── Step 2: for each series, get what we have in SQLite
+        def _get_series_data():
+            conn   = _get_conn()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT normalized_name, season, episode
+                FROM files
+                ORDER BY normalized_name, season, episode
+            """)
+            rows = cursor.fetchall()
+            # Build: { name: { season: [ep, ep, ...] } }
+            data = {}
+            for row in rows:
+                name, s, e = row[0], row[1], row[2]
+                if name not in data:
+                    data[name] = {}
+                if s not in data[name]:
+                    data[name][s] = []
+                if e not in data[name][s]:
+                    data[name][s][e] if False else data[name][s].append(e)
+            return data
+
+        async with sql_db_lock:
+            db_data = await _asyncio.to_thread(_get_series_data)
+
+        # ── Step 3: TMDB lookup for expected episode counts ───
+        # Cache to avoid repeat calls for same series
+        _tmdb_cache: dict[str, dict] = {}
+
+        async def _get_tmdb_info(name: str) -> dict:
+            """Returns {season: total_episodes} from TMDB, or {} if not found."""
+            if name in _tmdb_cache:
+                return _tmdb_cache[name]
+
+            result = {}
+            try:
+                import aiohttp
+                from config import TMDB_API_KEY
+
+                # Search for the show
+                search_url = "https://api.themoviedb.org/3/search/tv"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(search_url, params={"api_key": TMDB_API_KEY, "query": name}, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                        data = await r.json()
+
+                results = data.get("results", [])
+                if not results:
+                    _tmdb_cache[name] = result
+                    return result
+
+                show_id = results[0]["id"]
+
+                # Get season episode counts
+                show_url = f"https://api.themoviedb.org/3/tv/{show_id}"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(show_url, params={"api_key": TMDB_API_KEY}, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                        show_data = await r.json()
+
+                for season_info in show_data.get("seasons", []):
+                    snum  = season_info.get("season_number", 0)
+                    count = season_info.get("episode_count", 0)
+                    if snum > 0 and count > 0:
+                        result[snum] = count
+
+            except Exception:
+                pass  # TMDB down or timeout — skip, use DB-only logic
+
+            _tmdb_cache[name] = result
+            return result
+
+        # ── Step 4: Detect missing content ───────────────────
+        missing_report = []
+
+        for series_name, _ in series_list:
+            seasons_data = db_data.get(series_name.lower(), {})
+            if not seasons_data:
+                continue
+
+            # Skip season 0 (specials/extras)
+            real_seasons = sorted(s for s in seasons_data if s > 0)
+            if not real_seasons:
+                continue
+
+            tmdb_info = await _get_tmdb_info(series_name)
+
+            series_issues = []
+
+            # Check for missing seasons in our range
+            if real_seasons:
+                min_s, max_s = real_seasons[0], real_seasons[-1]
+                missing_seasons = [s for s in range(min_s, max_s + 1) if s not in real_seasons]
+                if missing_seasons:
+                    series_issues.append(f"  ❌ Missing seasons: {', '.join(f'S{s:02d}' for s in missing_seasons)}")
+
+            # Check for missing episodes within each season
+            for season in real_seasons:
+                episodes = sorted(set(seasons_data[season]))
+                if not episodes:
+                    continue
+
+                # Determine expected episode count
+                if tmdb_info and season in tmdb_info:
+                    expected_count = tmdb_info[season]
+                    expected_eps   = list(range(1, expected_count + 1))
+                else:
+                    # Fallback: assume contiguous from 1 to max we have
+                    expected_eps = list(range(1, max(episodes) + 1))
+
+                missing_eps = [e for e in expected_eps if e not in episodes]
+                if missing_eps:
+                    # Group consecutive missing into ranges for readability
+                    def _ranges(nums):
+                        nums = sorted(nums)
+                        if not nums:
+                            return ""
+                        ranges, start, end = [], nums[0], nums[0]
+                        for n in nums[1:]:
+                            if n == end + 1:
+                                end = n
+                            else:
+                                ranges.append(f"EP{start:02d}" if start == end else f"EP{start:02d}-EP{end:02d}")
+                                start = end = n
+                        ranges.append(f"EP{start:02d}" if start == end else f"EP{start:02d}-EP{end:02d}")
+                        return ", ".join(ranges)
+
+                    ep_str = _ranges(missing_eps)
+                    src    = "TMDB" if (tmdb_info and season in tmdb_info) else "DB range"
+                    series_issues.append(f"  ⚠️ S{season:02d} missing [{src}]: {ep_str}")
+
+            if series_issues:
+                missing_report.append(f"📺 {series_name.title()}")
+                missing_report.extend(series_issues)
+                missing_report.append("")
+
+        # ── Step 5: Send report always as .txt document ───────
+        await wait_msg.delete()
+
+        if not missing_report:
+            plain = (
+                "✅ No Missing Content Found!\n"
+                "All series have complete seasons and episodes."
+            )
+            file_buf      = io.BytesIO(plain.encode("utf-8"))
+            file_buf.name = "missing_report.txt"
+            return await message.reply_document(
+                document=file_buf,
+                caption="✅ <b>No missing content found!</b>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        total_issues = len([l for l in missing_report if l.startswith("📺")])
+
+        header_lines = [
+            "=" * 50,
+            "       MISSING CONTENT REPORT",
+            "=" * 50,
+            f"  Checked  : {len(series_list)} series",
+            f"  Issues   : {total_issues} series have gaps",
+            "=" * 50,
+            "",
+        ]
+
+        full_text     = "\n".join(header_lines) + "\n".join(missing_report)
+        file_buf      = io.BytesIO(full_text.encode("utf-8"))
+        file_buf.name = "missing_report.txt"
+
+        await message.reply_document(
+            document=file_buf,
+            caption=(
+                f"📋 <b>Missing Content Report</b>\n"
+                f"🔍 Checked : <code>{len(series_list)}</code> series\n"
+                f"⚠️ Issues  : <code>{total_issues}</code> series have gaps"
+            ),
+            parse_mode=enums.ParseMode.HTML,
         )
