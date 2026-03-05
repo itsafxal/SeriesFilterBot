@@ -231,7 +231,7 @@ async def owner_menu_handler(_, query):
 
 async def global_settings_router(_, query):
     has_sess    = await has_session_string()
-    cap_lang    = await get_global_setting("CAPTION_LANG", True)
+    cap_lang    = await get_global_setting("CAPTION_LANG", False)
     cap_status  = "✅ ON" if cap_lang else "❌ OFF"
     sess_status = "✅ Set" if has_sess else "❌ Not set"
     keyboard = InlineKeyboardMarkup([
@@ -838,7 +838,7 @@ async def admin_input_handler(bot, message: Message):
 # ══════════════════════════════════════════════════════════════
 
 async def caplang_toggle_router(_, query: CallbackQuery):
-    current = await get_global_setting("CAPTION_LANG", True)
+    current = await get_global_setting("CAPTION_LANG", False)
     new_val = not current
     await set_global_setting("CAPTION_LANG", new_val)
     status  = "✅ ON" if new_val else "❌ OFF"
