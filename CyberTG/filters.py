@@ -230,12 +230,28 @@ def _quality_label(quality: str, codec: str) -> str:
 
 def register_filters(cyber: Client):
 
+    async def _is_maintenance(uid: int) -> bool:
+        """Returns True if maintenance mode is ON and user is not admin."""
+        from config import ADMIN_USERS
+        if uid in ADMIN_USERS:
+            return False
+        return bool(await get_global_setting("MAINTENANCE_MODE", False))
+
     @cyber.on_message(filters.text & (filters.private | filters.group))
     async def search_handler(_, m):
         if not m.text or m.text.startswith("/"):
             return
 
         uid = m.from_user.id
+
+        # ── Maintenance mode check ─────────────────────────────
+        if await _is_maintenance(uid):
+            await m.reply_text(
+                "🔧 <b>Bot is under maintenance.</b>\n"
+                "Please try again later.",
+                parse_mode=enums.ParseMode.HTML,
+            )
+            return
 
         # ── Per-user cooldown: silently drop repeated messages ──
         if _is_on_cooldown(uid):
@@ -300,6 +316,8 @@ def register_filters(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^sug\\|"))
     async def sug(_, q):
+        if await _is_maintenance(q.from_user.id):
+            return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
         series = q.data.split("|", 1)[1]
         poster, year, genre, rating = await get_series_info(series)
         seasons = list((await get_series_summary(series))["seasons"])
@@ -344,6 +362,8 @@ def register_filters(cyber: Client):
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q):
         _, uid, series, season = q.data.split("|")
+        if await _is_maintenance(q.from_user.id):
+            return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
         if not await check_owner(q, uid):
             return
         langs = await get_unique_languages_by_season(series, int(season))
