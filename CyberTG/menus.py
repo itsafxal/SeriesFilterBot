@@ -249,16 +249,16 @@ async def global_settings_router(_, query):
     post_status = "✅ ON" if poster_on else "❌ OFF"
     ori_status  = "🌄 Wide" if landscape else "🖼 Portrait"
     keyboard = InlineKeyboardMarkup([
-        [BTN("📂 Index Channels",                      callback_data="index|index")],
-        [BTN("📝 File Caption",                        callback_data="caption|caption")],
-        [BTN("⏳ Auto Delete",                         callback_data="autodel|autodel")],
-        [BTN("📦 File Auto Delete",                    callback_data="filedel|filedel")],
-        [BTN("📡 FSub Settings",                       callback_data="fsub|main")],
-        [BTN(f"🌐 Caption Language  {cap_status}",     callback_data="caplang|toggle")],
-        [BTN(f"🔍 Filter  {filt_status}",              callback_data="filtertog|toggle")],
+        [BTN("📂 Index Channels",   callback_data="index|index"),
+         BTN("📝 File Caption",     callback_data="caption|caption")],
+        [BTN("⏳ Auto Delete",      callback_data="autodel|autodel"),
+         BTN("📦 File Auto Delete", callback_data="filedel|filedel")],
+        [BTN("📡 FSub Settings",    callback_data="fsub|main"),
+         BTN(f"🔑 Session  {sess_status}", callback_data="session|main")],
+        [BTN(f"🌐 Caption Lang  {cap_status}", callback_data="caplang|toggle"),
+         BTN(f"🔍 Filter  {filt_status}",      callback_data="filtertog|toggle")],
         [BTN(f"🖼 Poster  {post_status}  {ori_status}", callback_data="postertog|main")],
-        [BTN(f"🔑 Session String  {sess_status}",      callback_data="session|main")],
-        [BTN("🔙 Back",                                callback_data="admin|menu")],
+        [BTN("🔙 Back",             callback_data="admin|menu")],
     ])
     await safe_edit(query.message, caption="<b>⚙️ Global Settings</b>",
                     reply_markup=keyboard)
