@@ -2,18 +2,18 @@
 cyber_sticker.py  -  Neon season sticker generator
 ====================================================
 
-Canvas: 384x192 (compact banner)
+Canvas: 400x200 dark-card with neon glow effects
 
-START sticker  (gold/amber neon):
+START sticker (gold/amber neon on dark card):
     down  Season 01  down
     star  CyberBot  star
 
-END sticker  (green neon + glowing underline):
-    check  Season 03  Complete
-    8  Files  Delivered      <- double neon underline
+END sticker (green neon + underline on dark card):
+    check  Season 03  Done
+    8  Files  Sent  (double neon underline)
     star  CyberBot  star
 
-Config keys (config.py):
+Config (config.py):
     STICKER_ENABLED    = True
     STICKER_POWERED_BY = "Series Bot"
 """
@@ -44,78 +44,103 @@ def _find(paths):
 
 _BOLD = _find(_BOLD_CANDIDATES)
 _REG  = _find(_REG_CANDIDATES) or _BOLD
-W, H  = 384, 192
+W, H  = 400, 200
 
 
 def _fit_font(text, path, max_w, start):
     dummy = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     size  = start
-    while size > 14:
+    while size > 12:
         f  = ImageFont.truetype(path, size)
         bb = dummy.textbbox((0, 0), text, font=f)
         if bb[2] - bb[0] <= max_w:
             return f
         size -= 2
-    return ImageFont.truetype(path, 14)
+    return ImageFont.truetype(path, 12)
 
 
-def _neon(img, text, x, y, font, color, glow_color, radius=13):
-    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    gd   = ImageDraw.Draw(glow)
-    for r in range(9, 0, -1):
-        gd.text((x, y), text, font=font, fill=(*glow_color, 18 + r * 13))
-    img = Image.alpha_composite(img, glow.filter(ImageFilter.GaussianBlur(radius)))
-    img = Image.alpha_composite(img, glow.filter(ImageFilter.GaussianBlur(radius // 2)))
+def _neon(img, text, x, y, font, color, glow_color, radius=14):
+    """Multi-pass neon glow then sharp core text."""
+    for r, strength in [(radius, 1.0), (radius // 2, 0.7), (3, 0.5)]:
+        g  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(g)
+        for i in range(8, 0, -1):
+            gd.text((x, y), text, font=font,
+                    fill=(*glow_color, int((15 + i * 14) * strength)))
+        img = Image.alpha_composite(img, g.filter(ImageFilter.GaussianBlur(r)))
     ImageDraw.Draw(img).text((x, y), text, font=font, fill=(*color, 255))
     return img
 
 
-def _neon_line(img, x1, y1, x2, y2, color, glow_color, width=2):
-    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    gd   = ImageDraw.Draw(glow)
-    for w in [8, 5, 3]:
-        gd.line([(x1, y1), (x2, y2)], fill=(*glow_color, 60), width=w)
-    img = Image.alpha_composite(img, glow.filter(ImageFilter.GaussianBlur(3)))
-    ImageDraw.Draw(img).line([(x1, y1), (x2, y2)], fill=(*color, 240), width=width)
+def _neon_line(img, x1, y1, x2, y2, glow_color, line_color, width=2):
+    """Glowing neon line."""
+    g  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(g)
+    for w in [10, 6, 3]:
+        gd.line([(x1, y1), (x2, y2)], fill=(*glow_color, 50), width=w)
+    img = Image.alpha_composite(img, g.filter(ImageFilter.GaussianBlur(4)))
+    ImageDraw.Draw(img).line([(x1, y1), (x2, y2)],
+                              fill=(*line_color, 255), width=width)
     return img
 
 
+def _dark_card(img):
+    """Rounded dark semi-transparent card behind the neon text."""
+    bg   = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(bg)
+    m    = 8
+    draw.rounded_rectangle([m, m, W-m, H-m],
+                            radius=20, fill=(10, 10, 20, 180))
+    draw.rounded_rectangle([m, m, W-m, H-m],
+                            radius=20, outline=(60, 60, 120, 120), width=1)
+    return Image.alpha_composite(bg, img)
+
+
 def make_start_sticker(season: int, powered_by: str = "Series Bot") -> io.BytesIO:
-    ARROW = "⬇"
-    STAR  = "★"
+    ARROW = "\u2b07"
+    STAR  = "\u2605"
     line1 = f"{ARROW}  Season {season:02d}  {ARROW}"
     line2 = f"{STAR}  {powered_by}  {STAR}"
+
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    f1  = _fit_font(line1, _BOLD, W - 16, 60)
-    f2  = _fit_font(line2, _REG,  W - 30, 25)
+    f1  = _fit_font(line1, _BOLD, W - 40, 62)
+    f2  = _fit_font(line2, _REG,  W - 60, 26)
+
     draw = ImageDraw.Draw(img)
     bb1  = draw.textbbox((0, 0), line1, font=f1)
     bb2  = draw.textbbox((0, 0), line2, font=f2)
     tw1, th1 = bb1[2]-bb1[0], bb1[3]-bb1[1]
     tw2, th2 = bb2[2]-bb2[0], bb2[3]-bb2[1]
-    y1 = (H - (th1 + 12 + th2)) // 2 - 4
-    y2 = y1 + th1 + 12
+
+    y1 = (H - (th1 + 14 + th2)) // 2 - 2
+    y2 = y1 + th1 + 14
     x1 = (W - tw1) // 2
     x2 = (W - tw2) // 2
-    img = _neon(img, line1, x1, y1, f1, (255, 248, 160), (255, 160, 0),  radius=15)
-    img = _neon(img, line2, x2, y2, f2, (210, 255, 255), (0,   200, 255), radius=8)
-    buf = io.BytesIO()
+
+    img = _neon(img, line1, x1, y1, f1, (255, 250, 170), (255, 150, 0),   radius=16)
+    img = _neon(img, line2, x2, y2, f2, (180, 240, 255), (0,   180, 255), radius=9)
+    img = _dark_card(img)
+
+    buf      = io.BytesIO()
     img.save(buf, format="WEBP", lossless=True)
     buf.seek(0)
     buf.name = f"season_{season:02d}_start.webp"
     return buf
 
 
-def make_end_sticker(season: int, total: int, powered_by: str = "Series Bot") -> io.BytesIO:
-    CHECK = "✔"
-    STAR  = "★"
-    line1 = f"{CHECK}  Season {season:02d}  Complete"
-    line2 = f"{total}  Files  Delivered"
+def make_end_sticker(season: int, total: int,
+                     powered_by: str = "Series Bot") -> io.BytesIO:
+    CHECK = "\u2714"
+    STAR  = "\u2605"
+    line1 = f"{CHECK}  Season {season:02d}  Done"
+    line2 = f"{total}  Files  Sent"
     line3 = f"{STAR}  {powered_by}  {STAR}"
+
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    f1  = _fit_font(line1, _BOLD, W - 16, 50)
-    f2  = _fit_font(line2, _BOLD, W - 30, 44)
-    f3  = _fit_font(line3, _REG,  W - 40, 22)
+    f1  = _fit_font(line1, _BOLD, W - 40, 52)
+    f2  = _fit_font(line2, _BOLD, W - 40, 46)
+    f3  = _fit_font(line3, _REG,  W - 60, 22)
+
     draw = ImageDraw.Draw(img)
     bb1  = draw.textbbox((0, 0), line1, font=f1)
     bb2  = draw.textbbox((0, 0), line2, font=f2)
@@ -123,21 +148,27 @@ def make_end_sticker(season: int, total: int, powered_by: str = "Series Bot") ->
     tw1, th1 = bb1[2]-bb1[0], bb1[3]-bb1[1]
     tw2, th2 = bb2[2]-bb2[0], bb2[3]-bb2[1]
     tw3, th3 = bb3[2]-bb3[0], bb3[3]-bb3[1]
-    total_h  = th1 + 8 + th2 + 14 + th3
-    y1   = (H - total_h) // 2 - 4
-    y2   = y1 + th1 + 8
-    ul_y = y2 + th2 + 5
-    y3   = ul_y + 12
+
+    total_h = th1 + 6 + th2 + 16 + th3
+    y1   = (H - total_h) // 2 - 2
+    y2   = y1 + th1 + 6
+    ul_y = y2 + th2 + 6
+    y3   = ul_y + 14
     x1 = (W - tw1) // 2
     x2 = (W - tw2) // 2
     x3 = (W - tw3) // 2
-    img = _neon(img, line1, x1, y1, f1, (210, 255, 210), (0, 255, 80),  radius=13)
-    img = _neon(img, line2, x2, y2, f2, (255, 255, 255), (0, 255, 100), radius=14)
-    pad = 20
-    img = _neon_line(img, x2-pad,    ul_y,   x2+tw2+pad,    ul_y,   (150,255,150), (0,255,80),  width=2)
-    img = _neon_line(img, x2-pad+10, ul_y+5, x2+tw2+pad-10, ul_y+5, (100,255,120), (0,200,60),  width=1)
-    img = _neon(img, line3, x3, y3, f3, (200, 255, 255), (0, 200, 255), radius=7)
-    buf = io.BytesIO()
+
+    img = _neon(img, line1, x1, y1, f1, (180, 255, 180), (0, 255, 80),  radius=13)
+    img = _neon(img, line2, x2, y2, f2, (255, 255, 255), (0, 255, 120), radius=15)
+    pad = 22
+    img = _neon_line(img, x2-pad,    ul_y,   x2+tw2+pad,    ul_y,
+                     (0, 255, 80),  (120, 255, 140), width=2)
+    img = _neon_line(img, x2-pad+12, ul_y+5, x2+tw2+pad-12, ul_y+5,
+                     (0, 200, 60),  (80,  220, 100), width=1)
+    img = _neon(img, line3, x3, y3, f3, (180, 240, 255), (0, 180, 255), radius=8)
+    img = _dark_card(img)
+
+    buf      = io.BytesIO()
     img.save(buf, format="WEBP", lossless=True)
     buf.seek(0)
     buf.name = f"season_{season:02d}_end.webp"
