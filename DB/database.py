@@ -1,27 +1,34 @@
 """
-database.py — MULTI-DB EDITION + FEATURE ENHANCEMENTS
-=======================================================
-New additions:
-  • groups_collection  — track which groups the bot is in (/stats)
-  • get/set_filter_enabled() — Filter ON/OFF toggle
-  • get/set_poster_enabled() / get/set_poster_landscape() — Poster settings
-  • get/set_caption_clean_keywords() — caption cleaning keywords admin setting
-  • get_db_size_info() — storage stats for /stats
-  • get_total_groups() — group count for /stats
+database.py — MULTI-DB EDITION
+================================
+Architecture:
+  • CONFIG_DB   (MONGO_URI_CONFIG)  → bot_state, global settings, users, pending_delivery, sessions
+  • FILE_DB_1   (MONGO_URI_DB1)     → files collection #1
+  • FILE_DB_2   (MONGO_URI_DB2)     → files collection #2
+  • SQLite       → local read-optimised index (migrated from BOTH file DBs on every boot)
+
+On boot:
+  - migrate_data_from_mongo_to_sql_sync() is called with MERGED documents from DB1 + DB2
+  - Duplicates (channel_id + message_id) are handled by UNIQUE constraint (INSERT OR IGNORE)
+
+On live index:
+  - save_file_to_db(file_doc, target="both"|"db1"|"db2")
+  - Writes to the selected MongoDB file DBs + always writes to SQLite
+
+CODEC FIX (this version):
+  - initialize_sql_db() now calls repair_codec_from_filenames_sync() after migration
+    to backfill codec for every row that was indexed before codec detection existed.
+  - save_file_to_db() passes through the codec field correctly.
+  - repair_normalized_names_in_mongo() left unchanged (codec repair is SQLite-only).
 """
 
 import asyncio
-import os
 import re
 from pymongo import MongoClient, TEXT
 from config import (
     MONGO_URI_CONFIG,
     MONGO_URI_DB1,
     MONGO_URI_DB2,
-    FILTER_ENABLED_DEFAULT,
-    POSTER_ENABLED,
-    POSTER_LANDSCAPE,
-    DEFAULT_CAPTION_CLEAN_KEYWORDS,
     logger,
 )
 
@@ -29,31 +36,42 @@ from config import (
 # THREE MONGO CLIENTS
 # ─────────────────────────────────────────────────────────────
 
+# 1. Config DB — settings, state, users, sessions, fsub
 config_client = MongoClient(MONGO_URI_CONFIG)
 config_db      = config_client["SeriesBotConfig"]
 
 state_collection   = config_db["bot_state"]
 users_collection   = config_db["users"]
 pending_collection = config_db["pending_delivery"]
-groups_collection  = config_db["groups"]        # NEW: group tracking
 
+# 2. File DB 1
 file_client_1      = MongoClient(MONGO_URI_DB1)
 file_db_1          = file_client_1["SeriesBotFiles1"]
 files_collection_1 = file_db_1["files"]
 
+# 3. File DB 2
 file_client_2      = MongoClient(MONGO_URI_DB2)
 file_db_2          = file_client_2["SeriesBotFiles2"]
 files_collection_2 = file_db_2["files"]
 
-# Legacy alias
+# Legacy alias — kept so fsub.py / files.py that import mongo_client still work
 mongo_client = config_client
 
-
 # ─────────────────────────────────────────────────────────────
-# INDEXES
+# INDEXES — FILE DBs
 # ─────────────────────────────────────────────────────────────
 
 def _safe_create_index(col, keys, **kwargs):
+    """
+    Create a MongoDB index, gracefully handling conflicts.
+
+    Error code 86 (IndexKeySpecsConflict) means an index with the same name
+    already exists but with different options (e.g. unique/sparse flags set
+    from a previous bot version). The existing index is functionally correct,
+    so we log INFO instead of ERROR and move on — no action needed.
+
+    All other errors are logged at ERROR level as before.
+    """
     index_name = kwargs.get("name") or str(keys)
     try:
         col.create_index(keys, **kwargs)
@@ -62,28 +80,53 @@ def _safe_create_index(col, keys, **kwargs):
             e.details.get("code") if hasattr(e, "details") else None
         )
         if code == 86:
+            # Index already exists (possibly with different unique/sparse options).
+            # The existing index is correct — this is a harmless no-op.
             logger.info(
-                f"ℹ️  Index '{index_name}' already exists on {col.full_name} (skipping)."
+                f"ℹ️  Index '{index_name}' already exists on {col.full_name} "
+                f"(skipping — existing index is compatible)."
             )
         else:
             logger.error(f"❌ Index creation failed for {col.full_name} [{index_name}]: {e}")
 
 
 def _ensure_file_indexes(col):
-    _safe_create_index(col, [("normalized_name", 1), ("season", 1)], background=True)
-    _safe_create_index(col, [("normalized_name", TEXT)], name="series_name_text_index",
-                       background=True, language_override="text_index_lang")
-    _safe_create_index(col, [("normalized_name", 1), ("season", 1), ("episode", 1),
-                              ("quality", 1), ("language", 1)],
-                       background=True, unique=True, name="content_identity_unique")
-    _safe_create_index(col, [("channel_id", 1), ("message_id", 1)], background=True)
+    _safe_create_index(
+        col,
+        [("normalized_name", 1), ("season", 1)],
+        background=True,
+    )
+    _safe_create_index(
+        col,
+        [("normalized_name", TEXT)],
+        name="series_name_text_index",
+        background=True,
+        language_override="text_index_lang",
+    )
+    _safe_create_index(
+        col,
+        [
+            ("normalized_name", 1),
+            ("season",          1),
+            ("episode",         1),
+            ("quality",         1),
+            ("language",        1),
+        ],
+        background=True,
+        unique=True,
+        name="content_identity_unique",
+    )
+    _safe_create_index(
+        col,
+        [("channel_id", 1), ("message_id", 1)],
+        background=True,
+    )
 
 
 _ensure_file_indexes(files_collection_1)
 _ensure_file_indexes(files_collection_2)
 state_collection.create_index([("_id", 1)])
 logger.info("✅ MongoDB indexes ensured on all 3 clients.")
-
 
 # ─────────────────────────────────────────────────────────────
 # SQLite imports
@@ -95,7 +138,7 @@ from .sqlite_db import (
     create_sql_schema,
     migrate_data_from_mongo_to_sql_sync,
     repair_normalized_names_in_sqlite_sync,
-    repair_codec_from_filenames_sync,
+    repair_codec_from_filenames_sync,          # ← codec backfill
     get_series_summary_sync,
     search_series_sync,
     get_unique_languages_by_name_sync,
@@ -108,22 +151,27 @@ from .sqlite_db import (
     get_file_by_message_id_and_channel_id_sync,
     delete_all_files_sync,
     delete_one_file_sync,
+    update_file_id_sync,
     get_total_files_sync,
     get_total_series_sync,
     get_all_series_sync,
     _normalized_series_from_filename,
     save_file_to_sql_sync,
-    save_file_docs_batch_sync,
+    save_file_docs_batch_sync,                 # ← NEW: batch save
     clear_all_caches,
     episode_exists_sync,
 )
 
 
 # ─────────────────────────────────────────────────────────────
-# SQL INIT
+# SQL INIT  —  migrate from BOTH Mongo file DBs
 # ─────────────────────────────────────────────────────────────
 
 class _MergedCursor:
+    """
+    Wraps two pymongo cursors and iterates them as one logical stream.
+    Exposes count_documents() by summing both collections.
+    """
     def __init__(self, col1, col2, projection):
         self._col1 = col1
         self._col2 = col2
@@ -131,7 +179,10 @@ class _MergedCursor:
 
     def count_documents(self, filt):
         try:
-            return self._col1.count_documents(filt) + self._col2.count_documents(filt)
+            return (
+                self._col1.count_documents(filt)
+                + self._col2.count_documents(filt)
+            )
         except Exception:
             return 0
 
@@ -146,6 +197,12 @@ class _MergedCursor:
 
 
 def initialize_sql_db():
+    """
+    Synchronously initialises the SQL database.
+    Migrates from BOTH Mongo file collections, then runs two repair passes:
+      1. normalized_name repair  — fixes series titles from old normalizer
+      2. codec repair            — backfills codec for pre-codec-detection rows
+    """
     logger.info("[INIT] Starting migration from BOTH MongoDB file DBs → SQLite...")
 
     class _Merged:
@@ -165,21 +222,23 @@ def initialize_sql_db():
     merged = _Merged()
     migrate_data_from_mongo_to_sql_sync(merged, create_sql_schema, logger)
 
+    # Repair 1: normalized series names
     try:
         repair_normalized_names_in_sqlite_sync(logger)
     except Exception as e:
         logger.error(f"repair_normalized_names_in_sqlite failed: {e}")
 
+    # Repair 2: codec backfill — fixes rows where codec = '' from old index runs
     try:
         repair_codec_from_filenames_sync(logger)
     except Exception as e:
         logger.error(f"repair_codec_from_filenames failed: {e}")
 
-    logger.info("✅ SQLite initialisation complete.")
+    logger.info("✅ SQLite initialisation complete (dual-DB migration + codec repair done).")
 
 
 # ─────────────────────────────────────────────────────────────
-# GLOBAL SETTINGS
+# GLOBAL SETTINGS  (stored in Config DB)
 # ─────────────────────────────────────────────────────────────
 
 GLOBAL_DOC_ID = "GLOBAL_CONFIG"
@@ -193,10 +252,12 @@ async def set_global_setting(key: str, value):
                 {"$set": {key: value}},
                 upsert=True,
             )
+            logger.info(f"💾 Global setting '{key}' saved.")
             return True
         except Exception as e:
             logger.error(f"❌ set_global_setting('{key}') failed: {e}")
             return False
+
     return await asyncio.to_thread(_sync)
 
 
@@ -210,140 +271,12 @@ async def get_global_setting(key: str, default_value=None):
         except Exception as e:
             logger.error(f"❌ get_global_setting('{key}') failed: {e}")
             return default_value
-    return await asyncio.to_thread(_sync)
-
-
-# ─────────────────────────────────────────────────────────────
-# FEATURE SETTINGS — Filter, Poster, Caption Clean
-# ─────────────────────────────────────────────────────────────
-
-async def get_filter_enabled() -> bool:
-    """Returns global filter on/off setting."""
-    val = await get_global_setting("FILTER_ENABLED", None)
-    if val is None:
-        return FILTER_ENABLED_DEFAULT
-    return bool(val)
-
-
-async def set_filter_enabled(enabled: bool):
-    await set_global_setting("FILTER_ENABLED", enabled)
-
-
-async def get_poster_enabled() -> bool:
-    val = await get_global_setting("POSTER_ENABLED", None)
-    if val is None:
-        return POSTER_ENABLED
-    return bool(val)
-
-
-async def set_poster_enabled(enabled: bool):
-    await set_global_setting("POSTER_ENABLED", enabled)
-
-
-async def get_poster_landscape() -> bool:
-    val = await get_global_setting("POSTER_LANDSCAPE", None)
-    if val is None:
-        return POSTER_LANDSCAPE
-    return bool(val)
-
-
-async def set_poster_landscape(landscape: bool):
-    await set_global_setting("POSTER_LANDSCAPE", landscape)
-
-
-async def get_caption_clean_keywords() -> list:
-    val = await get_global_setting("CAPTION_CLEAN_KEYWORDS", None)
-    if val is None:
-        return list(DEFAULT_CAPTION_CLEAN_KEYWORDS)
-    return val if isinstance(val, list) else list(DEFAULT_CAPTION_CLEAN_KEYWORDS)
-
-
-async def set_caption_clean_keywords(keywords: list):
-    await set_global_setting("CAPTION_CLEAN_KEYWORDS", keywords)
-
-
-# ─────────────────────────────────────────────────────────────
-# GROUP TRACKING
-# ─────────────────────────────────────────────────────────────
-
-async def add_group(group_id: int):
-    def _sync():
-        try:
-            groups_collection.update_one(
-                {"_id": group_id}, {"$set": {"_id": group_id}}, upsert=True
-            )
-        except Exception as e:
-            logger.error(f"add_group error: {e}")
-    await asyncio.to_thread(_sync)
-
-
-async def remove_group(group_id: int):
-    def _sync():
-        try:
-            groups_collection.delete_one({"_id": group_id})
-        except Exception as e:
-            logger.error(f"remove_group error: {e}")
-    await asyncio.to_thread(_sync)
-
-
-async def get_total_groups() -> int:
-    def _sync():
-        try:
-            return groups_collection.count_documents({})
-        except Exception as e:
-            logger.error(f"get_total_groups error: {e}")
-            return 0
-    return await asyncio.to_thread(_sync)
-
-
-# ─────────────────────────────────────────────────────────────
-# DB SIZE INFO — for /stats
-# ─────────────────────────────────────────────────────────────
-
-async def get_db_size_info() -> dict:
-    """
-    Returns dict with storage sizes for /stats display.
-    {
-      "mongo_config_mb": float,
-      "mongo_db1_mb": float,
-      "mongo_db2_mb": float,
-      "sqlite_mb": float,
-    }
-    """
-    def _sync():
-        result = {
-            "mongo_config_mb": 0.0,
-            "mongo_db1_mb": 0.0,
-            "mongo_db2_mb": 0.0,
-            "sqlite_mb": 0.0,
-        }
-        try:
-            stats = config_client["SeriesBotConfig"].command("dbStats")
-            result["mongo_config_mb"] = round(stats.get("dataSize", 0) / (1024 * 1024), 2)
-        except Exception:
-            pass
-        try:
-            stats = file_client_1["SeriesBotFiles1"].command("dbStats")
-            result["mongo_db1_mb"] = round(stats.get("dataSize", 0) / (1024 * 1024), 2)
-        except Exception:
-            pass
-        try:
-            stats = file_client_2["SeriesBotFiles2"].command("dbStats")
-            result["mongo_db2_mb"] = round(stats.get("dataSize", 0) / (1024 * 1024), 2)
-        except Exception:
-            pass
-        try:
-            size_bytes = os.path.getsize(SQLITE_DB_PATH)
-            result["sqlite_mb"] = round(size_bytes / (1024 * 1024), 2)
-        except Exception:
-            pass
-        return result
 
     return await asyncio.to_thread(_sync)
 
 
 # ─────────────────────────────────────────────────────────────
-# BOT STATE
+# BOT STATE  (Config DB)
 # ─────────────────────────────────────────────────────────────
 
 async def save_bot_state(chat_id, last_msg_id):
@@ -356,6 +289,7 @@ async def save_bot_state(chat_id, last_msg_id):
             )
         except Exception as e:
             logger.error(f"save_bot_state error: {e}")
+
     await asyncio.to_thread(_sync)
 
 
@@ -367,6 +301,7 @@ async def get_bot_state(chat_id):
         except Exception as e:
             logger.error(f"get_bot_state error: {e}")
             return None
+
     return await asyncio.to_thread(_sync)
 
 
@@ -384,6 +319,7 @@ async def get_all_bot_state_keys():
         except Exception as e:
             logger.error(f"get_all_bot_state_keys error: {e}")
             return []
+
     return await asyncio.to_thread(_sync)
 
 
@@ -400,7 +336,7 @@ async def set_index_channels(channel_list: list):
 
 
 # ─────────────────────────────────────────────────────────────
-# SERIES QUERIES (SQLite)
+# SERIES QUERIES  (SQLite)
 # ─────────────────────────────────────────────────────────────
 
 async def get_series_summary(series_name: str):
@@ -446,14 +382,18 @@ async def get_unique_languages_by_season(series_name: str, season: int):
         )
 
 
-async def get_unique_qualities_by_lang_season(series_name: str, language: str, season: int):
+async def get_unique_qualities_by_lang_season(
+    series_name: str, language: str, season: int
+):
     async with sql_db_lock:
         return await asyncio.to_thread(
             get_unique_qualities_by_lang_season_sync, series_name, language, season
         )
 
 
-async def get_unique_qualities_with_codec(series_name: str, language: str, season: int):
+async def get_unique_qualities_with_codec(
+    series_name: str, language: str, season: int
+):
     """Returns list of (quality, codec) tuples for building quality buttons."""
     async with sql_db_lock:
         return await asyncio.to_thread(
@@ -478,12 +418,28 @@ async def episode_exists(
 
 
 # ─────────────────────────────────────────────────────────────
-# FILE CRUD
+# FILE CRUD — target-aware
 # ─────────────────────────────────────────────────────────────
 
 def _mongo_upsert(col, file_doc: dict):
+    """
+    Upsert one file_doc into a pymongo collection.
+    Keyed on content identity (normalized_name + season + episode + quality + language).
+
+    CODEC FIX: $set and $setOnInsert must never touch the same field —
+    MongoDB raises error code 40 (path conflict) if they do.
+
+    Strategy:
+      - If new codec is non-empty  → include it in $set (overwrites blank, keeps good)
+      - If new codec is empty      → omit codec from $set entirely so existing value
+                                     is preserved on updates; new inserts get '' by
+                                     default from the schema.
+    No $setOnInsert used — it caused the conflict.
+    """
     try:
         codec = (file_doc.get("codec") or "").strip()
+
+        # Build $set — all fields always, codec only when non-empty
         set_fields = {k: v for k, v in file_doc.items() if k != "codec"}
         if codec:
             set_fields["codec"] = codec
@@ -506,28 +462,48 @@ def _mongo_upsert(col, file_doc: dict):
 
 
 async def save_file_to_db(file_doc: dict, target: str = "both"):
+    """
+    Inserts/updates a single file document.
+    target: "db1" | "db2" | "both"
+    """
     def _sync():
         mongo_ok = False
+
         if target in ("db1", "both"):
             ok = _mongo_upsert(files_collection_1, file_doc)
             mongo_ok = mongo_ok or ok
+
         if target in ("db2", "both"):
             ok = _mongo_upsert(files_collection_2, file_doc)
             mongo_ok = mongo_ok or ok
+
         sql_ok = save_file_to_sql_sync(file_doc, logger)
+
         if sql_ok or mongo_ok:
             clear_all_caches()
+
         return sql_ok
+
     return await asyncio.to_thread(_sync)
 
 
 async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
+    """
+    Bulk-save a list of already-parsed file_doc dicts.
+    Used by the batch indexer — one call saves up to 200 docs.
+
+    Mongo:  one bulk_write per DB (single round-trip)
+    SQLite: one executemany transaction (single round-trip)
+
+    Returns the number of docs saved/updated.
+    """
     if not docs:
         return 0
 
     def _sync():
         from pymongo import UpdateOne
 
+        # ── MongoDB bulk_write ────────────────────────────────
         def _build_ops(docs_list):
             ops = []
             for doc in docs_list:
@@ -549,17 +525,20 @@ async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
             return ops
 
         ops = _build_ops(docs)
+
         if target in ("db1", "both"):
             try:
                 files_collection_1.bulk_write(ops, ordered=False)
             except Exception as e:
                 logger.error(f"[BATCH] Mongo bulk_write DB1 error: {e}")
+
         if target in ("db2", "both"):
             try:
                 files_collection_2.bulk_write(ops, ordered=False)
             except Exception as e:
                 logger.error(f"[BATCH] Mongo bulk_write DB2 error: {e}")
 
+        # ── SQLite executemany ────────────────────────────────
         saved = save_file_docs_batch_sync(docs, logger)
         if saved:
             clear_all_caches()
@@ -577,7 +556,35 @@ async def delete_all_files():
                 logger.error(f"delete_all_files error ({col.full_name}): {e}")
         delete_all_files_sync()
         clear_all_caches()
+
     await asyncio.to_thread(_sync)
+
+
+async def update_file_id(channel_id: int, message_id: int, new_file_id: str):
+    """
+    Update stale file_id in both MongoDB collections and SQLite.
+    Called after a successful copy_message() forward fallback — the forwarded
+    message contains a fresh, valid file_id which we persist so future sends
+    use send_cached_media() directly without needing the fallback again.
+    """
+    def _sync():
+        filt   = {"channel_id": channel_id, "message_id": message_id}
+        update = {"$set": {"file_id": new_file_id}}
+        updated = 0
+        for col in (files_collection_1, files_collection_2):
+            try:
+                r = col.update_one(filt, update)
+                updated += r.modified_count
+            except Exception as e:
+                logger.error(f"update_file_id mongo error ({col.full_name}): {e}")
+        # SQLite update
+        update_file_id_sync(channel_id, message_id, new_file_id)
+        if updated:
+            clear_all_caches()
+        logger.info(f"[FILE_ID_REFRESH] ch={channel_id} msg={message_id} updated={updated}")
+
+    await asyncio.to_thread(_sync)
+
 
 
 async def delete_one_file(channel_id: int, msg_id: int):
@@ -590,6 +597,7 @@ async def delete_one_file(channel_id: int, msg_id: int):
                 logger.error(f"delete_one_file error ({col.full_name}): {e}")
         delete_one_file_sync(channel_id, msg_id)
         clear_all_caches()
+
     await asyncio.to_thread(_sync)
 
 
@@ -619,11 +627,12 @@ async def get_total_files_per_db() -> dict:
         except Exception:
             c2 = -1
         return {"db1": c1, "db2": c2}
+
     return await asyncio.to_thread(_sync)
 
 
 # ─────────────────────────────────────────────────────────────
-# USER MANAGEMENT
+# USER MANAGEMENT  (Config DB)
 # ─────────────────────────────────────────────────────────────
 
 async def add_user(user_id: int):
@@ -634,6 +643,7 @@ async def add_user(user_id: int):
             )
         except Exception as e:
             logger.error(f"add_user error: {e}")
+
     await asyncio.to_thread(_sync)
 
 
@@ -644,6 +654,7 @@ async def get_all_users():
         except Exception as e:
             logger.error(f"get_all_users error: {e}")
             return []
+
     return await asyncio.to_thread(_sync)
 
 
@@ -654,11 +665,12 @@ async def get_total_users() -> int:
         except Exception as e:
             logger.error(f"get_total_users error: {e}")
             return 0
+
     return await asyncio.to_thread(_sync)
 
 
 # ─────────────────────────────────────────────────────────────
-# PENDING DELIVERY
+# PENDING DELIVERY  (Config DB)
 # ─────────────────────────────────────────────────────────────
 
 async def save_pending_delivery(user_id: int, data: dict):
@@ -669,6 +681,7 @@ async def save_pending_delivery(user_id: int, data: dict):
             )
         except Exception as e:
             logger.error(f"save_pending_delivery error: {e}")
+
     await asyncio.to_thread(_sync)
 
 
@@ -679,6 +692,7 @@ async def get_pending_delivery(user_id: int):
         except Exception as e:
             logger.error(f"get_pending_delivery error: {e}")
             return None
+
     return await asyncio.to_thread(_sync)
 
 
@@ -688,18 +702,31 @@ async def clear_pending_delivery(user_id: int):
             pending_collection.delete_one({"user_id": user_id})
         except Exception as e:
             logger.error(f"clear_pending_delivery error: {e}")
+
     await asyncio.to_thread(_sync)
 
 
 # ─────────────────────────────────────────────────────────────
-# NORMALIZED NAME REPAIR
+# NORMALIZED NAME REPAIR  (MongoDB — run once after normalizer upgrade)
 # ─────────────────────────────────────────────────────────────
 
 async def repair_normalized_names_in_mongo():
+    """
+    Re-compute normalized_name for every document in both Mongo
+    file DBs and write back only rows that changed.
+    Safe to run multiple times.
+
+    FIX: bulk_write with ordered=False raises BulkWriteError when the new
+    normalized_name causes a duplicate key conflict on content_identity_unique.
+    This is expected — two old docs can map to the same new normalized name.
+    We catch error code 11000 and count those as skipped (not errors).
+    The conflicting duplicate documents are deleted to keep DB clean.
+    """
     def _repair_col(col):
         updated  = 0
         skipped  = 0
         conflict = 0
+
         try:
             docs = list(col.find({}, {"_id": 1, "file_name": 1, "normalized_name": 1}))
         except Exception as e:
@@ -726,29 +753,40 @@ async def repair_normalized_names_in_mongo():
             result  = col.bulk_write(bulk, ordered=False)
             updated = result.modified_count
         except Exception as e:
+            # BulkWriteError — extract partial results and count conflicts
             from pymongo.errors import BulkWriteError
             if isinstance(e, BulkWriteError):
-                details    = e.details or {}
-                updated    = details.get("nModified", 0)
+                details   = e.details or {}
+                updated   = details.get("nModified", 0)
                 write_errs = details.get("writeErrors", [])
-                dup_ids    = []
+                dup_ids   = []
                 for err in write_errs:
                     if err.get("code") == 11000:
                         conflict += 1
+                        # The _id of the doc that FAILED to update (it's the duplicate)
                         op = err.get("op", {})
                         failed_id = op.get("q", {}).get("_id")
                         if failed_id:
                             dup_ids.append(failed_id)
                     else:
-                        logger.error(f"repair non-dup error ({col.full_name}): {err.get('errmsg')}")
+                        logger.error(
+                            f"repair_normalized_names_in_mongo: non-dup error "
+                            f"({col.full_name}): {err.get('errmsg')}"
+                        )
+                # Delete the conflicting duplicates — they are stale old-norm docs
                 if dup_ids:
                     try:
                         del_result = col.delete_many({"_id": {"$in": dup_ids}})
-                        logger.info(f"[REPAIR] {col.full_name}: deleted {del_result.deleted_count} conflicting docs")
+                        logger.info(
+                            f"[REPAIR] {col.full_name}: deleted {del_result.deleted_count} "
+                            f"conflicting duplicate docs"
+                        )
                     except Exception as de:
                         logger.error(f"[REPAIR] Failed to delete duplicates: {de}")
             else:
-                logger.error(f"repair_normalized_names_in_mongo: bulk_write error ({col.full_name}): {e}")
+                logger.error(
+                    f"repair_normalized_names_in_mongo: bulk_write error ({col.full_name}): {e}"
+                )
 
         return updated, skipped, conflict
 
@@ -756,7 +794,10 @@ async def repair_normalized_names_in_mongo():
         total_updated = 0
         for col in (files_collection_1, files_collection_2):
             u, s, c = _repair_col(col)
-            logger.info(f"[REPAIR] {col.full_name}: updated={u}, already_correct={s}, conflicts_skipped={c}")
+            logger.info(
+                f"[REPAIR] {col.full_name}: updated={u}, already_correct={s}, "
+                f"conflicts_skipped={c}"
+            )
             total_updated += u
         if total_updated:
             clear_all_caches()
