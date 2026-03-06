@@ -200,7 +200,7 @@ def is_sender_running(user_id):
     return t and not t.done()
 
 
-async def init_progress(cyber, user_id, total):
+async def init_progress(cyber, user_id, total, season: int = 1):
     msg = await cyber.send_message(
         user_id,
         f"📦 Sending files...\nProgress: 0 / {total}",
@@ -211,6 +211,7 @@ async def init_progress(cyber, user_id, total):
         "sent":    0,
         "msg_id":  msg.id,
         "last":    time.time(),
+        "season":  season,
     }
 
 
@@ -238,18 +239,41 @@ async def finish_progress(cyber, user_id):
     p = USER_PROGRESS.pop(user_id, None)
     if not p:
         return
+
+    # Delete the "📦 Sending files... Progress: X/Y" message
     try:
-        await cyber.edit_message_text(
-            user_id,
-            p["msg_id"],
-            f"✅ <b>Delivery complete!</b>\nSent: <b>{p['total']}</b> files",
-            parse_mode=enums.ParseMode.HTML
-        )
-        delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
-        if delay and int(delay) > 0:
-            delete_message_later(cyber, user_id, p["msg_id"], int(delay))
+        await cyber.delete_messages(user_id, p["msg_id"])
     except Exception:
         pass
+
+    # Send end sticker if enabled
+    if STICKER_ENABLED:
+        try:
+            from utils.cyber_sticker import make_end_sticker
+            season = p.get("season", 1)
+            total  = p.get("total",  0)
+
+            # Try cached end sticker file_id
+            cache_key = f"end_{season}"
+            cached_fid = await get_cached_sticker(cache_key, STICKER_POWERED_BY)
+            end_msg = None
+            if cached_fid:
+                try:
+                    end_msg = await cyber.send_sticker(user_id, cached_fid)
+                except Exception:
+                    cached_fid = None
+
+            if not cached_fid:
+                buf     = make_end_sticker(season, total, powered_by=STICKER_POWERED_BY)
+                end_msg = await cyber.send_sticker(user_id, buf)
+                if end_msg and end_msg.sticker:
+                    await save_sticker_cache(cache_key, STICKER_POWERED_BY, end_msg.sticker.file_id)
+
+            delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
+            if delay and int(delay) > 0 and end_msg:
+                delete_message_later(cyber, user_id, end_msg.id, int(delay))
+        except Exception as _e:
+            logger.warning(f"[STICKER] End sticker failed: {_e}")
 
 
 async def sender_worker(cyber, user_id, on_complete=None):
@@ -396,7 +420,7 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
     if not custom_caption:
         custom_caption = DEFAULT_CAPTION
 
-    await init_progress(cyber, user_id, len(files))
+    await init_progress(cyber, user_id, len(files), season=season)
 
     # ── Send season sticker before files ──────────────────────────────
     if STICKER_ENABLED:
