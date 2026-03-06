@@ -24,7 +24,6 @@ from pyrogram import enums
 from pyrogram.errors import FloodWait, MessageNotModified, BadRequest
 
 from config import logger, STICKER_ENABLED, STICKER_POWERED_BY
-from utils.cyber_sticker import make_season_sticker
 from DB.database import (
     get_all_files_by_season_and_quality,
     get_global_setting,
@@ -401,8 +400,12 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
 
     # ── Send season sticker before files ──────────────────────────────
     if STICKER_ENABLED:
+        sticker_msg = None
         try:
-            # Detect brand change → purge old cache so new brand stickers are created
+            # Lazy import — keeps files.py loadable even if Pillow is missing
+            from utils.cyber_sticker import make_season_sticker
+
+            # Detect brand change → purge old cache
             stored_brand = await get_sticker_brand()
             if stored_brand != STICKER_POWERED_BY:
                 logger.info(
@@ -412,34 +415,33 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
                 await clear_sticker_cache()
                 await set_sticker_brand(STICKER_POWERED_BY)
 
-            # Try to reuse cached Telegram file_id
+            # Try cached file_id first
             cached_fid = await get_cached_sticker(season, STICKER_POWERED_BY)
             if cached_fid:
                 try:
                     sticker_msg = await cyber.send_sticker(user_id, cached_fid)
                     logger.debug(f"[STICKER] Sent cached sticker for Season {season:02d}")
                 except Exception:
-                    # Cached file_id stale — regenerate
-                    cached_fid = None
+                    cached_fid = None   # stale — regenerate below
 
             if not cached_fid:
-                # Generate fresh sticker image and send
                 sticker_buf = make_season_sticker(season, powered_by=STICKER_POWERED_BY)
                 sticker_msg = await cyber.send_sticker(user_id, sticker_buf)
-                # Persist the fresh file_id for future reuse
                 if sticker_msg and sticker_msg.sticker:
-                    await save_sticker_cache(season, STICKER_POWERED_BY, sticker_msg.sticker.file_id)
+                    await save_sticker_cache(
+                        season, STICKER_POWERED_BY, sticker_msg.sticker.file_id
+                    )
                     logger.info(
                         f"[STICKER_CACHE] Saved Season {season:02d} "
                         f"sticker for brand={STICKER_POWERED_BY!r}"
                     )
 
-            # Auto-delete sticker alongside files if auto_delay is set
             if auto_delay > 0 and sticker_msg:
                 delete_message_later(cyber, user_id, sticker_msg.id, auto_delay)
 
         except Exception as _se:
             logger.warning(f"[STICKER] Failed to send season sticker: {_se}")
+            # Never block file delivery due to sticker failure
 
     queue = get_user_queue(user_id)
 
