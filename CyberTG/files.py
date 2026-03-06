@@ -266,8 +266,11 @@ async def finish_progress(cyber, user_id):
             if not cached_fid:
                 buf     = make_end_sticker(season, total, powered_by=STICKER_POWERED_BY)
                 end_msg = await cyber.send_sticker(user_id, buf)
-                if end_msg and end_msg.sticker:
-                    await save_sticker_cache(cache_key, STICKER_POWERED_BY, end_msg.sticker.file_id)
+                logger.info(f"[STICKER] Sent fresh end sticker Season {season:02d}")
+                media = (getattr(end_msg, "sticker", None)
+                         or getattr(end_msg, "document", None))
+                if media and getattr(media, "file_id", None):
+                    await save_sticker_cache(cache_key, STICKER_POWERED_BY, media.file_id)
 
             delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
             if delay and int(delay) > 0 and end_msg:
@@ -427,7 +430,7 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
         sticker_msg = None
         try:
             # Lazy import — keeps files.py loadable even if Pillow is missing
-            from utils.cyber_sticker import make_season_sticker
+            from utils.cyber_sticker import make_start_sticker
 
             # Detect brand change → purge old cache
             stored_brand = await get_sticker_brand()
@@ -444,16 +447,20 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
             if cached_fid:
                 try:
                     sticker_msg = await cyber.send_sticker(user_id, cached_fid)
-                    logger.debug(f"[STICKER] Sent cached sticker for Season {season:02d}")
+                    logger.info(f"[STICKER] Sent cached start sticker Season {season:02d}")
                 except Exception:
                     cached_fid = None   # stale — regenerate below
 
             if not cached_fid:
-                sticker_buf = make_season_sticker(season, powered_by=STICKER_POWERED_BY)
+                sticker_buf = make_start_sticker(season, powered_by=STICKER_POWERED_BY)
                 sticker_msg = await cyber.send_sticker(user_id, sticker_buf)
-                if sticker_msg and sticker_msg.sticker:
+                logger.info(f"[STICKER] Sent fresh start sticker Season {season:02d}")
+                # Extract file_id from sent message for caching
+                media = (getattr(sticker_msg, "sticker", None)
+                         or getattr(sticker_msg, "document", None))
+                if media and getattr(media, "file_id", None):
                     await save_sticker_cache(
-                        season, STICKER_POWERED_BY, sticker_msg.sticker.file_id
+                        season, STICKER_POWERED_BY, media.file_id
                     )
                     logger.info(
                         f"[STICKER_CACHE] Saved Season {season:02d} "
