@@ -120,4 +120,5 @@ def make_season_sticker(season: int, powered_by: str = "Series Bot") -> io.Bytes
     buf = io.BytesIO()
     img.save(buf, format="WEBP", lossless=True)
     buf.seek(0)
+    buf.name = f"season_{season:02d}.webp"   # Pyrogram requires .name on BytesIO
     return buf
