@@ -1,13 +1,13 @@
 import logging
 from logging.handlers import RotatingFileHandler
-from pymongo import TEXT 
+from pymongo import TEXT
 
 # BOT SETTINGS
 API_ID = 28643132
 API_HASH = "510c3009ea589830a89e045bf8aae656"
 BOT_TOKEN = "8333630020:AAE4ZBaAjzU_Qs5CyxHpkLs6vwn1jJxoXco"
 
-#MONGO DB 
+# MONGO DB
 MONGO_URI_CONFIG = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
 MONGO_URI_DB1    = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
 MONGO_URI_DB2    = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
@@ -16,23 +16,39 @@ MONGO_URI_DB2    = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cl
 ADMIN_USERS = [5794562450]
 
 # IMAGES
-START_IMG = "https://ibb.co/1tSFHQKw"
-SPELL_IMG = "https://ibb.co/1tSFHQKw"
+START_IMG      = "https://ibb.co/1tSFHQKw"
+SPELL_IMG      = "https://ibb.co/1tSFHQKw"
 DEFAULT_POSTER = "https://ibb.co/1tSFHQKw"
 
 # POSTER API
-TMDB_API_KEY = "0e027f75bc7f6a14139ad3e6fe76ed97"
-OMDB_API_KEY = "f93ab313"
-TMDB_CACHE_DB = "/tmp/TMDB_cache.db"
-TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
+TMDB_API_KEY          = "0e027f75bc7f6a14139ad3e6fe76ed97"
+OMDB_API_KEY          = "f93ab313"
+TMDB_CACHE_DB         = "/tmp/TMDB_cache.db"
+TMDB_IMAGE_BASE       = "https://image.tmdb.org/t/p/w500"       # portrait (default)
+TMDB_IMAGE_BASE_WIDE  = "https://image.tmdb.org/t/p/w780"       # landscape / wide
+
+# ── Poster defaults (admin can override via /poster command) ──
+POSTER_ENABLED   = True    # show/hide poster
+POSTER_LANDSCAPE = False   # False = portrait (w500), True = landscape (w780)
+
+# ── Caption cleaning defaults ──────────────────────────────────
+# Keywords removed from file_name_clean / caption_clean at save time.
+# Admin can add/remove via /captionclean command.
+DEFAULT_CAPTION_CLEAN_KEYWORDS = [
+    "@", "t.me", "Telegram", "www.", "http://", "https://",
+]
+
+# ── Filter default ─────────────────────────────────────────────
+FILTER_ENABLED_DEFAULT = True   # global filter on/off default
 
 # AS YOUR WISH
-INDEX_CHANNELS = []  
+INDEX_BATCH_SIZE   = 100          # files per dedup/save batch
+INDEX_CHANNELS     = []
 MAX_CALLBACK_LENGTH = 50
-SEASONS_PER_PAGE = 9
-FORCE_SUB_CHANNEL = None   
-LOG_FILE_PATH = "bot.log"
-MAX_LOG_SIZE = 10 * 1024 * 1024
+SEASONS_PER_PAGE   = 9
+FORCE_SUB_CHANNEL  = None
+LOG_FILE_PATH      = "bot.log"
+MAX_LOG_SIZE       = 10 * 1024 * 1024
 
 # LOGGING INFO
 formatter = logging.Formatter(
