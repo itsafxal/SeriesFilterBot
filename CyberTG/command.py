@@ -1,24 +1,25 @@
 """
-command.py — FIXED (works with new fsub.py)
-============================================
-
-/start with send_ payload:
-  1. Get slot statuses
-  2. If ANY slot not satisfied → show gate message → register pending fsub
-  3. If ALL slots satisfied → check delivery lock
-       • Lock FREE  → deliver (first time or genuine retry after delivery done)
-       • Lock HELD  → silently skip (auto-deliver already running from join event)
-
-  For invite-mode channels: get_slot_statuses() does the Telegram API check.
-  If the user just joined, it returns joined=True → all_slots_passed=True → deliver.
-  No join_request event needed for invite mode.
+command.py — ENHANCED EDITION
+===============================
+New features:
+  1.  /stats  — users, files, series, groups, DB sizes (Mongo + SQLite)
+  2.  /list   — paginated batched series list (20/page) + export button
+  3.  /filter on|off — toggle search functionality globally
+  4.  /poster on|off|landscape|portrait — poster mode settings
+  5.  /broadcast — FloodWait retry, progress counter
+  6.  /deleteall — confirmation prompt before deletion
+  7.  /captionclean — manage caption cleaning keywords
+  8.  Back buttons everywhere
+  9.  All admin commands use clean UI formatting
 """
 
 import io
 import asyncio
+import math
 
 from pyrogram import Client, filters, enums
-from pyrogram.types import Message, InlineKeyboardMarkup
+from pyrogram.errors import FloodWait
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from utils.cyber_font import BTN, UI
 from config import (
@@ -35,11 +36,21 @@ from DB.database import (
     get_total_files,
     get_total_series,
     get_total_files_per_db,
+    get_total_groups,
     get_all_series,
     delete_all_files,
     delete_one_file,
     get_global_setting,
     set_global_setting,
+    get_db_size_info,
+    get_filter_enabled,
+    set_filter_enabled,
+    get_poster_enabled,
+    set_poster_enabled,
+    get_poster_landscape,
+    set_poster_landscape,
+    get_caption_clean_keywords,
+    set_caption_clean_keywords,
     sql_db_lock,
 )
 from utils.cyber_delete import delete_message_later
@@ -56,6 +67,18 @@ from .fsub import (
     check_fsub,
 )
 
+# ── Pagination ─────────────────────────────────────────────────
+LIST_PAGE_SIZE = 20
+
+
+def _fmt_mb(mb: float) -> str:
+    """Format megabytes as human-readable."""
+    if mb >= 1024:
+        return f"{mb / 1024:.2f} GB"
+    if mb >= 1:
+        return f"{mb:.2f} MB"
+    return f"{mb * 1024:.1f} KB"
+
 
 def register_command_handlers(cyber: Client):
 
@@ -67,7 +90,6 @@ def register_command_handlers(cyber: Client):
         uid = message.from_user.id
         await add_user(uid)
 
-        # ── Maintenance mode check ─────────────────────────────
         if uid not in ADMIN_USERS:
             maintenance = await get_global_setting("MAINTENANCE_MODE", False)
             if maintenance:
@@ -81,31 +103,21 @@ def register_command_handlers(cyber: Client):
             payload = message.command[1]
 
             if payload.startswith("send_"):
-
-                # Delete the /start message immediately (clean UX)
                 try:
                     await message.delete()
                 except Exception:
                     pass
 
-                # Get real-time slot statuses
                 statuses = await get_slot_statuses(cyber, uid)
                 passed   = all_slots_passed(statuses)
 
-                logger.info(
-                    f"[START] uid={uid} passed={passed} "
-                    f"statuses={[(s['slot'],s['joined'],s['requested']) for s in statuses]}"
-                )
-
                 if not passed:
-                    # ── Show / refresh gate message ───────────
                     bot      = await cyber.get_me()
                     kb       = build_fsub_keyboard(bot.username, payload, statuses)
                     txt      = fsub_text(statuses)
                     existing = _PENDING_FSUB.get(uid)
 
                     if existing and existing["payload"] == payload:
-                        # Refresh existing gate message keyboard
                         try:
                             await existing["msg"].edit_text(
                                 txt, reply_markup=kb,
@@ -114,7 +126,6 @@ def register_command_handlers(cyber: Client):
                         except Exception:
                             pass
                     else:
-                        # Send fresh gate message
                         gate_msg = await cyber.send_message(
                             uid, txt, reply_markup=kb,
                             parse_mode=enums.ParseMode.HTML,
@@ -122,9 +133,6 @@ def register_command_handlers(cyber: Client):
                         register_pending_fsub(uid, gate_msg, payload)
                     return
 
-                # ── FSub passed — deliver ─────────────────────
-
-                # Clean up any lingering gate message
                 pending = _PENDING_FSUB.get(uid)
                 if pending:
                     try:
@@ -133,16 +141,9 @@ def register_command_handlers(cyber: Client):
                         pass
                     clear_pending_fsub(uid)
 
-                # do_deliver handles:
-                #   - delivery lock (prevents duplicate from concurrent auto-deliver)
-                #   - session set
-                #   - file delivery
-                #   - retry button send
-                # If locked → delivery is already running (auto-deliver beat us) → skip silently
                 await do_deliver(cyber, uid, payload, source="start")
                 return
 
-        # ── Normal /start (no payload) ────────────────────────
         bot       = await cyber.get_me()
         user_name = message.from_user.first_name
         lets_dive = UI("Let's dive into entertainment 🌙")
@@ -170,23 +171,336 @@ def register_command_handlers(cyber: Client):
         )
 
     # ──────────────────────────────────────────────────────────
-    # /broadcast
+    # /broadcast — FloodWait retry + progress
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("broadcast") & filters.user(ADMIN_USERS))
     async def broadcast(_, msg: Message):
         if not msg.reply_to_message:
-            return await msg.reply("Reply to a message to broadcast it.")
-        users = await get_all_users()
-        for u in users:
-            try:
-                await msg.reply_to_message.copy(u)
-                await asyncio.sleep(0.1)
-            except Exception:
-                pass
-        await msg.reply("✅ Broadcast done.")
+            return await msg.reply(
+                "↩️ Reply to a message to broadcast it.",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        users   = await get_all_users()
+        total   = len(users)
+        sent    = 0
+        failed  = 0
+        blocked = 0
+
+        progress = await msg.reply(
+            f"📡 <b>Broadcasting to {total} users...</b>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+        for i, uid in enumerate(users):
+            while True:
+                try:
+                    await msg.reply_to_message.copy(uid)
+                    sent += 1
+                    break
+                except FloodWait as fw:
+                    wait = max(int(getattr(fw, "value", 10)), 5)
+                    logger.warning(f"[BROADCAST] FloodWait {wait}s")
+                    await asyncio.sleep(wait + 1)
+                except Exception as e:
+                    err = str(e).lower()
+                    if "blocked" in err or "user is deactivated" in err:
+                        blocked += 1
+                    else:
+                        failed += 1
+                    break
+
+            # Update progress every 50 users
+            if (i + 1) % 50 == 0 or (i + 1) == total:
+                try:
+                    await progress.edit_text(
+                        f"📡 <b>Broadcasting...</b>\n\n"
+                        f"📤 Sent    : <code>{sent}</code>\n"
+                        f"🚫 Blocked : <code>{blocked}</code>\n"
+                        f"❌ Failed  : <code>{failed}</code>\n"
+                        f"📊 Progress: <code>{i+1}/{total}</code>",
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
+
+            await asyncio.sleep(0.05)
+
+        await progress.edit_text(
+            f"✅ <b>Broadcast Complete</b>\n\n"
+            f"📤 Sent    : <code>{sent}</code>\n"
+            f"🚫 Blocked : <code>{blocked}</code>\n"
+            f"❌ Failed  : <code>{failed}</code>\n"
+            f"👥 Total   : <code>{total}</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
 
     # ──────────────────────────────────────────────────────────
-    # /total
+    # /stats — comprehensive bot statistics
+    # ──────────────────────────────────────────────────────────
+    @cyber.on_message(filters.command("stats") & filters.user(ADMIN_USERS))
+    async def stats_cmd(_, m: Message):
+        wait = await m.reply("⏳ <b>Gathering stats...</b>", parse_mode=enums.ParseMode.HTML)
+
+        users  = await get_total_users()
+        files  = await get_total_files()
+        series = await get_total_series()
+        groups = await get_total_groups()
+        per_db = await get_total_files_per_db()
+        sizes  = await get_db_size_info()
+
+        db1_count = per_db.get("db1", 0)
+        db2_count = per_db.get("db2", 0)
+
+        cfg_size = _fmt_mb(sizes.get("mongo_config_mb", 0))
+        db1_size = _fmt_mb(sizes.get("mongo_db1_mb", 0))
+        db2_size = _fmt_mb(sizes.get("mongo_db2_mb", 0))
+        sql_size = _fmt_mb(sizes.get("sqlite_mb", 0))
+
+        total_mongo = sizes.get("mongo_db1_mb", 0) + sizes.get("mongo_db2_mb", 0)
+
+        text = (
+            f"<b>📊 Bot Statistics</b>\n"
+            f"{'─' * 28}\n\n"
+            f"👥 <b>Users</b>     : <code>{users:,}</code>\n"
+            f"📦 <b>Files</b>     : <code>{files:,}</code>\n"
+            f"🎬 <b>Series</b>    : <code>{series:,}</code>\n"
+            f"🏘 <b>Groups</b>    : <code>{groups:,}</code>\n\n"
+            f"<b>🗄 MongoDB</b>\n"
+            f"  Config DB  : <code>{cfg_size}</code>\n"
+            f"  File DB1   : <code>{db1_count:,} files · {db1_size}</code>\n"
+            f"  File DB2   : <code>{db2_count:,} files · {db2_size}</code>\n"
+            f"  Total      : <code>{_fmt_mb(total_mongo)}</code>\n\n"
+            f"<b>💾 SQLite</b>     : <code>{sql_size}</code>\n"
+        )
+
+        keyboard = InlineKeyboardMarkup([
+            [BTN("🔙 Back", callback_data="gset|main")]
+        ])
+        await wait.edit_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
+
+    # ──────────────────────────────────────────────────────────
+    # /list — paginated batched series list
+    # ──────────────────────────────────────────────────────────
+    @cyber.on_message(filters.command("list") & filters.user(ADMIN_USERS))
+    async def list_cmd(_, m: Message):
+        await _send_series_list_page(m, page=0, send_new=True)
+
+    async def _send_series_list_page(source, page: int, send_new: bool = False):
+        """Send or edit the series list page."""
+        series_list = await get_all_series()  # [(name, count), ...]
+        total       = len(series_list)
+        total_pages = max(1, math.ceil(total / LIST_PAGE_SIZE))
+        page        = max(0, min(page, total_pages - 1))
+
+        start = page * LIST_PAGE_SIZE
+        chunk = series_list[start : start + LIST_PAGE_SIZE]
+
+        lines = [f"<b>🎬 Series List</b>  (Page {page+1}/{total_pages})\n"]
+        for i, (name, count) in enumerate(chunk, start + 1):
+            lines.append(f"<code>{i:>4}.</code> {name}  <i>({count})</i>")
+
+        text = "\n".join(lines)
+
+        nav = []
+        if page > 0:
+            nav.append(BTN("◀ Prev", callback_data=f"serieslist|{page-1}"))
+        nav.append(BTN(f"{page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav.append(BTN("Next ▶", callback_data=f"serieslist|{page+1}"))
+
+        keyboard = InlineKeyboardMarkup([
+            nav,
+            [BTN("📥 Export Full List", callback_data="serieslist|export")],
+        ])
+
+        if send_new:
+            await source.reply(text, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
+        else:
+            try:
+                await source.message.edit_text(
+                    text, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard
+                )
+                await source.answer()
+            except Exception:
+                await source.answer()
+
+    @cyber.on_callback_query(filters.regex(r"^serieslist\|") & filters.user(ADMIN_USERS))
+    async def serieslist_cb(_, q):
+        action = q.data.split("|")[1]
+
+        if action == "export":
+            await q.answer("📥 Generating export...")
+            series_list  = await get_all_series()
+            total_files  = await get_total_files()
+            total_series = len(series_list)
+
+            lines = [
+                "=" * 50,
+                "         BATCHED SERIES LIST",
+                "=" * 50,
+                f"  Total Series : {total_series}",
+                f"  Total Files  : {total_files}",
+                "=" * 50,
+                "",
+            ]
+            for i, (name, count) in enumerate(series_list, 1):
+                lines.append(f"{i:>4}. {name}  ({count} files)")
+
+            content       = "\n".join(lines)
+            file_buf      = io.BytesIO(content.encode("utf-8"))
+            file_buf.name = "series_list.txt"
+
+            await q.message.reply_document(
+                document=file_buf,
+                caption=(
+                    f"<b>🎬 Full Series List</b>\n"
+                    f"Total Series : <code>{total_series}</code>\n"
+                    f"Total Files  : <code>{total_files}</code>"
+                ),
+                parse_mode=enums.ParseMode.HTML,
+            )
+        else:
+            try:
+                page = int(action)
+            except ValueError:
+                await q.answer()
+                return
+            await _send_series_list_page(q, page=page, send_new=False)
+
+    # ──────────────────────────────────────────────────────────
+    # /filter on | off
+    # ──────────────────────────────────────────────────────────
+    @cyber.on_message(filters.command("filter") & filters.user(ADMIN_USERS))
+    async def filter_cmd(_, m: Message):
+        args = m.command
+        if len(args) < 2 or args[1].lower() not in ("on", "off"):
+            current = await get_filter_enabled()
+            status  = "✅ ON" if current else "❌ OFF"
+            return await m.reply(
+                f"<b>🔍 Filter Status: {status}</b>\n\n"
+                "Usage: <code>/filter on</code> or <code>/filter off</code>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        enabled = args[1].lower() == "on"
+        await set_filter_enabled(enabled)
+        icon = "✅" if enabled else "❌"
+        await m.reply(
+            f"{icon} <b>Filter turned {'ON' if enabled else 'OFF'}</b>\n\n"
+            f"{'Users can now search for series.' if enabled else 'Search is disabled for users.'}",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    # ──────────────────────────────────────────────────────────
+    # /poster on | off | landscape | portrait
+    # ──────────────────────────────────────────────────────────
+    @cyber.on_message(filters.command("poster") & filters.user(ADMIN_USERS))
+    async def poster_cmd(_, m: Message):
+        args = m.command
+
+        if len(args) < 2:
+            enabled   = await get_poster_enabled()
+            landscape = await get_poster_landscape()
+            e_icon    = "✅ ON" if enabled else "❌ OFF"
+            o_icon    = "🌄 Landscape" if landscape else "🖼 Portrait"
+            return await m.reply(
+                f"<b>🖼 Poster Settings</b>\n\n"
+                f"Status      : {e_icon}\n"
+                f"Orientation : {o_icon}\n\n"
+                "<b>Commands:</b>\n"
+                "<code>/poster on</code>        — enable poster\n"
+                "<code>/poster off</code>       — disable poster\n"
+                "<code>/poster landscape</code> — wide backdrop image\n"
+                "<code>/poster portrait</code>  — tall poster image",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        arg = args[1].lower()
+
+        if arg == "on":
+            await set_poster_enabled(True)
+            await m.reply("✅ <b>Poster enabled.</b>", parse_mode=enums.ParseMode.HTML)
+
+        elif arg == "off":
+            await set_poster_enabled(False)
+            await m.reply("❌ <b>Poster disabled.</b>", parse_mode=enums.ParseMode.HTML)
+
+        elif arg == "landscape":
+            await set_poster_landscape(True)
+            await m.reply(
+                "🌄 <b>Poster set to Landscape mode.</b>\n"
+                "Wide backdrop images will be used from TMDB.",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        elif arg == "portrait":
+            await set_poster_landscape(False)
+            await m.reply(
+                "🖼 <b>Poster set to Portrait mode.</b>\n"
+                "Standard tall poster images will be used.",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        else:
+            await m.reply(
+                "❌ Unknown option.\n"
+                "Use: <code>on</code> / <code>off</code> / <code>landscape</code> / <code>portrait</code>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+    # ──────────────────────────────────────────────────────────
+    # /captionclean — manage caption cleaning keywords
+    # ──────────────────────────────────────────────────────────
+    @cyber.on_message(filters.command("captionclean") & filters.user(ADMIN_USERS))
+    async def captionclean_cmd(_, m: Message):
+        args = m.command
+
+        if len(args) < 2:
+            keywords = await get_caption_clean_keywords()
+            kw_text  = "\n".join(f"  • <code>{k}</code>" for k in keywords) or "  (none)"
+            return await m.reply(
+                f"<b>🧹 Caption Cleaning Keywords</b>\n\n"
+                f"These are stripped from filenames &amp; captions:\n{kw_text}\n\n"
+                "<b>Commands:</b>\n"
+                "<code>/captionclean add &lt;keyword&gt;</code>\n"
+                "<code>/captionclean remove &lt;keyword&gt;</code>\n"
+                "<code>/captionclean reset</code> — restore defaults",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        sub = args[1].lower()
+
+        if sub == "add" and len(args) >= 3:
+            kw       = " ".join(args[2:])
+            keywords = await get_caption_clean_keywords()
+            if kw not in keywords:
+                keywords.append(kw)
+                await set_caption_clean_keywords(keywords)
+            await m.reply(
+                f"✅ Added keyword: <code>{kw}</code>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        elif sub == "remove" and len(args) >= 3:
+            kw       = " ".join(args[2:])
+            keywords = await get_caption_clean_keywords()
+            if kw in keywords:
+                keywords.remove(kw)
+                await set_caption_clean_keywords(keywords)
+                await m.reply(f"🗑 Removed keyword: <code>{kw}</code>", parse_mode=enums.ParseMode.HTML)
+            else:
+                await m.reply(f"⚠️ Keyword not found: <code>{kw}</code>", parse_mode=enums.ParseMode.HTML)
+
+        elif sub == "reset":
+            from config import DEFAULT_CAPTION_CLEAN_KEYWORDS
+            await set_caption_clean_keywords(list(DEFAULT_CAPTION_CLEAN_KEYWORDS))
+            await m.reply("✅ Keywords reset to defaults.", parse_mode=enums.ParseMode.HTML)
+
+        else:
+            await m.reply("❌ Invalid usage. See <code>/captionclean</code> for help.", parse_mode=enums.ParseMode.HTML)
+
+    # ──────────────────────────────────────────────────────────
+    # /total (kept for backward compat, now alias for /stats)
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("total") & filters.user(ADMIN_USERS))
     async def total(_, m: Message):
@@ -194,68 +508,63 @@ def register_command_handlers(cyber: Client):
         files  = await get_total_files()
         series = await get_total_series()
         per_db = await get_total_files_per_db()
-
-        db1 = per_db.get("db1", "?")
-        db2 = per_db.get("db2", "?")
+        db1    = per_db.get("db1", "?")
+        db2    = per_db.get("db2", "?")
 
         await m.reply(
-            f"<b>📊 Bot Statistics</b>\n\n"
-            f"👤 <b>Users</b>          : <code>{users}</code>\n"
-            f"📂 <b>Total Files</b>    : <code>{files}</code>\n"
-            f"🎬 <b>Batched Series</b> : <code>{series}</code>\n\n"
-            f"<b>📁 MongoDB File DBs</b>\n"
-            f"  DB1 : <code>{db1}</code> files\n"
-            f"  DB2 : <code>{db2}</code> files",
+            f"<b>📊 Quick Stats</b>\n\n"
+            f"👥 Users   : <code>{users:,}</code>\n"
+            f"📦 Files   : <code>{files:,}</code>\n"
+            f"🎬 Series  : <code>{series:,}</code>\n\n"
+            f"🗄 DB1     : <code>{db1:,}</code> files\n"
+            f"🗄 DB2     : <code>{db2:,}</code> files",
             parse_mode=enums.ParseMode.HTML,
         )
 
     # ──────────────────────────────────────────────────────────
-    # /listbatch
-    # ──────────────────────────────────────────────────────────
-    @cyber.on_message(filters.command("listbatch") & filters.user(ADMIN_USERS))
-    async def listbatch(_, m: Message):
-        series_list = await get_all_series()
-
-        if not series_list:
-            return await m.reply("❌ No series found in database.")
-
-        total_series = len(series_list)
-        total_files  = sum(count for _, count in series_list)
-
-        lines = [
-            f"🎬 BATCHED SERIES LIST",
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            f"Total Series : {total_series}",
-            f"Total Files  : {total_files}",
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "",
-        ]
-
-        for i, (name, count) in enumerate(series_list, 1):
-            lines.append(f"{i:>4}. {name}  ({count} files)")
-
-        content = "\n".join(lines)
-
-        file_buf      = io.BytesIO(content.encode("utf-8"))
-        file_buf.name = "batched_series.txt"
-
-        await m.reply_document(
-            document=file_buf,
-            caption=(
-                f"<b>🎬 Batched Series List</b>\n"
-                f"Total Series: <code>{total_series}</code>\n"
-                f"Total Files : <code>{total_files}</code>"
-            ),
-            parse_mode=enums.ParseMode.HTML,
-        )
-
-    # ──────────────────────────────────────────────────────────
-    # /deleteall
+    # /deleteall — with confirmation prompt
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("deleteall") & filters.user(ADMIN_USERS))
     async def deleteall(_, m: Message):
+        files = await get_total_files()
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Yes, Delete All", callback_data="deleteall_confirm"),
+                InlineKeyboardButton("❌ Cancel",          callback_data="deleteall_cancel"),
+            ]
+        ])
+        await m.reply(
+            f"⚠️ <b>Delete All Files?</b>\n\n"
+            f"This will permanently delete <b>{files:,} files</b> from all databases.\n\n"
+            f"<b>This action cannot be undone.</b>",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    @cyber.on_callback_query(filters.regex("^deleteall_confirm$") & filters.user(ADMIN_USERS))
+    async def deleteall_confirm(_, q):
+        await q.answer("🗑 Deleting all files...")
+        try:
+            await q.message.edit_text("⏳ <b>Deleting all files...</b>", parse_mode=enums.ParseMode.HTML)
+        except Exception:
+            pass
         await delete_all_files()
-        await m.reply("🗑️ All files deleted.")
+        try:
+            await q.message.edit_text(
+                "✅ <b>All files deleted successfully.</b>",
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[BTN("🔙 Back", callback_data="gset|main")]]),
+            )
+        except Exception:
+            pass
+
+    @cyber.on_callback_query(filters.regex("^deleteall_cancel$") & filters.user(ADMIN_USERS))
+    async def deleteall_cancel(_, q):
+        await q.answer("Cancelled.")
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
 
     # ──────────────────────────────────────────────────────────
     # /deletefile <cid> <mid>
@@ -267,8 +576,18 @@ def register_command_handlers(cyber: Client):
                 "Usage: <code>/deletefile &lt;channel_id&gt; &lt;message_id&gt;</code>",
                 parse_mode=enums.ParseMode.HTML,
             )
-        await delete_one_file(int(m.command[1]), int(m.command[2]))
-        await m.reply("✅ File deleted.")
+        try:
+            cid = int(m.command[1])
+            mid = int(m.command[2])
+        except ValueError:
+            return await m.reply("❌ Invalid IDs. Must be integers.", parse_mode=enums.ParseMode.HTML)
+
+        await delete_one_file(cid, mid)
+        await m.reply(
+            f"✅ <b>File deleted.</b>\n"
+            f"Channel: <code>{cid}</code>  Message: <code>{mid}</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
 
     # ──────────────────────────────────────────────────────────
     # /logs
@@ -338,137 +657,107 @@ def register_command_handlers(cyber: Client):
             )
 
     # ──────────────────────────────────────────────────────────
-    # /missing  —  find missing seasons & episodes per series
+    # /missing
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("missing") & filters.user(ADMIN_USERS))
     async def missing_cmd(_, message: Message):
         import asyncio as _asyncio
         from DB.database import get_all_series, sql_db_lock
         from DB.sqlite_db import _get_conn
-        from CyberTG.poster import fetch_tmdb, fetch_omdb
+        from CyberTG.poster import fetch_tmdb
 
-        wait_msg = await message.reply("🔍 <b>Scanning for missing content...</b>", parse_mode=enums.ParseMode.HTML)
+        wait_msg = await message.reply(
+            "🔍 <b>Scanning for missing content...</b>",
+            parse_mode=enums.ParseMode.HTML,
+        )
 
-        # ── Step 1: get all series names from DB ──────────────
-        series_list = await get_all_series()   # [(name, file_count), ...]
+        series_list = await get_all_series()
         if not series_list:
             return await wait_msg.edit_text("❌ No series in database.")
 
-        # ── Step 2: for each series, get what we have in SQLite
         def _get_series_data():
             conn   = _get_conn()
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT normalized_name, season, episode
-                FROM files
-                ORDER BY normalized_name, season, episode
+                FROM files ORDER BY normalized_name, season, episode
             """)
-            rows = cursor.fetchall()
-            # Build: { name: { season: [ep, ep, ...] } }
             data = {}
-            for row in rows:
+            for row in cursor.fetchall():
                 name, s, e = row[0], row[1], row[2]
-                if name not in data:
-                    data[name] = {}
-                if s not in data[name]:
-                    data[name][s] = []
+                data.setdefault(name, {}).setdefault(s, [])
                 if e not in data[name][s]:
-                    data[name][s][e] if False else data[name][s].append(e)
+                    data[name][s].append(e)
             return data
 
         async with sql_db_lock:
             db_data = await _asyncio.to_thread(_get_series_data)
 
-        # ── Step 3: TMDB lookup for expected episode counts ───
-        # Cache to avoid repeat calls for same series
-        _tmdb_cache: dict[str, dict] = {}
+        _tmdb_cache: dict = {}
 
         async def _get_tmdb_info(name: str) -> dict:
-            """Returns {season: total_episodes} from TMDB, or {} if not found."""
             if name in _tmdb_cache:
                 return _tmdb_cache[name]
-
             result = {}
             try:
                 import aiohttp
                 from config import TMDB_API_KEY
-
-                # Search for the show
                 search_url = "https://api.themoviedb.org/3/search/tv"
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(search_url, params={"api_key": TMDB_API_KEY, "query": name}, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                    async with session.get(search_url, params={"api_key": TMDB_API_KEY, "query": name},
+                                           timeout=aiohttp.ClientTimeout(total=5)) as r:
                         data = await r.json()
-
                 results = data.get("results", [])
-                if not results:
-                    _tmdb_cache[name] = result
-                    return result
-
-                show_id = results[0]["id"]
-
-                # Get season episode counts
-                show_url = f"https://api.themoviedb.org/3/tv/{show_id}"
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(show_url, params={"api_key": TMDB_API_KEY}, timeout=aiohttp.ClientTimeout(total=5)) as r:
-                        show_data = await r.json()
-
-                for season_info in show_data.get("seasons", []):
-                    snum  = season_info.get("season_number", 0)
-                    count = season_info.get("episode_count", 0)
-                    if snum > 0 and count > 0:
-                        result[snum] = count
-
+                if results:
+                    show_id   = results[0]["id"]
+                    show_url  = f"https://api.themoviedb.org/3/tv/{show_id}"
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(show_url, params={"api_key": TMDB_API_KEY},
+                                               timeout=aiohttp.ClientTimeout(total=5)) as r:
+                            show_data = await r.json()
+                    for s_info in show_data.get("seasons", []):
+                        snum  = s_info.get("season_number", 0)
+                        count = s_info.get("episode_count", 0)
+                        if snum > 0 and count > 0:
+                            result[snum] = count
             except Exception:
-                pass  # TMDB down or timeout — skip, use DB-only logic
-
+                pass
             _tmdb_cache[name] = result
             return result
 
-        # ── Step 4: Detect missing content ───────────────────
         missing_report = []
 
         for series_name, _ in series_list:
             seasons_data = db_data.get(series_name.lower(), {})
             if not seasons_data:
                 continue
-
-            # Skip season 0 (specials/extras)
             real_seasons = sorted(s for s in seasons_data if s > 0)
             if not real_seasons:
                 continue
-
-            tmdb_info = await _get_tmdb_info(series_name)
-
+            tmdb_info    = await _get_tmdb_info(series_name)
             series_issues = []
 
-            # Check for missing seasons in our range
-            if real_seasons:
-                min_s, max_s = real_seasons[0], real_seasons[-1]
-                missing_seasons = [s for s in range(min_s, max_s + 1) if s not in real_seasons]
-                if missing_seasons:
-                    series_issues.append(f"  ❌ Missing seasons: {', '.join(f'S{s:02d}' for s in missing_seasons)}")
+            min_s, max_s = real_seasons[0], real_seasons[-1]
+            missing_seasons = [s for s in range(min_s, max_s + 1) if s not in real_seasons]
+            if missing_seasons:
+                series_issues.append(f"  ❌ Missing seasons: {', '.join(f'S{s:02d}' for s in missing_seasons)}")
 
-            # Check for missing episodes within each season
             for season in real_seasons:
-                episodes = sorted(set(seasons_data[season]))
+                episodes    = sorted(set(seasons_data[season]))
                 if not episodes:
                     continue
-
-                # Determine expected episode count
                 if tmdb_info and season in tmdb_info:
-                    expected_count = tmdb_info[season]
-                    expected_eps   = list(range(1, expected_count + 1))
+                    expected_eps = list(range(1, tmdb_info[season] + 1))
+                    src = "TMDB"
                 else:
-                    # Fallback: assume contiguous from 1 to max we have
                     expected_eps = list(range(1, max(episodes) + 1))
+                    src = "DB range"
 
                 missing_eps = [e for e in expected_eps if e not in episodes]
                 if missing_eps:
-                    # Group consecutive missing into ranges for readability
                     def _ranges(nums):
-                        nums = sorted(nums)
-                        if not nums:
-                            return ""
+                        nums  = sorted(nums)
+                        if not nums: return ""
                         ranges, start, end = [], nums[0], nums[0]
                         for n in nums[1:]:
                             if n == end + 1:
@@ -479,23 +768,17 @@ def register_command_handlers(cyber: Client):
                         ranges.append(f"EP{start:02d}" if start == end else f"EP{start:02d}-EP{end:02d}")
                         return ", ".join(ranges)
 
-                    ep_str = _ranges(missing_eps)
-                    src    = "TMDB" if (tmdb_info and season in tmdb_info) else "DB range"
-                    series_issues.append(f"  ⚠️ S{season:02d} missing [{src}]: {ep_str}")
+                    series_issues.append(f"  ⚠️ S{season:02d} missing [{src}]: {_ranges(missing_eps)}")
 
             if series_issues:
                 missing_report.append(f"📺 {series_name.title()}")
                 missing_report.extend(series_issues)
                 missing_report.append("")
 
-        # ── Step 5: Send report always as .txt document ───────
         await wait_msg.delete()
 
         if not missing_report:
-            plain = (
-                "✅ No Missing Content Found!\n"
-                "All series have complete seasons and episodes."
-            )
+            plain         = "✅ No Missing Content Found!\nAll series have complete seasons and episodes."
             file_buf      = io.BytesIO(plain.encode("utf-8"))
             file_buf.name = "missing_report.txt"
             return await message.reply_document(
@@ -504,22 +787,13 @@ def register_command_handlers(cyber: Client):
                 parse_mode=enums.ParseMode.HTML,
             )
 
-        total_issues = len([l for l in missing_report if l.startswith("📺")])
-
-        header_lines = [
-            "=" * 50,
-            "       MISSING CONTENT REPORT",
-            "=" * 50,
-            f"  Checked  : {len(series_list)} series",
-            f"  Issues   : {total_issues} series have gaps",
-            "=" * 50,
-            "",
-        ]
-
+        total_issues  = len([l for l in missing_report if l.startswith("📺")])
+        header_lines  = ["=" * 50, "       MISSING CONTENT REPORT", "=" * 50,
+                         f"  Checked  : {len(series_list)} series",
+                         f"  Issues   : {total_issues} series have gaps", "=" * 50, ""]
         full_text     = "\n".join(header_lines) + "\n".join(missing_report)
         file_buf      = io.BytesIO(full_text.encode("utf-8"))
         file_buf.name = "missing_report.txt"
-
         await message.reply_document(
             document=file_buf,
             caption=(
