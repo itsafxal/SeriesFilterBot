@@ -26,8 +26,8 @@ Config (config.py):
     STICKER_POWERED_BY = "CyberTG ❤"
 
 DB helpers (database.py):
-    get_sticker_style(season, brand, kind)   → int | None
-    save_sticker_style(season, brand, kind, style_idx)
+    get_sticker_style(season, kind)   → int | None
+    save_sticker_style(season, kind, style_idx)
     get_cached_sticker / save_sticker_cache  (unchanged)
 """
 
@@ -127,7 +127,7 @@ def _text_size(img_draw, text, font):
 #  START STICKER  — 2 styles
 # ═══════════════════════════════════════════════════════════════════
 
-def _start_style_A(season: int, powered_by: str) -> Image.Image:
+def _start_style_A(season: int) -> Image.Image:
     """
     Style A — red/orange downward triangles (like screenshot 2 top row)
         ▼  SEASON 02  ▼
@@ -135,7 +135,6 @@ def _start_style_A(season: int, powered_by: str) -> Image.Image:
     """
     TRI   = "\u25bc"           # ▼
     label = f"{TRI}  SEASON {season:02d}  {TRI}"
-    sub   = powered_by
 
     img  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -158,16 +157,16 @@ def _start_style_A(season: int, powered_by: str) -> Image.Image:
     return _dark_card(img, tint=(8, 5, 5))
 
 
-def _start_style_B(season: int, powered_by: str) -> Image.Image:
+def _start_style_B(season: int) -> Image.Image:
     """
     Style B — cyan/blue downward arrows (screenshot 2 bottom row)
         ↓  Season 02  ↓
-        ★ powered_by ★
+        ★  CyberBot  ★
     """
     ARR  = "\u2b07"            # ⬇
     STAR = "\u2605"
     line1 = f"{ARR}  Season {season:02d}  {ARR}"
-    line2 = f"{STAR}  {powered_by}  {STAR}"
+    line2 = f"{STAR}  CyberBot  {STAR}"
 
     img  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -197,19 +196,19 @@ _START_STYLES = [_start_style_A, _start_style_B]
 #  END STICKER  — 3 styles
 # ═══════════════════════════════════════════════════════════════════
 
-def _end_style_1(season: int, total: int, powered_by: str) -> Image.Image:
+def _end_style_1(season: int, total: int) -> Image.Image:
     """
     Style 1 — "THE END" chevrons (screenshot 1 bottom)
         ◀  THE END  ▶
         Season XX · total files
-        ★ powered_by ★
+        ★  CyberBot  ★
     """
     L_ARR = "\u25c4"           # ◀
     R_ARR = "\u25ba"           # ▶
     STAR  = "\u2605"
     line1 = f"{L_ARR}  THE END  {R_ARR}"
     line2 = f"Season {season:02d}  ·  {total} Files"
-    line3 = f"{STAR}  {powered_by}  {STAR}"
+    line3 = f"{STAR}  CyberBot  {STAR}"
 
     img  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -236,18 +235,18 @@ def _end_style_1(season: int, total: int, powered_by: str) -> Image.Image:
     return _dark_card(img, tint=(5, 8, 20))
 
 
-def _end_style_2(season: int, total: int, powered_by: str) -> Image.Image:
+def _end_style_2(season: int, total: int) -> Image.Image:
     """
     Style 2 — green check + double neon underline (original design)
         ✔  Season 03  Done
         8  Files  Sent  ══════
-        ★ powered_by ★
+        ★  CyberBot  ★
     """
     CHECK = "\u2714"
     STAR  = "\u2605"
     line1 = f"{CHECK}  Season {season:02d}  Done"
     line2 = f"{total}  Files  Sent"
-    line3 = f"{STAR}  {powered_by}  {STAR}"
+    line3 = f"{STAR}  CyberBot  {STAR}"
 
     img  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -279,17 +278,17 @@ def _end_style_2(season: int, total: int, powered_by: str) -> Image.Image:
     return _dark_card(img, tint=(5, 18, 8))
 
 
-def _end_style_3(season: int, total: int, powered_by: str) -> Image.Image:
+def _end_style_3(season: int, total: int) -> Image.Image:
     """
     Style 3 — glowing horizontal bars + centre block
         ━━━━━━━━━━━━━━━━━━━━━
         SEASON 03  COMPLETE
-        total files · powered_by
+        total files  ·  CyberBot
         ━━━━━━━━━━━━━━━━━━━━━
     """
     STAR  = "\u2605"
     line1 = f"SEASON {season:02d}  COMPLETE"
-    line2 = f"{total} Files  ·  {powered_by}"
+    line2 = f"{total} Files  ·  CyberBot"
 
     img  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -331,7 +330,6 @@ _END_STYLES = [_end_style_1, _end_style_2, _end_style_3]
 
 def make_start_sticker(
     season: int,
-    powered_by: str = "Series Bot",
     style_idx: int | None = None,
 ) -> tuple[io.BytesIO, int]:
     """
@@ -340,7 +338,7 @@ def make_start_sticker(
     """
     if style_idx is None or not (0 <= style_idx < len(_START_STYLES)):
         style_idx = random.randrange(len(_START_STYLES))
-    img = _START_STYLES[style_idx](season, powered_by)
+    img = _START_STYLES[style_idx](season)
     buf = io.BytesIO()
     img.save(buf, format="WEBP", lossless=True)
     buf.seek(0)
@@ -351,7 +349,6 @@ def make_start_sticker(
 def make_end_sticker(
     season: int,
     total: int,
-    powered_by: str = "Series Bot",
     style_idx: int | None = None,
 ) -> tuple[io.BytesIO, int]:
     """
@@ -360,7 +357,7 @@ def make_end_sticker(
     """
     if style_idx is None or not (0 <= style_idx < len(_END_STYLES)):
         style_idx = random.randrange(len(_END_STYLES))
-    img = _END_STYLES[style_idx](season, total, powered_by)
+    img = _END_STYLES[style_idx](season, total)
     buf = io.BytesIO()
     img.save(buf, format="WEBP", lossless=True)
     buf.seek(0)
