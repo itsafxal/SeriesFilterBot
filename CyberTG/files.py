@@ -28,6 +28,7 @@ from DB.database import (
     get_all_files_by_season_and_quality,
     get_global_setting,
     mongo_client,
+    update_file_id,
 )
 from utils.cyber_delete import delete_message_later
 
@@ -315,6 +316,24 @@ async def _forward_fallback(cyber, user_id: int, f: dict, caption: str, auto_del
             f"[FORWARD_FALLBACK] ✅ Forwarded via copy_message: "
             f"ch={channel_id} msg={message_id} → uid={user_id}"
         )
+        # Extract fresh file_id from the forwarded message and persist it
+        # so future sends use send_cached_media() directly (no fallback needed)
+        try:
+            media = (
+                getattr(sent_msg, "document", None)
+                or getattr(sent_msg, "video", None)
+                or getattr(sent_msg, "audio", None)
+            )
+            if media and media.file_id:
+                asyncio.create_task(
+                    update_file_id(channel_id, message_id, media.file_id)
+                )
+                logger.info(
+                    f"[FILE_ID_REFRESH] queued refresh for "
+                    f"ch={channel_id} msg={message_id}"
+                )
+        except Exception as e:
+            logger.warning(f"[FILE_ID_REFRESH] extract error: {e}")
         return True
     except Exception as e:
         logger.error(
