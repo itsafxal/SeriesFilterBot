@@ -32,14 +32,18 @@ from DB.database import (
     get_unique_languages_by_season,
     get_unique_qualities_by_lang_season,
     get_unique_qualities_with_codec,
-    get_global_setting
+    get_global_setting,
+    get_filter_enabled,
+    get_poster_enabled,
+    get_poster_landscape,
+    get_caption_clean_keywords,
 )
 
 from utils.cyber_series import suggest_series, check_owner
 from utils.cyber_filter import encode_payload          # now async
 from utils.cyber_font import BTN, UI, small_caps
 from utils.cyber_delete import delete_message_later
-from CyberTG.poster import get_series_info
+# get_series_info now called via _get_poster() wrapper in register_filters
 
 
 # ── Per-user search cooldown (3 seconds) ─────────────────────
@@ -228,6 +232,16 @@ def _quality_label(quality: str, codec: str) -> str:
     return disp
 
 
+def _apply_clean_keywords(text: str, keywords: list) -> str:
+    """Remove matching keywords from text (case-insensitive substring match)."""
+    if not text or not keywords:
+        return text
+    for kw in keywords:
+        if kw:
+            text = text.replace(kw, "")
+    return text.strip()
+
+
 def register_filters(cyber: Client):
 
     async def _is_maintenance(uid: int) -> bool:
@@ -236,6 +250,16 @@ def register_filters(cyber: Client):
         if uid in ADMIN_USERS:
             return False
         return bool(await get_global_setting("MAINTENANCE_MODE", False))
+
+    async def _get_poster(series: str):
+        """Fetch poster respecting POSTER_ENABLED and POSTER_LANDSCAPE settings."""
+        poster_enabled = await get_poster_enabled()
+        if not poster_enabled:
+            return None
+        landscape = await get_poster_landscape()
+        # get_series_info now called via _get_poster() wrapper in register_filters as _get_info
+        poster, year, genre, rating = await _get_info(series, landscape=landscape)
+        return poster, year, genre, rating
 
     @cyber.on_message(filters.text & (filters.private | filters.group))
     async def search_handler(_, m):
@@ -253,6 +277,13 @@ def register_filters(cyber: Client):
             )
             return
 
+        # ── Filter ON/OFF check ────────────────────────────────
+        from config import ADMIN_USERS as _ADMINS
+        if uid not in _ADMINS:
+            filter_on = await get_filter_enabled()
+            if not filter_on:
+                return   # silently ignore when filter is OFF
+
         # ── Per-user cooldown: silently drop repeated messages ──
         if _is_on_cooldown(uid):
             return
@@ -267,12 +298,17 @@ def register_filters(cyber: Client):
 
         # ── SINGLE MATCH ──────────────────────────────────────
         if series:
-            poster, year, genre, rating = await get_series_info(series)
+            poster_result = await _get_poster(series)
+            if poster_result:
+                poster, year, genre, rating = poster_result
+            else:
+                poster, year, genre, rating = None, None, None, None
             seasons = list((await get_series_summary(series))["seasons"])
             kb = build_season_pages(seasons, uid, series)
 
+            photo = poster or DEFAULT_POSTER
             msg = await m.reply_photo(
-                poster or DEFAULT_POSTER,
+                photo,
                 caption=build_caption(series, year, genre, rating, seasons=seasons),
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb
@@ -319,7 +355,11 @@ def register_filters(cyber: Client):
         if await _is_maintenance(q.from_user.id):
             return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
         series = q.data.split("|", 1)[1]
-        poster, year, genre, rating = await get_series_info(series)
+        poster_result = await _get_poster(series)
+        if poster_result:
+            poster, year, genre, rating = poster_result
+        else:
+            poster, year, genre, rating = None, None, None, None
         seasons = list((await get_series_summary(series))["seasons"])
         kb = build_season_pages(seasons, q.from_user.id, series)
         await safe_edit(
@@ -367,7 +407,8 @@ def register_filters(cyber: Client):
         if not await check_owner(q, uid):
             return
         langs = await get_unique_languages_by_season(series, int(season))
-        poster, year, genre, rating = await get_series_info(series)
+        poster_r = await _get_poster(series)
+        poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
         # Back → Season select (page 0)
         back = BTN("⬅️ Back", callback_data=f"bk_season|{uid}|{series}")
         kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
@@ -392,7 +433,8 @@ def register_filters(cyber: Client):
         # Get (quality, codec) pairs for rich button labels e.g. "H.265 1080P"
         qc_pairs = await get_unique_qualities_with_codec(series, lang, int(season))
         qs       = [qc[0] for qc in qc_pairs]   # plain quality list for caption
-        poster, year, genre, rating = await get_series_info(series)
+        poster_r = await _get_poster(series)
+        poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
         back = BTN("⬅️ Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
 
         # Build buttons: label shows codec + quality (or just quality if no codec found)
@@ -457,7 +499,8 @@ def register_filters(cyber: Client):
         _, uid, series = q.data.split("|")
         if not await check_owner(q, uid):
             return
-        poster, year, genre, rating = await get_series_info(series)
+        poster_r = await _get_poster(series)
+        poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
         seasons = list((await get_series_summary(series))["seasons"])
         kb = build_season_pages(seasons, uid, series, page=0)
         await safe_edit(
@@ -476,7 +519,8 @@ def register_filters(cyber: Client):
         if not await check_owner(q, uid):
             return
         langs = await get_unique_languages_by_season(series, int(season))
-        poster, year, genre, rating = await get_series_info(series)
+        poster_r = await _get_poster(series)
+        poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
         back = BTN("⬅️ Back", callback_data=f"bk_season|{uid}|{series}")
         kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
         await safe_edit(
@@ -496,7 +540,8 @@ def register_filters(cyber: Client):
             return
         qc_pairs = await get_unique_qualities_with_codec(series, lang, int(season))
         qs       = [qc[0] for qc in qc_pairs]
-        poster, year, genre, rating = await get_series_info(series)
+        poster_r = await _get_poster(series)
+        poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
         back = BTN("⬅️ Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
         rows, row = [], []
         for quality, codec in qc_pairs:
