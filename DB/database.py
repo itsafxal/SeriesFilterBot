@@ -128,7 +128,20 @@ def _ensure_file_indexes(col):
 _ensure_file_indexes(files_collection_1)
 _ensure_file_indexes(files_collection_2)
 state_collection.create_index([("_id", 1)])
-sticker_collection.create_index([("brand", 1), ("season", 1), ("kind", 1)], unique=True)
+# Drop the old 2-field unique index (brand+season) if it still exists,
+# then create the correct 3-field index (brand+season+kind).
+# Safe to run every boot — drop is a no-op if already gone.
+try:
+    sticker_collection.drop_index("brand_1_season_1")
+    logger.info("[STICKER] Dropped legacy index brand_1_season_1 from season_stickers.")
+except Exception:
+    pass  # index didn't exist — fine
+_safe_create_index(
+    sticker_collection,
+    [("brand", 1), ("season", 1), ("kind", 1)],
+    unique=True,
+    name="brand_season_kind_unique",
+)
 groups_collection.create_index([("_id", 1)])
 logger.info("✅ MongoDB indexes ensured on all 3 clients.")
 
@@ -732,23 +745,20 @@ async def clear_sticker_cache(brand: str | None = None):
 
 async def get_sticker_style(season: int, brand: str, kind: str) -> int | None:
     """
-    Return the style_idx that was randomly chosen when this sticker was first
-    generated (so re-sends use the same visual style).
+    Return the style_idx chosen when this sticker was first generated.
     kind: "start" | "end"
     Returns None if not yet stored.
     """
     def _sync():
         doc = sticker_collection.find_one({"brand": brand, "season": season, "kind": kind})
-        if doc is None:
-            return None
-        return doc.get("style_idx")
+        return doc.get("style_idx") if doc else None
     return await asyncio.to_thread(_sync)
 
 
 async def save_sticker_style(season: int, brand: str, kind: str, style_idx: int):
     """
     Persist the chosen style_idx for this season+brand+kind.
-    Merged into the same document as the file_id cache for efficiency.
+    Merged into the same document as the file_id cache.
     kind: "start" | "end"
     """
     def _sync():
