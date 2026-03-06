@@ -33,8 +33,36 @@ All existing public functions are fully backward-compatible.
 
 import re
 import asyncio
-from DB.database import save_file_to_db, episode_exists, get_global_setting
+from DB.database import save_file_to_db, episode_exists, get_global_setting, get_caption_clean_keywords
 from config import logger
+
+
+# ─────────────────────────────────────────────────────────────
+# CAPTION CLEAN CACHE
+# ─────────────────────────────────────────────────────────────
+
+_CLEAN_KW_CACHE: list | None = None
+
+
+def set_clean_keywords_cache(keywords: list | None):
+    global _CLEAN_KW_CACHE
+    _CLEAN_KW_CACHE = keywords
+
+
+async def _get_clean_keywords() -> list:
+    if _CLEAN_KW_CACHE is not None:
+        return _CLEAN_KW_CACHE
+    return await get_caption_clean_keywords()
+
+
+def _apply_clean(text: str, keywords: list) -> str:
+    """Remove keywords from text."""
+    if not text or not keywords:
+        return text
+    for kw in keywords:
+        if kw:
+            text = text.replace(kw, "")
+    return text.strip()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -638,10 +666,12 @@ async def save_series_file_for_bulk_index(
             )
             return False, 0
 
+        clean_kw = await _get_clean_keywords()
         file_doc = {
             "channel_id":      channel_id,
             "message_id":      message_id,
             "file_name":       file_name,
+            "file_name_clean": _apply_clean(file_name, clean_kw),
             "normalized_name": norm_lower,
             "season":          season,
             "episode":         episode,
@@ -650,6 +680,7 @@ async def save_series_file_for_bulk_index(
             "file_id":         file_obj.file_id,
             "media_type":      media_type,
             "caption":         caption,
+            "caption_clean":   _apply_clean(caption, clean_kw),
             "codec":           codec,
         }
 
@@ -720,10 +751,13 @@ async def parse_message_to_doc(msg) -> dict | None:
         if language == "Unknown":
             language = await _get_language_from_api(normalized_name)
 
+        clean_kw = await _get_clean_keywords()
+
         return {
             "channel_id":      channel_id,
             "message_id":      message_id,
             "file_name":       file_name,
+            "file_name_clean": _apply_clean(file_name, clean_kw),
             "normalized_name": normalized_name.lower(),
             "season":          season,
             "episode":         episode,
@@ -732,6 +766,7 @@ async def parse_message_to_doc(msg) -> dict | None:
             "file_id":         file_obj.file_id,
             "media_type":      media_type,
             "caption":         caption,
+            "caption_clean":   _apply_clean(caption, clean_kw),
             "codec":           codec,
         }
 
