@@ -43,6 +43,7 @@ from utils.cyber_index import (
     parse_message_to_doc, batch_save_file_docs,
     save_series_file_for_bulk_index,
     set_caption_lang_cache, batch_dedup_check,
+    set_clean_keywords_cache,
 )
 from utils.cyber_filter import extract_links
 from utils.session import get_index_client, terminate_index_client, has_session_string
@@ -292,6 +293,11 @@ async def index_files_task(
     cl_flag = await get_global_setting("CAPTION_LANG", True)
     set_caption_lang_cache(bool(cl_flag))
 
+    # Cache caption clean keywords for the run
+    from DB.database import get_caption_clean_keywords as _get_kw
+    clean_kw = await _get_kw()
+    set_clean_keywords_cache(clean_kw)
+
     # Start user client if session is stored
     user_client, mode = await get_index_client()
 
@@ -484,6 +490,7 @@ async def index_files_task(
             await terminate_index_client()   # ← ALWAYS disconnect user client
             await set_global_setting(INDEX_STATUS_KEY, "IDLE")
             set_caption_lang_cache(None)
+            set_clean_keywords_cache(None)
             index_task = None
 
 
