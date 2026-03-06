@@ -34,13 +34,6 @@ from .fsub import (
     get_slot_info,
 )
 
-from utils.session import (
-    save_session_string,
-    remove_session_string,
-    has_session_string,
-    validate_session_string,
-    is_user_client_active,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -116,53 +109,7 @@ async def _create_invite_link(bot, chat_id: int, mode: str):
 
 
 # ══════════════════════════════════════════════════════════════
-# SESSION SETTINGS UI HELPER
 # ══════════════════════════════════════════════════════════════
-
-async def _session_keyboard():
-    has = await has_session_string()
-    active = is_user_client_active()
-    rows = []
-    if has:
-        rows.append([BTN("🗑 Remove Session String", callback_data="session|remove")])
-        rows.append([BTN("👁 View Status",            callback_data="session|status")])
-    else:
-        rows.append([BTN("➕ Add Session String",     callback_data="session|add")])
-    rows.append([BTN("🔙 Back",                       callback_data="gset|main")])
-    return InlineKeyboardMarkup(rows)
-
-
-async def _session_caption():
-    has    = await has_session_string()
-    active = is_user_client_active()
-    if has:
-        status = "✅ Session stored"
-        mode   = "⚡ Currently <b>indexing</b> (client active)" if active else "💤 Client idle (starts on next index)"
-    else:
-        status = "❌ No session stored"
-        mode   = "🤖 Bot mode will be used for indexing"
-
-    return (
-        "<b>🔑 Session String Settings</b>\n\n"
-        f"Status : {status}\n"
-        f"Mode   : {mode}\n\n"
-        "<b>What is a session string?</b>\n"
-        "A Pyrogram user session string lets the bot fetch channel history "
-        "as your account — <b>10-50× faster</b> than bot mode with no FloodWait.\n\n"
-        "<b>How to generate one:</b>\n"
-        "Run this <b>locally</b> (never on server):\n"
-        "<pre>pip install pyrogram tgcrypto\n"
-        "python3 -c \"\n"
-        "import asyncio\n"
-        "from pyrogram import Client\n"
-        "async def m():\n"
-        "    async with Client('s', api_id=API_ID, api_hash='API_HASH') as c:\n"
-        "        print(await c.export_session_string())\n"
-        "asyncio.run(m())\"</pre>\n\n"
-        "⚠️ The session is <b>encrypted</b> before storage.\n"
-        "The client is <b>disconnected immediately</b> after each index run."
-    )
-
 
 # ══════════════════════════════════════════════════════════════
 # MENU HANDLERS
@@ -238,13 +185,11 @@ async def owner_menu_handler(_, query):
 
 
 async def global_settings_router(_, query):
-    has_sess    = await has_session_string()
     cap_lang    = await get_global_setting("CAPTION_LANG", False)
     filter_on   = await get_filter_enabled()
     poster_on   = await get_poster_enabled()
     landscape   = await get_poster_landscape()
     cap_status  = "✅ ON" if cap_lang else "❌ OFF"
-    sess_status = "✅ Set" if has_sess else "❌ Not set"
     filt_status = "✅ ON" if filter_on else "❌ OFF"
     post_status = "✅ ON" if poster_on else "❌ OFF"
     ori_status  = "🌄 Wide" if landscape else "🖼 Portrait"
@@ -253,8 +198,7 @@ async def global_settings_router(_, query):
          BTN("📝 File Caption",     callback_data="caption|caption")],
         [BTN("⏳ Auto Delete",      callback_data="autodel|autodel"),
          BTN("📦 File Auto Delete", callback_data="filedel|filedel")],
-        [BTN("📡 FSub Settings",    callback_data="fsub|main"),
-         BTN(f"🔑 Session  {sess_status}", callback_data="session|main")],
+        [BTN("📡 FSub Settings",    callback_data="fsub|main")],
         [BTN(f"🌐 Caption Lang  {cap_status}", callback_data="caplang|toggle"),
          BTN(f"🔍 Filter  {filt_status}",      callback_data="filtertog|toggle")],
         [BTN(f"🖼 Poster  {post_status}  {ori_status}", callback_data="postertog|main")],
@@ -264,64 +208,6 @@ async def global_settings_router(_, query):
                     reply_markup=keyboard)
     await query.answer()
 
-
-# ══════════════════════════════════════════════════════════════
-# SESSION ROUTER
-# ══════════════════════════════════════════════════════════════
-
-async def session_router(bot, query: CallbackQuery):
-    await query.answer()
-    action = query.data.split("|", 1)[1]
-    uid    = query.from_user.id
-
-    if action == "main":
-        await safe_edit(
-            query.message,
-            caption=await _session_caption(),
-            reply_markup=await _session_keyboard(),
-        )
-
-    elif action == "status":
-        await safe_edit(
-            query.message,
-            caption=await _session_caption(),
-            reply_markup=await _session_keyboard(),
-        )
-
-    elif action == "add":
-        await safe_edit(
-            query.message,
-            caption=(
-                "<b>🔑 Add Session String</b>\n\n"
-                "Send your Pyrogram session string now.\n\n"
-                "⚠️ Send it as a plain text message.\n"
-                "It will be validated and encrypted before storage.\n\n"
-                "<i>Tap /cancel to abort.</i>"
-            ),
-        )
-        admin_temp[uid] = {
-            "state":   "WAITING_SESSION_STRING",
-            "message": query.message,
-            "back":    "session|main",
-        }
-
-    elif action == "remove":
-        if is_user_client_active():
-            await query.answer(
-                "⚠️ An index is currently running with this session!\n"
-                "Cancel the index first, then remove.",
-                show_alert=True,
-            )
-            return
-        ok = await remove_session_string()
-        cap = "✅ Session string removed." if ok else "❌ Failed to remove."
-        await safe_edit(
-            query.message,
-            caption=cap,
-            reply_markup=InlineKeyboardMarkup([
-                [BTN("🔙 Back", callback_data="session|main")]
-            ]),
-        )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -721,69 +607,6 @@ async def admin_input_handler(bot, message: Message):
         _fsub_state.pop(uid, None)
         return
 
-    # ── Session string input ───────────────────────────────────
-    if uid in admin_temp and admin_temp[uid].get("state") == "WAITING_SESSION_STRING":
-        entry   = admin_temp.pop(uid)
-        bot_msg = entry["message"]
-
-        session_str = message.text.strip() if message.text else ""
-        try:
-            await message.delete()
-        except Exception:
-            pass
-
-        if not session_str:
-            await safe_edit(
-                bot_msg,
-                caption="❌ No text received. Operation cancelled.",
-                reply_markup=InlineKeyboardMarkup([
-                    [BTN("🔙 Back", callback_data="session|main")]
-                ]),
-            )
-            return
-
-        # Tell admin we're validating (may take a few seconds)
-        await safe_edit(bot_msg, caption="⏳ <b>Validating session string...</b>")
-
-        ok, info = await validate_session_string(session_str)
-        if not ok:
-            await safe_edit(
-                bot_msg,
-                caption=(
-                    f"❌ <b>Invalid session string</b>\n\n"
-                    f"Error: <code>{info}</code>\n\n"
-                    "Please generate a fresh session string and try again."
-                ),
-                reply_markup=InlineKeyboardMarkup([
-                    [BTN("🔙 Back", callback_data="session|main")]
-                ]),
-            )
-            return
-
-        saved = await save_session_string(session_str)
-        if saved:
-            await safe_edit(
-                bot_msg,
-                caption=(
-                    f"✅ <b>Session string saved!</b>\n\n"
-                    f"Account: <b>{info}</b>\n\n"
-                    "The next bulk index run will use this session.\n"
-                    "The client will be <b>disconnected</b> immediately after indexing."
-                ),
-                reply_markup=InlineKeyboardMarkup([
-                    [BTN("🔙 Back", callback_data="session|main")]
-                ]),
-            )
-        else:
-            await safe_edit(
-                bot_msg,
-                caption="❌ Failed to save session string to database. Try again.",
-                reply_markup=InlineKeyboardMarkup([
-                    [BTN("🔙 Back", callback_data="session|main")]
-                ]),
-            )
-        return
-
     # ── General settings input ────────────────────────────────
     if uid not in admin_temp:
         return
@@ -979,9 +802,6 @@ def register_menu_handlers(cyber: Client):
     @cyber.on_callback_query(filters.regex(r"^postertog\|") & filters.user(ADMIN_USERS))
     async def _(c, q): await poster_settings_router(c, q)
 
-    # ── NEW: Session settings handler ─────────────────────────
-    @cyber.on_callback_query(filters.regex(r"^session\|") & filters.user(ADMIN_USERS))
-    async def _(c, q): await session_router(c, q)
 
     @cyber.on_callback_query(filters.regex(r"^close\|menu$"))
     async def _(c, q):
