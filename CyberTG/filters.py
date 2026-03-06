@@ -257,8 +257,8 @@ def register_filters(cyber: Client):
         if not poster_enabled:
             return None
         landscape = await get_poster_landscape()
-        # get_series_info now called via _get_poster() wrapper in register_filters as _get_info
-        poster, year, genre, rating = await _get_info(series, landscape=landscape)
+        from CyberTG.poster import get_series_info as _get_series_info
+        poster, year, genre, rating = await _get_series_info(series, landscape=landscape)
         return poster, year, genre, rating
 
     @cyber.on_message(filters.text & (filters.private | filters.group))
