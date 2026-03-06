@@ -444,7 +444,7 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
                     cached_fid = None   # stale — regenerate below
 
             if not cached_fid:
-                style_idx   = await get_sticker_style(season, kind="start")
+                style_idx = await get_sticker_style(season, kind="start")
                 sticker_buf, chosen_idx = make_start_sticker(season, style_idx=style_idx)
                 sticker_msg = await cyber.send_sticker(user_id, sticker_buf)
                 logger.info(f"[STICKER] Sent fresh start sticker Season {season:02d} (style={chosen_idx})")
