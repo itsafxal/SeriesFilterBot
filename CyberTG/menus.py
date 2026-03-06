@@ -16,6 +16,14 @@ from DB.database import (
     set_index_channels,
     get_global_setting,
     set_global_setting,
+    get_filter_enabled,
+    set_filter_enabled,
+    get_poster_enabled,
+    set_poster_enabled,
+    get_poster_landscape,
+    set_poster_landscape,
+    get_caption_clean_keywords,
+    set_caption_clean_keywords,
 )
 
 from .fsub import (
@@ -232,8 +240,14 @@ async def owner_menu_handler(_, query):
 async def global_settings_router(_, query):
     has_sess    = await has_session_string()
     cap_lang    = await get_global_setting("CAPTION_LANG", False)
+    filter_on   = await get_filter_enabled()
+    poster_on   = await get_poster_enabled()
+    landscape   = await get_poster_landscape()
     cap_status  = "✅ ON" if cap_lang else "❌ OFF"
     sess_status = "✅ Set" if has_sess else "❌ Not set"
+    filt_status = "✅ ON" if filter_on else "❌ OFF"
+    post_status = "✅ ON" if poster_on else "❌ OFF"
+    ori_status  = "🌄 Wide" if landscape else "🖼 Portrait"
     keyboard = InlineKeyboardMarkup([
         [BTN("📂 Index Channels",                      callback_data="index|index")],
         [BTN("📝 File Caption",                        callback_data="caption|caption")],
@@ -241,6 +255,8 @@ async def global_settings_router(_, query):
         [BTN("📦 File Auto Delete",                    callback_data="filedel|filedel")],
         [BTN("📡 FSub Settings",                       callback_data="fsub|main")],
         [BTN(f"🌐 Caption Language  {cap_status}",     callback_data="caplang|toggle")],
+        [BTN(f"🔍 Filter  {filt_status}",              callback_data="filtertog|toggle")],
+        [BTN(f"🖼 Poster  {post_status}  {ori_status}", callback_data="postertog|main")],
         [BTN(f"🔑 Session String  {sess_status}",      callback_data="session|main")],
         [BTN("🔙 Back",                                callback_data="admin|menu")],
     ])
@@ -847,6 +863,65 @@ async def caplang_toggle_router(_, query: CallbackQuery):
 
 
 # ══════════════════════════════════════════════════════════════
+# FILTER TOGGLE ROUTER
+# ══════════════════════════════════════════════════════════════
+
+async def filter_toggle_router(_, query: CallbackQuery):
+    current = await get_filter_enabled()
+    new_val = not current
+    await set_filter_enabled(new_val)
+    status  = "✅ ON" if new_val else "❌ OFF"
+    await query.answer(f"Filter Search: {status}", show_alert=True)
+    await global_settings_router(_, query)
+
+
+# ══════════════════════════════════════════════════════════════
+# POSTER SETTINGS ROUTER
+# ══════════════════════════════════════════════════════════════
+
+async def poster_settings_router(_, query: CallbackQuery):
+    await query.answer()
+    action = query.data.split("|")[1]
+
+    if action == "main":
+        enabled   = await get_poster_enabled()
+        landscape = await get_poster_landscape()
+        e_status  = "✅ ON" if enabled else "❌ OFF"
+        o_status  = "🌄 Landscape" if landscape else "🖼 Portrait"
+        keyboard  = InlineKeyboardMarkup([
+            [BTN(f"{'❌ Disable' if enabled else '✅ Enable'} Poster",
+                 callback_data="postertog|toggle_enable")],
+            [BTN("🖼 Portrait",  callback_data="postertog|portrait"),
+             BTN("🌄 Landscape", callback_data="postertog|landscape")],
+            [BTN("🔙 Back",      callback_data="gset|main")],
+        ])
+        await safe_edit(
+            query.message,
+            caption=(
+                f"<b>🖼 Poster Settings</b>\n\n"
+                f"Status      : {e_status}\n"
+                f"Orientation : {o_status}"
+            ),
+            reply_markup=keyboard,
+        )
+
+    elif action == "toggle_enable":
+        enabled = await get_poster_enabled()
+        await set_poster_enabled(not enabled)
+        await poster_settings_router(_, query)
+
+    elif action == "portrait":
+        await set_poster_landscape(False)
+        await query.answer("🖼 Portrait mode set.", show_alert=True)
+        await poster_settings_router(_, query)
+
+    elif action == "landscape":
+        await set_poster_landscape(True)
+        await query.answer("🌄 Landscape mode set.", show_alert=True)
+        await poster_settings_router(_, query)
+
+
+# ══════════════════════════════════════════════════════════════
 # REGISTER ALL HANDLERS
 # ══════════════════════════════════════════════════════════════
 
@@ -889,6 +964,14 @@ def register_menu_handlers(cyber: Client):
 
     @cyber.on_callback_query(filters.regex(r"^caplang\|") & filters.user(ADMIN_USERS))
     async def _(c, q): await caplang_toggle_router(c, q)
+
+    # ── NEW: Filter toggle ─────────────────────────────────────
+    @cyber.on_callback_query(filters.regex(r"^filtertog\|") & filters.user(ADMIN_USERS))
+    async def _(c, q): await filter_toggle_router(c, q)
+
+    # ── NEW: Poster settings ───────────────────────────────────
+    @cyber.on_callback_query(filters.regex(r"^postertog\|") & filters.user(ADMIN_USERS))
+    async def _(c, q): await poster_settings_router(c, q)
 
     # ── NEW: Session settings handler ─────────────────────────
     @cyber.on_callback_query(filters.regex(r"^session\|") & filters.user(ADMIN_USERS))
