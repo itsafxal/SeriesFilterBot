@@ -40,9 +40,10 @@ from config import (
 config_client = MongoClient(MONGO_URI_CONFIG)
 config_db      = config_client["SeriesBotConfig"]
 
-state_collection   = config_db["bot_state"]
-users_collection   = config_db["users"]
-pending_collection = config_db["pending_delivery"]
+state_collection    = config_db["bot_state"]
+users_collection    = config_db["users"]
+pending_collection  = config_db["pending_delivery"]
+sticker_collection  = config_db["season_stickers"]   # cached season stickers
 
 # 2. File DB 1
 file_client_1      = MongoClient(MONGO_URI_DB1)
@@ -126,6 +127,7 @@ def _ensure_file_indexes(col):
 _ensure_file_indexes(files_collection_1)
 _ensure_file_indexes(files_collection_2)
 state_collection.create_index([("_id", 1)])
+sticker_collection.create_index([("brand", 1), ("season", 1)], unique=True)
 logger.info("✅ MongoDB indexes ensured on all 3 clients.")
 
 # ─────────────────────────────────────────────────────────────
@@ -584,6 +586,57 @@ async def update_file_id(channel_id: int, message_id: int, new_file_id: str):
         logger.info(f"[FILE_ID_REFRESH] ch={channel_id} msg={message_id} updated={updated}")
 
     await asyncio.to_thread(_sync)
+
+
+
+# ─────────────────────────────────────────────────────────────
+# SEASON STICKER CACHE
+# ─────────────────────────────────────────────────────────────
+
+async def get_cached_sticker(season: int, brand: str) -> str | None:
+    """
+    Return the Telegram file_id of a previously sent season sticker,
+    or None if not cached / brand has changed.
+    """
+    def _sync():
+        doc = sticker_collection.find_one({"brand": brand, "season": season})
+        return doc.get("file_id") if doc else None
+    return await asyncio.to_thread(_sync)
+
+
+async def save_sticker_cache(season: int, brand: str, file_id: str):
+    """Upsert the file_id for this season+brand into the sticker cache."""
+    def _sync():
+        sticker_collection.update_one(
+            {"brand": brand, "season": season},
+            {"$set": {"file_id": file_id}},
+            upsert=True,
+        )
+    await asyncio.to_thread(_sync)
+
+
+async def clear_sticker_cache(brand: str | None = None):
+    """
+    Delete cached stickers.
+    - brand=None  → delete ALL stickers (full reset)
+    - brand=str   → delete only stickers for that brand
+    Called automatically when STICKER_POWERED_BY changes.
+    """
+    def _sync():
+        filt = {"brand": brand} if brand else {}
+        r    = sticker_collection.delete_many(filt)
+        logger.info(f"[STICKER_CACHE] cleared {r.deleted_count} entries (brand={brand!r})")
+    await asyncio.to_thread(_sync)
+
+
+async def get_sticker_brand() -> str | None:
+    """Return the brand name stored in bot_state (used to detect brand changes)."""
+    return await get_global_setting("STICKER_BRAND", None)
+
+
+async def set_sticker_brand(brand: str):
+    """Persist current brand name to bot_state."""
+    await set_global_setting("STICKER_BRAND", brand)
 
 
 
