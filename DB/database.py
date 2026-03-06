@@ -128,19 +128,20 @@ def _ensure_file_indexes(col):
 _ensure_file_indexes(files_collection_1)
 _ensure_file_indexes(files_collection_2)
 state_collection.create_index([("_id", 1)])
-# Drop the old 2-field unique index (brand+season) if it still exists,
-# then create the correct 3-field index (brand+season+kind).
-# Safe to run every boot — drop is a no-op if already gone.
+# Drop legacy indexes so we can create the clean season+kind one.
 try:
     sticker_collection.drop_index("brand_1_season_1")
-    logger.info("[STICKER] Dropped legacy index brand_1_season_1 from season_stickers.")
 except Exception:
-    pass  # index didn't exist — fine
+    pass
+try:
+    sticker_collection.drop_index("brand_season_kind_unique")
+except Exception:
+    pass
 _safe_create_index(
     sticker_collection,
-    [("brand", 1), ("season", 1), ("kind", 1)],
+    [("season", 1), ("kind", 1)],
     unique=True,
-    name="brand_season_kind_unique",
+    name="season_kind_unique",
 )
 groups_collection.create_index([("_id", 1)])
 logger.info("✅ MongoDB indexes ensured on all 3 clients.")
@@ -706,78 +707,50 @@ async def set_caption_clean_keywords(keywords: list):
 # SEASON STICKER CACHE
 # ─────────────────────────────────────────────────────────────
 
-async def get_cached_sticker(season: int, brand: str, kind: str = "start") -> str | None:
-    """
-    Return the Telegram file_id of a previously sent season sticker,
-    or None if not cached / brand has changed.
-    kind: "start" | "end"
-    """
+async def get_cached_sticker(season: int, kind: str = "start") -> str | None:
+    """Return cached Telegram file_id for this season+kind, or None."""
     def _sync():
-        doc = sticker_collection.find_one({"brand": brand, "season": season, "kind": kind})
+        doc = sticker_collection.find_one({"season": season, "kind": kind})
         return doc.get("file_id") if doc else None
     return await asyncio.to_thread(_sync)
 
 
-async def save_sticker_cache(season: int, brand: str, file_id: str, kind: str = "start"):
-    """Upsert the file_id for this season+brand+kind into the sticker cache."""
+async def save_sticker_cache(season: int, file_id: str, kind: str = "start"):
+    """Upsert the file_id for this season+kind."""
     def _sync():
         sticker_collection.update_one(
-            {"brand": brand, "season": season, "kind": kind},
+            {"season": season, "kind": kind},
             {"$set": {"file_id": file_id}},
             upsert=True,
         )
     await asyncio.to_thread(_sync)
 
 
-async def clear_sticker_cache(brand: str | None = None):
-    """
-    Delete cached stickers.
-    - brand=None  → delete ALL stickers (full reset)
-    - brand=str   → delete only stickers for that brand
-    Called automatically when STICKER_POWERED_BY changes.
-    """
+async def clear_sticker_cache():
+    """Delete all cached stickers."""
     def _sync():
-        filt = {"brand": brand} if brand else {}
-        r    = sticker_collection.delete_many(filt)
-        logger.info(f"[STICKER_CACHE] cleared {r.deleted_count} entries (brand={brand!r})")
+        r = sticker_collection.delete_many({})
+        logger.info(f"[STICKER_CACHE] cleared {r.deleted_count} entries")
     await asyncio.to_thread(_sync)
 
 
-async def get_sticker_style(season: int, brand: str, kind: str) -> int | None:
-    """
-    Return the style_idx chosen when this sticker was first generated.
-    kind: "start" | "end"
-    Returns None if not yet stored.
-    """
+async def get_sticker_style(season: int, kind: str) -> int | None:
+    """Return the saved style_idx for this season+kind, or None."""
     def _sync():
-        doc = sticker_collection.find_one({"brand": brand, "season": season, "kind": kind})
+        doc = sticker_collection.find_one({"season": season, "kind": kind})
         return doc.get("style_idx") if doc else None
     return await asyncio.to_thread(_sync)
 
 
-async def save_sticker_style(season: int, brand: str, kind: str, style_idx: int):
-    """
-    Persist the chosen style_idx for this season+brand+kind.
-    Merged into the same document as the file_id cache.
-    kind: "start" | "end"
-    """
+async def save_sticker_style(season: int, kind: str, style_idx: int):
+    """Persist the chosen style_idx for this season+kind."""
     def _sync():
         sticker_collection.update_one(
-            {"brand": brand, "season": season, "kind": kind},
+            {"season": season, "kind": kind},
             {"$set": {"style_idx": style_idx}},
             upsert=True,
         )
     await asyncio.to_thread(_sync)
-
-
-async def get_sticker_brand() -> str | None:
-    """Return the brand name stored in bot_state (used to detect brand changes)."""
-    return await get_global_setting("STICKER_BRAND", None)
-
-
-async def set_sticker_brand(brand: str):
-    """Persist current brand name to bot_state."""
-    await set_global_setting("STICKER_BRAND", brand)
 
 
 
