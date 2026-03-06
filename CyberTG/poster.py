@@ -118,24 +118,35 @@ async def fetch_omdb(series_name: str):
 async def get_series_info(series_name: str, landscape: bool = False):
     """
     Returns: poster, year, genre, rating
-    landscape=True → uses wide backdrop image from TMDB.
+    landscape=True  -> wide backdrop  (cached under "name:wide")
+    landscape=False -> portrait poster (cached under "name")
+    Each orientation cached separately so switching modes works correctly.
     """
-    cached = get_cached(series_name)
+    cache_key = f"{series_name}:wide" if landscape else series_name
+
+    cached = get_cached(cache_key)
     if cached:
         poster, year, genre, rating, source, language = cached
-        # If landscape requested but cached portrait — still return (cached is portrait)
         return poster, year, genre, rating
 
     tmdb = await fetch_tmdb(series_name, landscape=landscape)
     if tmdb:
         poster, year, genre, rating, language = tmdb
-        save_cache(series_name, poster, year, genre, rating, "tmdb", language)
+        save_cache(cache_key, poster, year, genre, rating, "tmdb", language)
         return poster, year, genre, rating
+
+    # Landscape fallback: if no backdrop found, try portrait
+    if landscape:
+        tmdb_portrait = await fetch_tmdb(series_name, landscape=False)
+        if tmdb_portrait:
+            poster, year, genre, rating, language = tmdb_portrait
+            save_cache(cache_key, poster, year, genre, rating, "tmdb", language)
+            return poster, year, genre, rating
 
     omdb = await fetch_omdb(series_name)
     if omdb:
         poster, year, genre, rating, language = omdb
-        save_cache(series_name, poster, year, genre, rating, "omdb", language)
+        save_cache(cache_key, poster, year, genre, rating, "omdb", language)
         return poster, year, genre, rating
 
     return None, None, None, None
