@@ -128,13 +128,8 @@ def _ensure_file_indexes(col):
 _ensure_file_indexes(files_collection_1)
 _ensure_file_indexes(files_collection_2)
 state_collection.create_index([("_id", 1)])
-# Drop legacy indexes so we can create the clean season+kind one.
 try:
     sticker_collection.drop_index("brand_1_season_1")
-except Exception:
-    pass
-try:
-    sticker_collection.drop_index("brand_season_kind_unique")
 except Exception:
     pass
 _safe_create_index(
