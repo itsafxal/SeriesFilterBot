@@ -170,6 +170,7 @@ def create_sql_schema(conn):
             channel_id     INTEGER NOT NULL,
             message_id     INTEGER NOT NULL,
             file_name      TEXT    NOT NULL,
+            file_name_clean TEXT   DEFAULT '',
             normalized_name TEXT   NOT NULL COLLATE NOCASE,
             season         INTEGER NOT NULL,
             episode        INTEGER NOT NULL,
@@ -178,6 +179,7 @@ def create_sql_schema(conn):
             file_id        TEXT,
             media_type     TEXT    DEFAULT 'document',
             caption        TEXT    DEFAULT '',
+            caption_clean  TEXT    DEFAULT '',
             codec          TEXT    DEFAULT '',
             UNIQUE(channel_id, message_id),
             UNIQUE(normalized_name, season, episode, quality, language)
@@ -193,6 +195,10 @@ def create_sql_schema(conn):
         cursor.execute("ALTER TABLE files ADD COLUMN caption TEXT DEFAULT ''")
     if "codec" not in existing_cols:
         cursor.execute("ALTER TABLE files ADD COLUMN codec TEXT DEFAULT ''")
+    if "file_name_clean" not in existing_cols:
+        cursor.execute("ALTER TABLE files ADD COLUMN file_name_clean TEXT DEFAULT ''")
+    if "caption_clean" not in existing_cols:
+        cursor.execute("ALTER TABLE files ADD COLUMN caption_clean TEXT DEFAULT ''")
 
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_series_lookup
@@ -605,6 +611,7 @@ def save_file_docs_batch_sync(docs: list[dict], logger) -> int:
                 doc["channel_id"],
                 doc["message_id"],
                 doc["file_name"],
+                doc.get("file_name_clean", ""),
                 normalized,
                 doc["season"],
                 doc["episode"],
@@ -613,6 +620,7 @@ def save_file_docs_batch_sync(docs: list[dict], logger) -> int:
                 doc.get("file_id"),
                 doc.get("media_type", "document"),
                 doc.get("caption", ""),
+                doc.get("caption_clean", ""),
                 codec,
             ))
 
@@ -622,30 +630,40 @@ def save_file_docs_batch_sync(docs: list[dict], logger) -> int:
             chunk = rows[i : i + BATCH_SIZE]
             cursor.executemany("""
                 INSERT INTO files
-                    (channel_id, message_id, file_name, normalized_name,
+                    (channel_id, message_id, file_name, file_name_clean, normalized_name,
                      season, episode, quality, language, file_id,
-                     media_type, caption, codec)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     media_type, caption, caption_clean, codec)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(channel_id, message_id) DO UPDATE SET
-                    file_id    = excluded.file_id,
-                    codec      = CASE
-                                     WHEN excluded.codec != '' THEN excluded.codec
-                                     ELSE codec
-                                 END,
-                    media_type = CASE
-                                     WHEN excluded.media_type != '' THEN excluded.media_type
-                                     ELSE media_type
-                                 END
+                    file_id       = excluded.file_id,
+                    codec         = CASE
+                                        WHEN excluded.codec != '' THEN excluded.codec
+                                        ELSE codec
+                                    END,
+                    media_type    = CASE
+                                        WHEN excluded.media_type != '' THEN excluded.media_type
+                                        ELSE media_type
+                                    END,
+                    file_name_clean = CASE
+                                        WHEN excluded.file_name_clean != '' THEN excluded.file_name_clean
+                                        ELSE file_name_clean
+                                    END,
+                    caption_clean = excluded.caption_clean
                 ON CONFLICT(normalized_name, season, episode, quality, language) DO UPDATE SET
-                    file_id    = excluded.file_id,
-                    codec      = CASE
-                                     WHEN excluded.codec != '' THEN excluded.codec
-                                     ELSE codec
-                                 END,
-                    media_type = CASE
-                                     WHEN excluded.media_type != '' THEN excluded.media_type
-                                     ELSE media_type
-                                 END
+                    file_id       = excluded.file_id,
+                    codec         = CASE
+                                        WHEN excluded.codec != '' THEN excluded.codec
+                                        ELSE codec
+                                    END,
+                    media_type    = CASE
+                                        WHEN excluded.media_type != '' THEN excluded.media_type
+                                        ELSE media_type
+                                    END,
+                    file_name_clean = CASE
+                                        WHEN excluded.file_name_clean != '' THEN excluded.file_name_clean
+                                        ELSE file_name_clean
+                                    END,
+                    caption_clean = excluded.caption_clean
             """, chunk)
             saved += cursor.rowcount
 
@@ -689,34 +707,45 @@ def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
 
         cursor.execute("""
             INSERT INTO files
-                (channel_id, message_id, file_name, normalized_name,
+                (channel_id, message_id, file_name, file_name_clean, normalized_name,
                  season, episode, quality, language, file_id,
-                 media_type, caption, codec)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 media_type, caption, caption_clean, codec)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(channel_id, message_id) DO UPDATE SET
-                file_id    = excluded.file_id,
-                codec      = CASE
-                                 WHEN excluded.codec != '' THEN excluded.codec
-                                 ELSE codec
-                             END,
-                media_type = CASE
-                                 WHEN excluded.media_type != '' THEN excluded.media_type
-                                 ELSE media_type
-                             END
+                file_id      = excluded.file_id,
+                codec        = CASE
+                                   WHEN excluded.codec != '' THEN excluded.codec
+                                   ELSE codec
+                               END,
+                media_type   = CASE
+                                   WHEN excluded.media_type != '' THEN excluded.media_type
+                                   ELSE media_type
+                               END,
+                file_name_clean = CASE
+                                   WHEN excluded.file_name_clean != '' THEN excluded.file_name_clean
+                                   ELSE file_name_clean
+                               END,
+                caption_clean   = excluded.caption_clean
             ON CONFLICT(normalized_name, season, episode, quality, language) DO UPDATE SET
-                file_id    = excluded.file_id,
-                codec      = CASE
-                                 WHEN excluded.codec != '' THEN excluded.codec
-                                 ELSE codec
-                             END,
-                media_type = CASE
-                                 WHEN excluded.media_type != '' THEN excluded.media_type
-                                 ELSE media_type
-                             END
+                file_id      = excluded.file_id,
+                codec        = CASE
+                                   WHEN excluded.codec != '' THEN excluded.codec
+                                   ELSE codec
+                               END,
+                media_type   = CASE
+                                   WHEN excluded.media_type != '' THEN excluded.media_type
+                                   ELSE media_type
+                               END,
+                file_name_clean = CASE
+                                   WHEN excluded.file_name_clean != '' THEN excluded.file_name_clean
+                                   ELSE file_name_clean
+                               END,
+                caption_clean   = excluded.caption_clean
         """, (
             file_doc["channel_id"],
             file_doc["message_id"],
             file_doc["file_name"],
+            file_doc.get("file_name_clean", ""),
             file_doc["normalized_name"],
             file_doc["season"],
             file_doc["episode"],
@@ -725,6 +754,7 @@ def save_file_to_sql_sync(file_doc: dict, logger) -> bool:
             file_doc.get("file_id"),
             file_doc.get("media_type", "document"),
             file_doc.get("caption", ""),
+            file_doc.get("caption_clean", ""),
             file_doc["codec"],
         ))
 
