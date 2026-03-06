@@ -11,7 +11,10 @@ from CyberTG.index import index_files_task, lock, INDEX_STATUS_KEY, register_ind
 from CyberTG.filters import register_filters
 from CyberTG.fsub import load_fsub_settings, register_fsub_handlers
 from utils.cyber_delete import start_scheduler
-from DB.database import initialize_sql_db, get_global_setting, set_global_setting, repair_normalized_names_in_mongo
+from DB.database import (
+    initialize_sql_db, get_global_setting, set_global_setting,
+    repair_normalized_names_in_mongo, add_group, remove_group,
+)
 from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -194,8 +197,34 @@ def main():
     register_command_handlers(cyber)
     register_menu_handlers(cyber)
     register_filters(cyber)
-    register_fsub_handlers(cyber)   # MUST be before cyber.start()
-    register_index_handlers(cyber)  # MUST be before cyber.start()
+    register_fsub_handlers(cyber)
+    register_index_handlers(cyber)
+
+    # ── Group tracking — keeps /stats group count accurate ──────
+    from pyrogram import filters as _filters
+    from pyrogram.types import ChatMemberUpdated
+
+    @cyber.on_chat_member_updated()
+    async def _track_groups(_, update: ChatMemberUpdated):
+        try:
+            chat = update.chat
+            if not chat or chat.type not in ("group", "supergroup"):
+                return
+            me = await cyber.get_me()
+            new_member = update.new_chat_member
+            old_member = update.old_chat_member
+            # Bot was added to a group
+            if (new_member and new_member.user.id == me.id and
+                    new_member.status in ("member", "administrator")):
+                await add_group(chat.id)
+            # Bot was removed from a group
+            elif (old_member and old_member.user.id == me.id and
+                  old_member.status in ("member", "administrator") and
+                  (new_member is None or new_member.status in ("left", "kicked", "banned"))):
+                await remove_group(chat.id)
+        except Exception as e:
+            logger.debug(f"[GROUP] tracking error: {e}")
+
     logger.info("[INIT] ✅ All handlers registered.")
 
     logger.info("[INIT] Starting bot event loop...")
