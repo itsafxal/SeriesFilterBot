@@ -34,6 +34,8 @@ from DB.database import (
     clear_sticker_cache,
     get_sticker_brand,
     set_sticker_brand,
+    get_sticker_style,
+    save_sticker_style,
 )
 from utils.cyber_delete import delete_message_later
 
@@ -254,8 +256,7 @@ async def finish_progress(cyber, user_id):
             total  = p.get("total",  0)
 
             # Try cached end sticker file_id
-            cache_key = f"end_{season}"
-            cached_fid = await get_cached_sticker(cache_key, STICKER_POWERED_BY)
+            cached_fid = await get_cached_sticker(season, STICKER_POWERED_BY, kind="end")
             end_msg = None
             if cached_fid:
                 try:
@@ -264,13 +265,25 @@ async def finish_progress(cyber, user_id):
                     cached_fid = None
 
             if not cached_fid:
-                buf     = make_end_sticker(season, total, powered_by=STICKER_POWERED_BY)
+                # Retrieve saved style_idx (so re-generate looks the same) or pick random
+                style_idx = await get_sticker_style(season, STICKER_POWERED_BY, kind="end")
+                buf, chosen_idx = make_end_sticker(
+                    season, total,
+                    powered_by=STICKER_POWERED_BY,
+                    style_idx=style_idx,
+                )
                 end_msg = await cyber.send_sticker(user_id, buf)
-                logger.info(f"[STICKER] Sent fresh end sticker Season {season:02d}")
+                logger.info(
+                    f"[STICKER] Sent fresh end sticker Season {season:02d} "
+                    f"(style={chosen_idx})"
+                )
                 media = (getattr(end_msg, "sticker", None)
                          or getattr(end_msg, "document", None))
                 if media and getattr(media, "file_id", None):
-                    await save_sticker_cache(cache_key, STICKER_POWERED_BY, media.file_id)
+                    await save_sticker_cache(season, STICKER_POWERED_BY, media.file_id, kind="end")
+                # Persist style so future re-generates are consistent
+                if style_idx is None:
+                    await save_sticker_style(season, STICKER_POWERED_BY, kind="end", style_idx=chosen_idx)
 
             delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
             if delay and int(delay) > 0 and end_msg:
@@ -443,7 +456,7 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
                 await set_sticker_brand(STICKER_POWERED_BY)
 
             # Try cached file_id first
-            cached_fid = await get_cached_sticker(season, STICKER_POWERED_BY)
+            cached_fid = await get_cached_sticker(season, STICKER_POWERED_BY, kind="start")
             if cached_fid:
                 try:
                     sticker_msg = await cyber.send_sticker(user_id, cached_fid)
@@ -452,20 +465,32 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
                     cached_fid = None   # stale — regenerate below
 
             if not cached_fid:
-                sticker_buf = make_start_sticker(season, powered_by=STICKER_POWERED_BY)
+                # Retrieve saved style_idx or pick random
+                style_idx = await get_sticker_style(season, STICKER_POWERED_BY, kind="start")
+                sticker_buf, chosen_idx = make_start_sticker(
+                    season,
+                    powered_by=STICKER_POWERED_BY,
+                    style_idx=style_idx,
+                )
                 sticker_msg = await cyber.send_sticker(user_id, sticker_buf)
-                logger.info(f"[STICKER] Sent fresh start sticker Season {season:02d}")
+                logger.info(
+                    f"[STICKER] Sent fresh start sticker Season {season:02d} "
+                    f"(style={chosen_idx})"
+                )
                 # Extract file_id from sent message for caching
                 media = (getattr(sticker_msg, "sticker", None)
                          or getattr(sticker_msg, "document", None))
                 if media and getattr(media, "file_id", None):
                     await save_sticker_cache(
-                        season, STICKER_POWERED_BY, media.file_id
+                        season, STICKER_POWERED_BY, media.file_id, kind="start"
                     )
                     logger.info(
                         f"[STICKER_CACHE] Saved Season {season:02d} "
                         f"sticker for brand={STICKER_POWERED_BY!r}"
                     )
+                # Persist style so future re-generates are consistent
+                if style_idx is None:
+                    await save_sticker_style(season, STICKER_POWERED_BY, kind="start", style_idx=chosen_idx)
 
             if auto_delay > 0 and sticker_msg:
                 delete_message_later(cyber, user_id, sticker_msg.id, auto_delay)
