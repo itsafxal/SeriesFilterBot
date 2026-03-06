@@ -44,6 +44,7 @@ state_collection    = config_db["bot_state"]
 users_collection    = config_db["users"]
 pending_collection  = config_db["pending_delivery"]
 sticker_collection  = config_db["season_stickers"]   # cached season stickers
+groups_collection   = config_db["groups"]               # groups the bot is in
 
 # 2. File DB 1
 file_client_1      = MongoClient(MONGO_URI_DB1)
@@ -128,6 +129,7 @@ _ensure_file_indexes(files_collection_1)
 _ensure_file_indexes(files_collection_2)
 state_collection.create_index([("_id", 1)])
 sticker_collection.create_index([("brand", 1), ("season", 1)], unique=True)
+groups_collection.create_index([("_id", 1)])
 logger.info("✅ MongoDB indexes ensured on all 3 clients.")
 
 # ─────────────────────────────────────────────────────────────
@@ -587,6 +589,104 @@ async def update_file_id(channel_id: int, message_id: int, new_file_id: str):
 
     await asyncio.to_thread(_sync)
 
+
+
+
+# ─────────────────────────────────────────────────────────────
+# GROUPS TRACKING
+# ─────────────────────────────────────────────────────────────
+
+async def add_group(chat_id: int):
+    def _sync():
+        groups_collection.update_one({"_id": chat_id}, {"$set": {"_id": chat_id}}, upsert=True)
+    await asyncio.to_thread(_sync)
+
+
+async def remove_group(chat_id: int):
+    def _sync():
+        groups_collection.delete_one({"_id": chat_id})
+    await asyncio.to_thread(_sync)
+
+
+async def get_total_groups() -> int:
+    def _sync():
+        try:
+            return groups_collection.count_documents({})
+        except Exception:
+            return 0
+    return await asyncio.to_thread(_sync)
+
+
+# ─────────────────────────────────────────────────────────────
+# DB SIZE INFO
+# ─────────────────────────────────────────────────────────────
+
+async def get_db_size_info() -> dict:
+    """Return storage sizes for config, db1, db2, and SQLite in bytes."""
+    def _sync():
+        info = {}
+        for label, client, dbname in [
+            ("config", config_client, "SeriesBotConfig"),
+            ("db1",    file_client_1, "SeriesBotFiles1"),
+            ("db2",    file_client_2, "SeriesBotFiles2"),
+        ]:
+            try:
+                stats = client[dbname].command("dbStats")
+                info[label] = stats.get("dataSize", 0) + stats.get("indexSize", 0)
+            except Exception:
+                info[label] = 0
+        # SQLite
+        try:
+            import os
+            from utils.sqlite_db import DB_PATH
+            info["sqlite"] = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+        except Exception:
+            info["sqlite"] = 0
+        return info
+    return await asyncio.to_thread(_sync)
+
+
+# ─────────────────────────────────────────────────────────────
+# FILTER / POSTER TOGGLE SETTINGS
+# ─────────────────────────────────────────────────────────────
+
+async def get_filter_enabled() -> bool:
+    val = await get_global_setting("FILTER_ENABLED", True)
+    return bool(val)
+
+async def set_filter_enabled(enabled: bool):
+    await set_global_setting("FILTER_ENABLED", enabled)
+
+
+async def get_poster_enabled() -> bool:
+    val = await get_global_setting("POSTER_ENABLED", True)
+    return bool(val)
+
+async def set_poster_enabled(enabled: bool):
+    await set_global_setting("POSTER_ENABLED", enabled)
+
+
+async def get_poster_landscape() -> bool:
+    val = await get_global_setting("POSTER_LANDSCAPE", False)
+    return bool(val)
+
+async def set_poster_landscape(landscape: bool):
+    await set_global_setting("POSTER_LANDSCAPE", landscape)
+
+
+# ─────────────────────────────────────────────────────────────
+# CAPTION CLEAN KEYWORDS
+# ─────────────────────────────────────────────────────────────
+
+async def get_caption_clean_keywords() -> list:
+    val = await get_global_setting("CAPTION_CLEAN_KEYWORDS", None)
+    if val is None:
+        from config import DEFAULT_CAPTION_CLEAN_KEYWORDS
+        return list(DEFAULT_CAPTION_CLEAN_KEYWORDS)
+    return list(val) if isinstance(val, list) else []
+
+async def set_caption_clean_keywords(keywords: list):
+    await set_global_setting("CAPTION_CLEAN_KEYWORDS", keywords)
 
 
 # ─────────────────────────────────────────────────────────────
