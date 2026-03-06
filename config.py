@@ -43,6 +43,12 @@ FILTER_ENABLED_DEFAULT = True   # global filter on/off default
 
 # AS YOUR WISH
 INDEX_BATCH_SIZE   = 100          # files per dedup/save batch
+
+# ── Season Sticker ────────────────────────────────────────────────────
+STICKER_ENABLED    = True            # send season sticker before files
+STICKER_POWERED_BY = "Series Bot"    # brand name shown on sticker
+#   Change STICKER_POWERED_BY to your bot/channel name, e.g. "CyberBot"
+
 INDEX_CHANNELS     = []
 MAX_CALLBACK_LENGTH = 50
 SEASONS_PER_PAGE   = 9
