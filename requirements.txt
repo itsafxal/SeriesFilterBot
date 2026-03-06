@@ -12,3 +12,4 @@ aiohttp
 requests
 rapidfuzz
 apscheduler
+Pillow>=10.0.0
