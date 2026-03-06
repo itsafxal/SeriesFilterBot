@@ -879,46 +879,52 @@ async def filter_toggle_router(_, query: CallbackQuery):
 # POSTER SETTINGS ROUTER
 # ══════════════════════════════════════════════════════════════
 
+async def _poster_menu(query: CallbackQuery):
+    """Build and display the poster settings menu. Call after query is already answered."""
+    enabled   = await get_poster_enabled()
+    landscape = await get_poster_landscape()
+    e_status  = "✅ ON" if enabled else "❌ OFF"
+    o_status  = "🌄 Landscape" if landscape else "🖼 Portrait"
+    keyboard  = InlineKeyboardMarkup([
+        [BTN(f"{'❌ Disable' if enabled else '✅ Enable'} Poster",
+             callback_data="postertog|toggle_enable")],
+        [BTN("🖼 Portrait",  callback_data="postertog|portrait"),
+         BTN("🌄 Landscape", callback_data="postertog|landscape")],
+        [BTN("🔙 Back",      callback_data="gset|main")],
+    ])
+    await safe_edit(
+        query.message,
+        caption=(
+            f"<b>🖼 Poster Settings</b>\n\n"
+            f"Status      : {e_status}\n"
+            f"Orientation : {o_status}"
+        ),
+        reply_markup=keyboard,
+    )
+
+
 async def poster_settings_router(_, query: CallbackQuery):
-    await query.answer()
     action = query.data.split("|")[1]
 
     if action == "main":
-        enabled   = await get_poster_enabled()
-        landscape = await get_poster_landscape()
-        e_status  = "✅ ON" if enabled else "❌ OFF"
-        o_status  = "🌄 Landscape" if landscape else "🖼 Portrait"
-        keyboard  = InlineKeyboardMarkup([
-            [BTN(f"{'❌ Disable' if enabled else '✅ Enable'} Poster",
-                 callback_data="postertog|toggle_enable")],
-            [BTN("🖼 Portrait",  callback_data="postertog|portrait"),
-             BTN("🌄 Landscape", callback_data="postertog|landscape")],
-            [BTN("🔙 Back",      callback_data="gset|main")],
-        ])
-        await safe_edit(
-            query.message,
-            caption=(
-                f"<b>🖼 Poster Settings</b>\n\n"
-                f"Status      : {e_status}\n"
-                f"Orientation : {o_status}"
-            ),
-            reply_markup=keyboard,
-        )
+        await query.answer()
+        await _poster_menu(query)
 
     elif action == "toggle_enable":
         enabled = await get_poster_enabled()
         await set_poster_enabled(not enabled)
-        await poster_settings_router(_, query)
+        await query.answer("✅ Poster enabled." if not enabled else "❌ Poster disabled.")
+        await _poster_menu(query)
 
     elif action == "portrait":
         await set_poster_landscape(False)
-        await query.answer("🖼 Portrait mode set.", show_alert=True)
-        await poster_settings_router(_, query)
+        await query.answer("🖼 Portrait mode set.")
+        await _poster_menu(query)
 
     elif action == "landscape":
         await set_poster_landscape(True)
-        await query.answer("🌄 Landscape mode set.", show_alert=True)
-        await poster_settings_router(_, query)
+        await query.answer("🌄 Landscape mode set.")
+        await _poster_menu(query)
 
 
 # ══════════════════════════════════════════════════════════════
