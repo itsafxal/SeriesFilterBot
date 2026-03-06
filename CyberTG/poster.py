@@ -2,7 +2,8 @@ import aiohttp
 from config import (
     TMDB_API_KEY,
     OMDB_API_KEY,
-    TMDB_IMAGE_BASE
+    TMDB_IMAGE_BASE,
+    TMDB_IMAGE_BASE_WIDE,
 )
 from utils.cyber_poster import (
     get_cached,
@@ -14,20 +15,15 @@ from utils.cyber_poster import (
 # TMDB FETCH
 # =========================================================
 
-async def fetch_tmdb(series_name: str):
-
-    url = "https://api.themoviedb.org/3/search/tv"
-
-    params = {
-        "api_key": TMDB_API_KEY,
-        "query": series_name
-    }
+async def fetch_tmdb(series_name: str, landscape: bool = False):
+    url    = "https://api.themoviedb.org/3/search/tv"
+    params = {"api_key": TMDB_API_KEY, "query": series_name}
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params) as r:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=8)) as r:
                 data = await r.json()
-    except:
+    except Exception:
         return None
 
     results = data.get("results", [])
@@ -36,47 +32,33 @@ async def fetch_tmdb(series_name: str):
 
     item = results[0]
 
-    poster_path = item.get("poster_path")
-    poster = (
-        f"{TMDB_IMAGE_BASE}{poster_path}"
-        if poster_path else None
-    )
+    # Portrait → poster_path, Landscape → backdrop_path
+    if landscape:
+        img_path   = item.get("backdrop_path") or item.get("poster_path")
+        image_base = TMDB_IMAGE_BASE_WIDE
+    else:
+        img_path   = item.get("poster_path")
+        image_base = TMDB_IMAGE_BASE
+
+    poster = f"{image_base}{img_path}" if img_path else None
 
     year = (
         item.get("first_air_date", "")[:4]
-        if item.get("first_air_date")
-        else "N/A"
+        if item.get("first_air_date") else "N/A"
     )
-
-    rating = str(item.get("vote_average", "N/A"))
-    genre = "Unknown"
-
+    rating    = str(item.get("vote_average", "N/A"))
+    genre     = "Unknown"
     lang_code = item.get("original_language", "")
 
     LANG_MAP = {
-        "en": "English",
-        "hi": "Hindi",
-        "ml": "Malayalam",
-        "ta": "Tamil",
-        "te": "Telugu",
-        "kn": "Kannada",
-        "bn": "Bengali",
-        "mr": "Marathi",
-        "pa": "Punjabi",
-        "es": "Spanish",
-        "fr": "French",
-        "ko": "Korean",
-        "ja": "Japanese",
-        "zh": "Chinese",
-        "de": "German",
-        "ar": "Arabic",
-        "tr": "Turkish",
-        "it": "Italian",
-        "pt": "Portuguese",
-        "ru": "Russian",
-        "th": "Thai",
+        "en": "English", "hi": "Hindi", "ml": "Malayalam",
+        "ta": "Tamil",   "te": "Telugu","kn": "Kannada",
+        "bn": "Bengali", "mr": "Marathi","pa": "Punjabi",
+        "es": "Spanish", "fr": "French", "ko": "Korean",
+        "ja": "Japanese","zh": "Chinese","de": "German",
+        "ar": "Arabic",  "tr": "Turkish","it": "Italian",
+        "pt": "Portuguese","ru": "Russian","th": "Thai",
     }
-
     language = LANG_MAP.get(lang_code, "Unknown")
 
     if not poster:
@@ -90,20 +72,14 @@ async def fetch_tmdb(series_name: str):
 # =========================================================
 
 async def fetch_omdb(series_name: str):
-
-    url = "http://www.omdbapi.com/"
-
-    params = {
-        "apikey": OMDB_API_KEY,
-        "t": series_name,
-        "type": "series"
-    }
+    url    = "http://www.omdbapi.com/"
+    params = {"apikey": OMDB_API_KEY, "t": series_name, "type": "series"}
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params) as r:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=8)) as r:
                 data = await r.json()
-    except:
+    except Exception:
         return None
 
     if data.get("Response") != "True":
@@ -113,12 +89,10 @@ async def fetch_omdb(series_name: str):
     if not poster or poster == "N/A":
         return None
 
-    year = data.get("Year", "N/A")
+    year  = data.get("Year", "N/A")
     genre = data.get("Genre", "N/A")
     rating = data.get("imdbRating", "N/A")
 
-    # OMDB returns e.g. "Hindi, English" or "English, Hindi, Tamil"
-    # Take all recognized languages, not just the first
     raw_langs = [l.strip() for l in data.get("Language", "").split(",") if l.strip()]
     KNOWN = {
         "Hindi","English","Tamil","Telugu","Malayalam","Kannada",
@@ -128,7 +102,6 @@ async def fetch_omdb(series_name: str):
     }
     found_langs = [l for l in raw_langs if l in KNOWN]
     if not found_langs:
-        # Take first word as-is if nothing recognized
         language = raw_langs[0] if raw_langs else "Unknown"
     elif len(found_langs) == 1:
         language = found_langs[0]
@@ -142,68 +115,38 @@ async def fetch_omdb(series_name: str):
 # MAIN INFO (BACKWARD SAFE)
 # =========================================================
 
-async def get_series_info(series_name: str):
+async def get_series_info(series_name: str, landscape: bool = False):
     """
-    Backward-compatible.
-    Returns ONLY:
-        poster, year, genre, rating
+    Returns: poster, year, genre, rating
+    landscape=True → uses wide backdrop image from TMDB.
     """
-
     cached = get_cached(series_name)
-
     if cached:
         poster, year, genre, rating, source, language = cached
+        # If landscape requested but cached portrait — still return (cached is portrait)
         return poster, year, genre, rating
 
-    tmdb = await fetch_tmdb(series_name)
-
+    tmdb = await fetch_tmdb(series_name, landscape=landscape)
     if tmdb:
         poster, year, genre, rating, language = tmdb
-
-        save_cache(
-            series_name,
-            poster,
-            year,
-            genre,
-            rating,
-            "tmdb",
-            language
-        )
-
+        save_cache(series_name, poster, year, genre, rating, "tmdb", language)
         return poster, year, genre, rating
 
     omdb = await fetch_omdb(series_name)
-
     if omdb:
         poster, year, genre, rating, language = omdb
-
-        save_cache(
-            series_name,
-            poster,
-            year,
-            genre,
-            rating,
-            "omdb",
-            language
-        )
-
+        save_cache(series_name, poster, year, genre, rating, "omdb", language)
         return poster, year, genre, rating
 
     return None, None, None, None
 
 
 # =========================================================
-# LANGUAGE ACCESSOR (NEW)
+# LANGUAGE ACCESSOR
 # =========================================================
 
 async def get_series_language(series_name: str):
-    """
-    Returns only language.
-    Safe for indexing usage.
-    """
-
     cached = get_cached(series_name)
-
     if cached:
         _, _, _, _, _, language = cached
         return language
