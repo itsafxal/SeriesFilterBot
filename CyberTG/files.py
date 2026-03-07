@@ -168,13 +168,20 @@ def clean_series_name(series: str):
 
 def _normalize_for_query(series: str) -> str:
     try:
+        from utils.cyber_series import _normalize_title
+        normalized = _normalize_title(series)
+        return normalized.lower() if normalized else series.lower()
+    except Exception:
+        pass
+    try:
         from utils.cyber_index import _normalized_series_name
         normalized = _normalized_series_name(series)
         return normalized.lower() if normalized else series.lower()
     except Exception:
-        s = series.replace(".", " ").replace("_", " ")
-        s = re.sub(r"\s+", " ", s).strip().lower()
-        return s
+        pass
+    s = series.replace(".", " ").replace("_", " ")
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s
 
 
 # =========================================================
@@ -278,7 +285,7 @@ async def finish_progress(cyber, user_id):
             if delay and int(delay) > 0 and end_msg:
                 delete_message_later(cyber, user_id, end_msg.id, int(delay))
         except Exception as _e:
-            logger.warning(f"[STICKER] End sticker failed: {_e}")
+            logger.warning(f"[STICKER] End sticker failed: {_e}", exc_info=True)
 
 
 async def sender_worker(cyber, user_id, on_complete=None):
@@ -460,7 +467,7 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
                 delete_message_later(cyber, user_id, sticker_msg.id, auto_delay)
 
         except Exception as _se:
-            logger.warning(f"[STICKER] Failed to send season sticker: {_se}")
+            logger.warning(f"[STICKER] Failed to send season sticker: {_se}", exc_info=True)
             # Never block file delivery due to sticker failure
 
     queue = get_user_queue(user_id)
