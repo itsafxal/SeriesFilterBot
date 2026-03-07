@@ -40,8 +40,8 @@ DEFAULT_CAPTION_CLEAN_KEYWORDS = [
 
 
 # ── Sticker & progress settings ────────────────────────────────
-STICKER_ENABLED          = True    # season start/end stickers
-PROGRESS_MESSAGE_ENABLED = False   # "Sending files... X/Y" progress bar
+STICKER_ENABLED          = True   # season start/end stickers
+PROGRESS_MESSAGE_ENABLED = True   # "Sending files... X/Y" — deleted when done
 
 # ── Filter default ─────────────────────────────────────────────
 FILTER_ENABLED_DEFAULT = True   # global filter on/off default
