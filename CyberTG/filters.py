@@ -185,7 +185,7 @@ def build_season_pages(seasons, uid, series, page=0):
 
     rows, row = [], []
     for s in chunk:
-        row.append(BTN(f"Season {s}", callback_data=f"gss|{uid}|{series}|{s}"))
+        row.append(BTN(f"▶  Season {s:02d}", callback_data=f"gss|{uid}|{series}|{s}"))
         if len(row) == 3:
             rows.append(row)
             row = []
@@ -195,10 +195,10 @@ def build_season_pages(seasons, uid, series, page=0):
     if total_pages > 1:
         nav = []
         if page > 0:
-            nav.append(BTN("◀ Prev", callback_data=f"spg|{uid}|{series}|{page-1}"))
+            nav.append(BTN("❮  Prev", callback_data=f"spg|{uid}|{series}|{page-1}"))
         nav.append(BTN(f"{page+1}/{total_pages}", callback_data="noop"))
         if page < total_pages - 1:
-            nav.append(BTN("Next ▶", callback_data=f"spg|{uid}|{series}|{page+1}"))
+            nav.append(BTN("Next  ❯", callback_data=f"spg|{uid}|{series}|{page+1}"))
         rows.append(nav)
 
     return InlineKeyboardMarkup(rows)
@@ -329,7 +329,7 @@ def register_filters(cyber: Client):
             for s in suggestions:
                 lines.append(f"○ {small_caps(s)}")
                 buttons.append([BTN(s, callback_data=f"sug|{s}")])
-            buttons.append([BTN("Close", callback_data="close_spell")])
+            buttons.append([BTN("✕  Close", callback_data="close_spell")])
 
             msg = await m.reply_photo(
                 SPELL_IMG,
@@ -410,7 +410,7 @@ def register_filters(cyber: Client):
         poster_r = await _get_poster(series)
         poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
         # Back → Season select (page 0)
-        back = BTN("⬅️ Back", callback_data=f"bk_season|{uid}|{series}")
+        back = BTN("↩  Back", callback_data=f"bk_season|{uid}|{series}")
         kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
         await safe_edit(
             q.message.edit_caption(
@@ -435,7 +435,7 @@ def register_filters(cyber: Client):
         qs       = [qc[0] for qc in qc_pairs]   # plain quality list for caption
         poster_r = await _get_poster(series)
         poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
-        back = BTN("⬅️ Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
+        back = BTN("↩  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
 
         # Build buttons: label shows codec + quality (or just quality if no codec found)
         rows, row = [], []
@@ -477,12 +477,12 @@ def register_filters(cyber: Client):
         link = f"https://t.me/{bot.username}?start={payload}"
 
         # Back → Quality select for this season+language
-        back = BTN("⬅️ Back", callback_data=f"bk_qual|{uid}|{series}|{season}|{lang}")
+        back = BTN("↩  Back", callback_data=f"bk_qual|{uid}|{series}|{season}|{lang}")
         await safe_edit(
             q.message.edit_caption(
                 UI("Your Files Are Ready. Tap Below To Download."),
                 reply_markup=InlineKeyboardMarkup([
-                    [BTN("📥 Download Files", url=link)],
+                    [BTN("⬇  Download Files", url=link)],
                     [back],
                 ])
             ),
@@ -521,7 +521,7 @@ def register_filters(cyber: Client):
         langs = await get_unique_languages_by_season(series, int(season))
         poster_r = await _get_poster(series)
         poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
-        back = BTN("⬅️ Back", callback_data=f"bk_season|{uid}|{series}")
+        back = BTN("↩  Back", callback_data=f"bk_season|{uid}|{series}")
         kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
         await safe_edit(
             q.message.edit_caption(
@@ -542,7 +542,7 @@ def register_filters(cyber: Client):
         qs       = [qc[0] for qc in qc_pairs]
         poster_r = await _get_poster(series)
         poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
-        back = BTN("⬅️ Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
+        back = BTN("↩  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
         rows, row = [], []
         for quality, codec in qc_pairs:
             label = _quality_label(quality, codec)
