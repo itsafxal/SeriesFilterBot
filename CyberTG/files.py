@@ -23,7 +23,7 @@ import re
 from pyrogram import enums
 from pyrogram.errors import FloodWait, MessageNotModified, BadRequest
 
-from config import logger, STICKER_ENABLED
+from config import logger, STICKER_ENABLED, PROGRESS_MESSAGE_ENABLED
 from DB.database import (
     get_all_files_by_season_and_quality,
     get_global_setting,
@@ -168,13 +168,20 @@ def clean_series_name(series: str):
 
 def _normalize_for_query(series: str) -> str:
     try:
+        from utils.cyber_series import _normalize_title
+        normalized = _normalize_title(series)
+        return normalized.lower() if normalized else series.lower()
+    except Exception:
+        pass
+    try:
         from utils.cyber_index import _normalized_series_name
         normalized = _normalized_series_name(series)
         return normalized.lower() if normalized else series.lower()
     except Exception:
-        s = series.replace(".", " ").replace("_", " ")
-        s = re.sub(r"\s+", " ", s).strip().lower()
-        return s
+        pass
+    s = series.replace(".", " ").replace("_", " ")
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s
 
 
 # =========================================================
