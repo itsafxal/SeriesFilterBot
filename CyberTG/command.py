@@ -157,10 +157,10 @@ def register_command_handlers(cyber: Client):
         )
 
         keyboard = InlineKeyboardMarkup([
-            [BTN("🎞 ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ 🎞", switch_inline_query_current_chat="")],
-            [BTN("⚡ ʜᴇʟᴘ",  callback_data="help|menu"),
-             BTN("ᴀʙᴏᴜᴛ ✨", callback_data="about|menu")],
-            [BTN("🍷 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ 🍷", url="https://t.me/TomxSupport")],
+            [BTN("▶  ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ", switch_inline_query_current_chat="")],
+            [BTN("⚡  ʜᴇʟᴘ",  callback_data="help|menu"),
+             BTN("✦  ᴀʙᴏᴜᴛ", callback_data="about|menu")],
+            [BTN("◉  sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ", url="https://t.me/TomxSupport")],
         ])
 
         await message.reply_photo(
@@ -274,7 +274,7 @@ def register_command_handlers(cyber: Client):
         )
 
         keyboard = InlineKeyboardMarkup([
-            [BTN("🔙 Back", callback_data="gset|main")]
+            [BTN("↩  Back", callback_data="gset|main")]
         ])
         await wait.edit_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
 
@@ -553,7 +553,7 @@ def register_command_handlers(cyber: Client):
             await q.message.edit_text(
                 "✅ <b>All files deleted successfully.</b>",
                 parse_mode=enums.ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([[BTN("🔙 Back", callback_data="gset|main")]]),
+                reply_markup=InlineKeyboardMarkup([[BTN("↩  Back", callback_data="gset|main")]]),
             )
         except Exception:
             pass
