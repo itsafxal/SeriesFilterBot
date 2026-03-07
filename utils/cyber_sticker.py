@@ -87,7 +87,7 @@ def _neon_line(img, x1, y1, x2, y2, glow_color, line_color, width=2):
 
 
 def _dark_card(img, tint=(10, 10, 20)):
-    # Transparent background — neon text floats over Telegram wallpaper
+    # Fully transparent — neon text floats over Telegram wallpaper
     return img
 
 
@@ -213,7 +213,7 @@ _END_STYLES = [_end_0, _end_1, _end_2]
 # ── public API ────────────────────────────────────────────────────────
 
 def make_start_sticker(season: int, style_idx=None):
-    """Returns (BytesIO webp, 0). Always style 0 — ▼ SEASON XX ▼ red glow, transparent bg."""
+    """Returns (BytesIO webp, 0). Always style 0 — transparent bg, red glow."""
     style_idx = 0
     img = _START_STYLES[style_idx](season)
     buf = io.BytesIO()
@@ -224,7 +224,7 @@ def make_start_sticker(season: int, style_idx=None):
 
 
 def make_end_sticker(season: int, total: int, style_idx=None):
-    """Returns (BytesIO webp, 0). Always style 0 — ◀ THE END ▶ blue neon, transparent bg."""
+    """Returns (BytesIO webp, 0). Always style 0 — ◀ THE END ▶ transparent bg."""
     style_idx = 0
     img = _END_STYLES[style_idx](season, total)
     buf = io.BytesIO()
