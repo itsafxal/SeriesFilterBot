@@ -23,7 +23,7 @@ import re
 from pyrogram import enums
 from pyrogram.errors import FloodWait, MessageNotModified, BadRequest
 
-from config import logger, STICKER_ENABLED
+from config import logger, STICKER_ENABLED, PROGRESS_MESSAGE_ENABLED
 from DB.database import (
     get_all_files_by_season_and_quality,
     get_global_setting,
@@ -285,7 +285,7 @@ async def finish_progress(cyber, user_id):
             if delay and int(delay) > 0 and end_msg:
                 delete_message_later(cyber, user_id, end_msg.id, int(delay))
         except Exception as _e:
-            logger.warning(f"[STICKER] End sticker failed: {_e}", exc_info=True)
+            logger.warning(f"[STICKER] End sticker failed: {_e}")
 
 
 async def sender_worker(cyber, user_id, on_complete=None):
@@ -432,7 +432,8 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
     if not custom_caption:
         custom_caption = DEFAULT_CAPTION
 
-    await init_progress(cyber, user_id, len(files), season=season)
+    if PROGRESS_MESSAGE_ENABLED:
+        await init_progress(cyber, user_id, len(files), season=season)
 
     # ── Send season sticker before files ──────────────────────────────
     if STICKER_ENABLED:
@@ -467,7 +468,7 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
                 delete_message_later(cyber, user_id, sticker_msg.id, auto_delay)
 
         except Exception as _se:
-            logger.warning(f"[STICKER] Failed to send season sticker: {_se}", exc_info=True)
+            logger.warning(f"[STICKER] Failed to send season sticker: {_se}")
             # Never block file delivery due to sticker failure
 
     queue = get_user_queue(user_id)
