@@ -87,13 +87,8 @@ def _neon_line(img, x1, y1, x2, y2, glow_color, line_color, width=2):
 
 
 def _dark_card(img, tint=(10, 10, 20)):
-    bg   = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(bg)
-    m    = 8
-    draw.rounded_rectangle([m, m, W - m, H - m], radius=20, fill=(*tint, 180))
-    draw.rounded_rectangle([m, m, W - m, H - m], radius=20,
-                            outline=(60, 60, 120, 120), width=1)
-    return Image.alpha_composite(bg, img)
+    # Transparent background — neon text floats over Telegram wallpaper
+    return img
 
 
 # ── START styles ──────────────────────────────────────────────────────
@@ -218,11 +213,8 @@ _END_STYLES = [_end_0, _end_1, _end_2]
 # ── public API ────────────────────────────────────────────────────────
 
 def make_start_sticker(season: int, style_idx=None):
-    """
-    Returns (BytesIO webp, chosen_style_idx).
-    Always uses style 0 (▼ SEASON XX ▼ white core / red glow).
-    """
-    style_idx = 0  # always use bold red glow style
+    """Returns (BytesIO webp, 0). Always style 0 — ▼ SEASON XX ▼ red glow, transparent bg."""
+    style_idx = 0
     img = _START_STYLES[style_idx](season)
     buf = io.BytesIO()
     img.save(buf, format="WEBP", lossless=True)
@@ -232,11 +224,8 @@ def make_start_sticker(season: int, style_idx=None):
 
 
 def make_end_sticker(season: int, total: int, style_idx=None):
-    """
-    Returns (BytesIO webp, chosen_style_idx).
-    Always uses style 0 (◀ THE END ▶ blue neon).
-    """
-    style_idx = 0  # always THE END style — ignore random/cached
+    """Returns (BytesIO webp, 0). Always style 0 — ◀ THE END ▶ blue neon, transparent bg."""
+    style_idx = 0
     img = _END_STYLES[style_idx](season, total)
     buf = io.BytesIO()
     img.save(buf, format="WEBP", lossless=True)
