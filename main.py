@@ -122,6 +122,13 @@ async def run_bot_async(cyber: Client):
     logger.info("[STARTUP] Bot client connected ✅")
 
     try:
+        from DB.database import clear_sticker_cache
+        await clear_sticker_cache()
+        logger.info("[STARTUP] ✅ Sticker cache cleared (style reset).")
+    except Exception as e:
+        logger.warning(f"[STARTUP] Sticker cache clear failed (non-fatal): {e}")
+
+    try:
         start_scheduler()
         logger.info("[STARTUP] ✅ Auto-delete scheduler started.")
     except Exception as e:
