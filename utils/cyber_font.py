@@ -27,12 +27,17 @@ def UI(text: str):
 
 def BTN(text, **kwargs):
     """
-    Auto small-caps InlineKeyboardButton
+    Auto small-caps InlineKeyboardButton with live-button spacing.
+    Leading emoji/symbols are preserved; text after gets small-caps.
 
     Example:
-        BTN("Next ▶", callback_data="next")
+        BTN("▶  Season 01", callback_data="s1")
     """
-    return InlineKeyboardButton(
-        small_caps(str(text)),
-        **kwargs
-    )
+    t = str(text)
+    # Split on first double-space so "⬇  Download" → emoji preserved, text gets caps
+    if "  " in t:
+        prefix, rest = t.split("  ", 1)
+        label = prefix + "  " + small_caps(rest)
+    else:
+        label = small_caps(t)
+    return InlineKeyboardButton(label, **kwargs)
