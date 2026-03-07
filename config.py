@@ -38,6 +38,9 @@ DEFAULT_CAPTION_CLEAN_KEYWORDS = [
     "@", "t.me", "Telegram", "www.", "http://", "https://",
 ]
 
+# ── Sticker settings ───────────────────────────────────────────
+STICKER_ENABLED = True    # show season start/end stickers during file delivery
+
 # ── Filter default ─────────────────────────────────────────────
 FILTER_ENABLED_DEFAULT = True   # global filter on/off default
 
