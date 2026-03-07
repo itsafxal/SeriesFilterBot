@@ -23,7 +23,7 @@ import re
 from pyrogram import enums
 from pyrogram.errors import FloodWait, MessageNotModified, BadRequest
 
-from config import logger, STICKER_ENABLED, PROGRESS_MESSAGE_ENABLED
+from config import logger, STICKER_ENABLED
 from DB.database import (
     get_all_files_by_season_and_quality,
     get_global_setting,
@@ -168,20 +168,13 @@ def clean_series_name(series: str):
 
 def _normalize_for_query(series: str) -> str:
     try:
-        from utils.cyber_series import _normalize_title
-        normalized = _normalize_title(series)
-        return normalized.lower() if normalized else series.lower()
-    except Exception:
-        pass
-    try:
         from utils.cyber_index import _normalized_series_name
         normalized = _normalized_series_name(series)
         return normalized.lower() if normalized else series.lower()
     except Exception:
-        pass
-    s = series.replace(".", " ").replace("_", " ")
-    s = re.sub(r"\s+", " ", s).strip().lower()
-    return s
+        s = series.replace(".", " ").replace("_", " ")
+        s = re.sub(r"\s+", " ", s).strip().lower()
+        return s
 
 
 # =========================================================
@@ -242,23 +235,22 @@ async def update_progress(cyber, user_id):
         pass
 
 
-async def finish_progress(cyber, user_id):
+async def finish_progress(cyber, user_id, season: int = 1, total: int = 0):
     p = USER_PROGRESS.pop(user_id, None)
-    if not p:
-        return
 
-    # Delete the "📦 Sending files... Progress: X/Y" message
-    try:
-        await cyber.delete_messages(user_id, p["msg_id"])
-    except Exception:
-        pass
+    # Delete progress message if it was sent
+    if p:
+        try:
+            await cyber.delete_messages(user_id, p["msg_id"])
+        except Exception:
+            pass
+        season = p.get("season", season)
+        total  = p.get("total",  total)
 
-    # Send end sticker if enabled
+    # Send end sticker — runs even when PROGRESS_MESSAGE_ENABLED=False
     if STICKER_ENABLED:
         try:
             from utils.cyber_sticker import make_end_sticker
-            season = p.get("season", 1)
-            total  = p.get("total",  0)
 
             # Try cached end sticker file_id
             cached_fid = await get_cached_sticker(season, kind="end")
@@ -288,7 +280,7 @@ async def finish_progress(cyber, user_id):
             logger.warning(f"[STICKER] End sticker failed: {_e}")
 
 
-async def sender_worker(cyber, user_id, on_complete=None):
+async def sender_worker(cyber, user_id, on_complete=None, season: int = 1, total: int = 0):
     queue = get_user_queue(user_id)
 
     while not queue.empty():
@@ -313,7 +305,7 @@ async def sender_worker(cyber, user_id, on_complete=None):
         finally:
             queue.task_done()
 
-    await finish_progress(cyber, user_id)
+    await finish_progress(cyber, user_id, season=season, total=total)
     USER_SEND_TASKS.pop(user_id, None)
     USER_SEND_QUEUES.pop(user_id, None)
 
@@ -567,5 +559,5 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
 
     if not is_sender_running(user_id):
         USER_SEND_TASKS[user_id] = asyncio.create_task(
-            sender_worker(cyber, user_id, on_complete=on_complete)
+            sender_worker(cyber, user_id, on_complete=on_complete, season=season, total=len(files))
         )
