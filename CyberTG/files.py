@@ -242,10 +242,10 @@ async def update_progress(cyber, user_id):
         pass
 
 
-async def finish_progress(cyber, user_id, season: int = 1, total: int = 0):
+async def finish_progress(cyber, user_id, season: int = 1, total: int = 0, auto_delay: int = 0):
     p = USER_PROGRESS.pop(user_id, None)
 
-    # Delete progress message if it was sent
+    # Delete the "📦 Sending files... Progress: X/Y" message when complete
     if p:
         try:
             await cyber.delete_messages(user_id, p["msg_id"])
@@ -254,7 +254,7 @@ async def finish_progress(cyber, user_id, season: int = 1, total: int = 0):
         season = p.get("season", season)
         total  = p.get("total",  total)
 
-    # Send end sticker — runs even when PROGRESS_MESSAGE_ENABLED=False
+    # Send end sticker — always runs (even when progress message is disabled)
     if STICKER_ENABLED:
         try:
             from utils.cyber_sticker import make_end_sticker
@@ -280,14 +280,14 @@ async def finish_progress(cyber, user_id, season: int = 1, total: int = 0):
                 if style_idx is None:
                     await save_sticker_style(season, kind="end", style_idx=chosen_idx)
 
-            delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
-            if delay and int(delay) > 0 and end_msg:
-                delete_message_later(cyber, user_id, end_msg.id, int(delay))
+            # Sticker auto-deletes at same time as files
+            if auto_delay > 0 and end_msg:
+                delete_message_later(cyber, user_id, end_msg.id, auto_delay)
         except Exception as _e:
-            logger.warning(f"[STICKER] End sticker failed: {_e}")
+            logger.warning(f"[STICKER] End sticker failed: {_e}", exc_info=True)
 
 
-async def sender_worker(cyber, user_id, on_complete=None, season: int = 1, total: int = 0):
+async def sender_worker(cyber, user_id, on_complete=None, season: int = 1, total: int = 0, auto_delay: int = 0):
     queue = get_user_queue(user_id)
 
     while not queue.empty():
@@ -312,7 +312,7 @@ async def sender_worker(cyber, user_id, on_complete=None, season: int = 1, total
         finally:
             queue.task_done()
 
-    await finish_progress(cyber, user_id, season=season, total=total)
+    await finish_progress(cyber, user_id, season=season, total=total, auto_delay=auto_delay)
     USER_SEND_TASKS.pop(user_id, None)
     USER_SEND_QUEUES.pop(user_id, None)
 
@@ -566,5 +566,5 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
 
     if not is_sender_running(user_id):
         USER_SEND_TASKS[user_id] = asyncio.create_task(
-            sender_worker(cyber, user_id, on_complete=on_complete, season=season, total=len(files))
+            sender_worker(cyber, user_id, on_complete=on_complete, season=season, total=len(files), auto_delay=auto_delay)
         )
