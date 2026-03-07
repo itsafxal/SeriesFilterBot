@@ -38,6 +38,7 @@ DEFAULT_CAPTION_CLEAN_KEYWORDS = [
     "@", "t.me", "Telegram", "www.", "http://", "https://",
 ]
 
+
 # ── Sticker & progress settings ────────────────────────────────
 STICKER_ENABLED          = True    # season start/end stickers
 PROGRESS_MESSAGE_ENABLED = False   # "Sending files... X/Y" progress bar
