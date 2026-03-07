@@ -413,7 +413,7 @@ def build_fsub_keyboard(
                 continue
             emoji  = "📢" if mode == "request" else "🔗"
             action = "REQUEST TO JOIN" if mode == "request" else "JOIN"
-            rows.append([BTN(f"{emoji} {action} {label} {emoji}", url=link)])
+            rows.append([BTN(f"⊕  {label}", url=link)])
         return InlineKeyboardMarkup(rows)
 
     # Per-status view
@@ -426,7 +426,7 @@ def build_fsub_keyboard(
         if link:
             emoji  = "📢" if mode == "request" else "🔗"
             action = "REQUEST TO JOIN" if mode == "request" else "JOIN"
-            rows.append([BTN(f"{emoji} {action} {label} {emoji}", url=link)])
+            rows.append([BTN(f"⊕  {label}", url=link)])
 
     return InlineKeyboardMarkup(rows)
 
