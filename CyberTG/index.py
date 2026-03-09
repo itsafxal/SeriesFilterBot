@@ -43,10 +43,13 @@ from utils.cyber_filter import extract_links
 # ---------------------------------------------------------------
 
 FETCH_BATCH        = 200   # IDs per get_messages() call (Telegram max)
-CONCURRENT_FETCHES = 4     # parallel calls per round
+CONCURRENT_FETCHES = 4     # parallel calls per round (reduced on FloodWait)
 SAVE_BATCH_SIZE    = 500   # parsed docs buffer before DB flush
 CHECKPOINT_EVERY   = 20    # checkpoint every N rounds
 PROGRESS_EVERY     = 15    # seconds between Telegram message edits
+STAGGER_DELAY      = 0.4   # seconds between each concurrent call in a round
+ROUND_COOLDOWN     = 0.3   # seconds to sleep after every round (Telegram rate relief)
+MIN_CONCURRENT     = 1     # minimum concurrency after repeated FloodWaits
 
 INDEX_SKIP_KEY   = "INDEX_SKIP_ID"
 INDEX_STATUS_KEY = "CURRENT_INDEX_TASK"
@@ -156,7 +159,8 @@ async def _fetch_one(bot: Client, chat_id: int, id_window: list, fw_count: list)
             fw_count[0] += 1
             wait = max(int(getattr(fw, "value", 10)), 5)
             logger.warning(f"[BOT] FloodWait {wait}s - retrying")
-            await asyncio.sleep(wait + 1)
+            # Extra buffer: wait the full required time plus 20% headroom
+            await asyncio.sleep(wait * 1.2 + 1)
         except ChannelPrivate:
             logger.error(f"[BOT] Channel {chat_id} is private/inaccessible")
             return []
@@ -166,10 +170,25 @@ async def _fetch_one(bot: Client, chat_id: int, id_window: list, fw_count: list)
             return []
 
 
-async def _fetch_round(bot: Client, chat_id: int, windows: list, fw_count: list) -> list:
-    results = await asyncio.gather(
-        *[_fetch_one(bot, chat_id, w, fw_count) for w in windows]
-    )
+async def _fetch_round(
+    bot: Client,
+    chat_id: int,
+    windows: list,
+    fw_count: list,
+    stagger: float = STAGGER_DELAY,
+) -> list:
+    """
+    Fire each window fetch with a small stagger delay between launches.
+    This avoids hammering Telegram with N simultaneous identical requests
+    which reliably triggers FloodWait on the first round.
+    """
+    tasks = []
+    for i, w in enumerate(windows):
+        if i > 0 and stagger > 0:
+            await asyncio.sleep(stagger)
+        tasks.append(asyncio.create_task(_fetch_one(bot, chat_id, w, fw_count)))
+
+    results = await asyncio.gather(*tasks)
     flat = []
     for batch in results:
         flat.extend(batch)
@@ -237,7 +256,9 @@ async def index_files_task(
     )
 
     checked = saved = skipped = dup = calls = 0
-    fw_count  = [0]
+    fw_count      = [0]
+    fw_consecutive = [0]          # track consecutive FloodWaits to reduce concurrency
+    active_conc   = [CONCURRENT_FETCHES]  # adaptive — shrinks on repeated FloodWait
     t0        = time.monotonic()
     last_edit = [0.0]
     cur_id    = [start_from]
@@ -277,7 +298,7 @@ async def index_files_task(
         try:
             while current <= last_id:
                 windows = []
-                for _ in range(CONCURRENT_FETCHES):
+                for _ in range(active_conc[0]):
                     if current > last_id:
                         break
                     end = min(current + FETCH_BATCH - 1, last_id)
@@ -286,8 +307,32 @@ async def index_files_task(
 
                 cur_id[0] = current - 1
 
-                msgs   = await _fetch_round(bot, chat_id, windows, fw_count)
+                prev_fw = fw_count[0]
+                msgs    = await _fetch_round(
+                    bot, chat_id, windows, fw_count,
+                    stagger=STAGGER_DELAY * (1 + fw_consecutive[0]),  # grow stagger on FloodWait
+                )
                 calls += len(windows)
+
+                # Adaptive concurrency: reduce on consecutive FloodWaits, recover slowly
+                if fw_count[0] > prev_fw:
+                    fw_consecutive[0] += 1
+                    if fw_consecutive[0] >= 2:
+                        active_conc[0] = max(active_conc[0] - 1, MIN_CONCURRENT)
+                        logger.warning(
+                            f"[INDEX] FloodWait x{fw_consecutive[0]} — "
+                            f"reducing concurrency to {active_conc[0]}"
+                        )
+                else:
+                    if fw_consecutive[0] > 0:
+                        fw_consecutive[0] = 0
+                    # Slowly recover concurrency every 10 clean rounds
+                    if calls % (10 * active_conc[0]) == 0 and active_conc[0] < CONCURRENT_FETCHES:
+                        active_conc[0] = min(active_conc[0] + 1, CONCURRENT_FETCHES)
+                        logger.info(f"[INDEX] Recovering concurrency → {active_conc[0]}")
+
+                # Inter-round cooldown — gives Telegram breathing room
+                await asyncio.sleep(ROUND_COOLDOWN)
 
                 for msg in msgs:
                     checked += 1
