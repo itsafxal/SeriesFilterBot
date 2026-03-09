@@ -723,6 +723,26 @@ async def set_caption_clean_keywords(keywords: list):
 
 
 # ─────────────────────────────────────────────────────────────
+# USERBOT STRING SESSION  (used by indexer for faster fetching)
+# ─────────────────────────────────────────────────────────────
+
+async def get_userbot_string() -> str | None:
+    """Return the saved Pyrogram string session, or None if not set."""
+    val = await get_global_setting("USERBOT_STRING", None)
+    return val if val else None
+
+
+async def set_userbot_string(string: str):
+    """Save a Pyrogram string session to the config DB."""
+    await set_global_setting("USERBOT_STRING", string.strip())
+
+
+async def delete_userbot_string():
+    """Remove the saved string session (disables userbot indexing)."""
+    await set_global_setting("USERBOT_STRING", None)
+
+
+# ─────────────────────────────────────────────────────────────
 # SEASON STICKER CACHE
 # ─────────────────────────────────────────────────────────────
 
