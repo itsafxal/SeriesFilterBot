@@ -76,23 +76,23 @@ async def safe_edit(message, text=None, caption=None, reply_markup=None):
 
 def _fsub_main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("①  Slot 1", callback_data="fsub|slot1"),
-         InlineKeyboardButton("②  Slot 2", callback_data="fsub|slot2")],
-        [InlineKeyboardButton("◎  View Status",  callback_data="fsub|view")],
-        [InlineKeyboardButton("↩  Back",         callback_data="gset|main")],
+        [InlineKeyboardButton("📡  Slot 1", callback_data="fsub|slot1"),
+         InlineKeyboardButton("📡  Slot 2", callback_data="fsub|slot2")],
+        [InlineKeyboardButton("📊  View Status",  callback_data="fsub|view")],
+        [InlineKeyboardButton("⬅️  Back",         callback_data="gset|main")],
     ])
 
 
 def _fsub_slot_keyboard(slot: int):
     s = str(slot)
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⊕  Set Primary",    callback_data=f"fsub|set_primary_{s}"),
-         InlineKeyboardButton("↻  Set Secondary", callback_data=f"fsub|set_secondary_{s}")],
-        [InlineKeyboardButton("≡  Set Threshold", callback_data=f"fsub|set_thr_{s}")],
-        [InlineKeyboardButton("⊟  Del Primary",   callback_data=f"fsub|del_primary_{s}"),
-         InlineKeyboardButton("⊟  Del Secondary", callback_data=f"fsub|del_secondary_{s}")],
-        [InlineKeyboardButton("⊘  Purge Records", callback_data=f"fsub|purge_{s}")],
-        [InlineKeyboardButton("↩  Back",          callback_data="fsub|main")],
+        [InlineKeyboardButton("✅  Set Primary",    callback_data=f"fsub|set_primary_{s}"),
+         InlineKeyboardButton("🔄  Set Secondary", callback_data=f"fsub|set_secondary_{s}")],
+        [InlineKeyboardButton("🎚  Set Threshold", callback_data=f"fsub|set_thr_{s}")],
+        [InlineKeyboardButton("🗑  Del Primary",   callback_data=f"fsub|del_primary_{s}"),
+         InlineKeyboardButton("🗑  Del Secondary", callback_data=f"fsub|del_secondary_{s}")],
+        [InlineKeyboardButton("🧹  Purge Records", callback_data=f"fsub|purge_{s}")],
+        [InlineKeyboardButton("⬅️  Back",          callback_data="fsub|main")],
     ])
 
 
@@ -117,15 +117,17 @@ async def _create_invite_link(bot, chat_id: int, mode: str):
 
 async def help_menu_handler(cyber, query):
     text = (
-        f"<b>{'💡 Help & Instructions'}</b>\n\n"
-        f"{'1. Send series name.'}\n"
-        f"{'2. Select season.'}\n"
-        f"{'3. Choose language & quality.'}\n"
-        f"{'4. Download files.'}"
+        "<b>📖  How to Use</b>\n"
+        "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+        "① Type any series name\n"
+        "② Select a season\n"
+        "③ Choose language &amp; quality\n"
+        "④ Tap Download to get your files\n\n"
+        "<i>Tip: Be specific with series names for best results.</i>"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⌂  Home", callback_data="cyber|"),
-         InlineKeyboardButton("⚙  Admin", callback_data="admin|menu")]
+        [InlineKeyboardButton("🏠  Home",    callback_data="cyber|"),
+         InlineKeyboardButton("⚙️  Admin",  callback_data="admin|menu")]
     ])
     await safe_edit(query.message, caption=text, reply_markup=keyboard)
     await query.answer()
@@ -135,14 +137,15 @@ async def cyber_menu_handler(cyber, query):
     user = query.from_user
     bot  = await cyber.get_me()
     text = (
-        f"<b>{f'Hey {user.first_name}!'}</b>\n\n"
-        f"{f'Welcome to {bot.first_name}'}\n\n"
-        f"{'Send series name to start.'}"
+        f"✦ <b>Welcome back, {user.first_name}</b>\n"
+        f"<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+        f"🎬 <b>{bot.first_name}</b> — Premium series library\n\n"
+        f"<blockquote>Type a series name to search instantly.</blockquote>"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("▶  Browse Library", switch_inline_query_current_chat="")],
-        [InlineKeyboardButton("⚡  Help",  callback_data="help|menu"),
-         InlineKeyboardButton("✦  About", callback_data="about|menu")]
+        [InlineKeyboardButton("🔍  Browse Library", switch_inline_query_current_chat="")],
+        [InlineKeyboardButton("📖  Help",  callback_data="help|menu"),
+         InlineKeyboardButton("ℹ️  About", callback_data="about|menu")]
     ])
     try:
         await query.message.edit_media(
@@ -159,14 +162,16 @@ async def cyber_menu_handler(cyber, query):
 
 async def about_menu_handler(_, query):
     text = (
-        "<b>Series Bot</b>\n\n"
-        "Library: Pyrogram\n"
-        "Database: MongoDB\n"
-        "Language: Python"
+        "<b>ℹ️  About</b>\n"
+        "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+        "🤖  Built with  <b>Pyrogram</b>\n"
+        "🗄  Powered by  <b>MongoDB + SQLite</b>\n"
+        "🐍  Written in  <b>Python</b>\n\n"
+        "<i>A fast, reliable series delivery bot.</i>"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⌂  Home", callback_data="cyber|"),
-         InlineKeyboardButton("⚡  Help", callback_data="help|menu")]
+        [InlineKeyboardButton("🏠  Home", callback_data="cyber|"),
+         InlineKeyboardButton("📖  Help", callback_data="help|menu")]
     ])
     await safe_edit(query.message, caption=text, reply_markup=keyboard)
     await query.answer()
@@ -176,10 +181,11 @@ async def owner_menu_handler(_, query):
     if query.from_user.id not in ADMIN_USERS:
         return await query.answer("Not allowed.", show_alert=True)
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚙  Settings", callback_data="gset|main")],
-        [InlineKeyboardButton("⌂  Home",            callback_data="cyber|")]
+        [InlineKeyboardButton("⚙️  Global Settings", callback_data="gset|main")],
+        [InlineKeyboardButton("🏠  Home",            callback_data="cyber|")]
     ])
-    await safe_edit(query.message, caption="<b>🛠 Admin Panel</b>",
+    await safe_edit(query.message,
+                    caption="<b>🛠  Admin Panel</b>\n<b>━━━━━━━━━━━━━━━━━━━━━</b>",
                     reply_markup=keyboard)
     await query.answer()
 
@@ -194,17 +200,18 @@ async def global_settings_router(_, query):
     post_status = "✅ ON" if poster_on else "❌ OFF"
     ori_status  = "🌄 Wide" if landscape else "🖼 Portrait"
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("◈  Index Channels",   callback_data="index|index"),
-         InlineKeyboardButton("✎  File Caption",     callback_data="caption|caption")],
-        [InlineKeyboardButton("◷  Auto Delete",      callback_data="autodel|autodel"),
-         InlineKeyboardButton("⊟  File Auto Delete", callback_data="filedel|filedel")],
-        [InlineKeyboardButton("◉  FSub Settings",    callback_data="fsub|main")],
-        [InlineKeyboardButton(f"🌐 Caption Lang  {cap_status}", callback_data="caplang|toggle"),
-         InlineKeyboardButton(f"🔍 Filter  {filt_status}",      callback_data="filtertog|toggle")],
-        [InlineKeyboardButton(f"🖼 Poster  {post_status}  {ori_status}", callback_data="postertog|main")],
-        [InlineKeyboardButton("↩  Back",             callback_data="admin|menu")],
+        [InlineKeyboardButton("📂  Index Channels",  callback_data="index|index"),
+         InlineKeyboardButton("✏️  File Caption",    callback_data="caption|caption")],
+        [InlineKeyboardButton("⏱  Auto Delete",     callback_data="autodel|autodel"),
+         InlineKeyboardButton("🗂  File Auto Del",  callback_data="filedel|filedel")],
+        [InlineKeyboardButton("🔒  FSub Settings",   callback_data="fsub|main")],
+        [InlineKeyboardButton(f"🌐  Caption Lang  {cap_status}", callback_data="caplang|toggle"),
+         InlineKeyboardButton(f"🔍  Filter  {filt_status}",      callback_data="filtertog|toggle")],
+        [InlineKeyboardButton(f"🖼  Poster  {post_status}  {ori_status}", callback_data="postertog|main")],
+        [InlineKeyboardButton("⬅️  Back",            callback_data="admin|menu")],
     ])
-    await safe_edit(query.message, caption="<b>⚙️ Global Settings</b>",
+    await safe_edit(query.message,
+                    caption="<b>⚙️  Global Settings</b>\n<b>━━━━━━━━━━━━━━━━━━━━━</b>",
                     reply_markup=keyboard)
     await query.answer()
 
@@ -262,7 +269,7 @@ async def fsub_router(bot, query: CallbackQuery):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⊕  Request to Join", callback_data=f"fsub|mode_request_{slot}_0"),
                  InlineKeyboardButton("⊕  Normal Invite",   callback_data=f"fsub|mode_invite_{slot}_0")],
-                [InlineKeyboardButton("↩  Back",            callback_data=f"fsub|slot{slot}")],
+                [InlineKeyboardButton("⬅️  Back",            callback_data=f"fsub|slot{slot}")],
             ]),
         )
 
@@ -275,7 +282,7 @@ async def fsub_router(bot, query: CallbackQuery):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⊕  Request to Join", callback_data=f"fsub|mode_request_{slot}_1"),
                  InlineKeyboardButton("⊕  Normal Invite",   callback_data=f"fsub|mode_invite_{slot}_1")],
-                [InlineKeyboardButton("↩  Back",            callback_data=f"fsub|slot{slot}")],
+                [InlineKeyboardButton("⬅️  Back",            callback_data=f"fsub|slot{slot}")],
             ]),
         )
 
@@ -370,7 +377,7 @@ async def fsub_router(bot, query: CallbackQuery):
             query.message,
             caption="\n".join(lines),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("↩  Back", callback_data="fsub|main")]
+                [InlineKeyboardButton("⬅️  Back", callback_data="fsub|main")]
             ]),
         )
 
@@ -384,12 +391,13 @@ async def index_action_router(_, query):
 
     if action == "index":
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⊕  Add",    callback_data="index|add"),
-             InlineKeyboardButton("⊖  Delete", callback_data="index|del")],
-            [InlineKeyboardButton("≡  List",   callback_data="index|list")],
-            [InlineKeyboardButton("↩  Back",   callback_data="gset|main")],
+            [InlineKeyboardButton("➕  Add",     callback_data="index|add"),
+             InlineKeyboardButton("🗑  Remove",  callback_data="index|del")],
+            [InlineKeyboardButton("📋  List",    callback_data="index|list")],
+            [InlineKeyboardButton("⬅️  Back",    callback_data="gset|main")],
         ])
-        await safe_edit(query.message, caption="<b>📂 Index Settings</b>",
+        await safe_edit(query.message,
+                        caption="<b>📂  Index Channels</b>\n<b>━━━━━━━━━━━━━━━━━━━━━</b>",
                         reply_markup=keyboard)
 
     elif action == "list":
@@ -399,7 +407,7 @@ async def index_action_router(_, query):
                 "\n".join(f"<code>{c}</code>" for c in channels))
         await safe_edit(query.message, caption=text,
                         reply_markup=InlineKeyboardMarkup(
-                            [[InlineKeyboardButton("↩  Back", callback_data="index|index")]]))
+                            [[InlineKeyboardButton("⬅️  Back", callback_data="index|index")]]))
 
     elif action == "add":
         await safe_edit(query.message, caption="<b>📂 Send the channel ID to add.</b>")
@@ -426,12 +434,13 @@ async def caption_action_router(_, query):
 
     if action == "caption":
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("◎  View",   callback_data="caption|view")],
-            [InlineKeyboardButton("✎  Set",    callback_data="caption|set")],
-            [InlineKeyboardButton("⊟  Delete", callback_data="caption|delete")],
-            [InlineKeyboardButton("↩  Back",   callback_data="gset|main")],
+            [InlineKeyboardButton("👁  View",    callback_data="caption|view")],
+            [InlineKeyboardButton("✏️  Set",     callback_data="caption|set")],
+            [InlineKeyboardButton("🗑  Delete",  callback_data="caption|delete")],
+            [InlineKeyboardButton("⬅️  Back",    callback_data="gset|main")],
         ])
-        await safe_edit(query.message, caption="<b>📝 Caption Settings</b>",
+        await safe_edit(query.message,
+                        caption="<b>📝  File Caption</b>\n<b>━━━━━━━━━━━━━━━━━━━━━</b>",
                         reply_markup=keyboard)
 
     elif action == "view":
@@ -440,7 +449,7 @@ async def caption_action_router(_, query):
                    f"<b>Current Caption:</b>\n\n{current}")
         await safe_edit(query.message, caption=text,
                         reply_markup=InlineKeyboardMarkup(
-                            [[InlineKeyboardButton("↩  Back", callback_data="caption|caption")]]))
+                            [[InlineKeyboardButton("⬅️  Back", callback_data="caption|caption")]]))
 
     elif action == "set":
         await safe_edit(query.message, caption="<b>📝 Send new caption now.</b>")
@@ -454,7 +463,7 @@ async def caption_action_router(_, query):
         await set_global_setting(KEY, None)
         await safe_edit(query.message, caption="<b>Caption reset.</b>",
                         reply_markup=InlineKeyboardMarkup(
-                            [[InlineKeyboardButton("↩  Back", callback_data="caption|caption")]]))
+                            [[InlineKeyboardButton("⬅️  Back", callback_data="caption|caption")]]))
 
     await query.answer()
 
@@ -465,11 +474,12 @@ async def autodel_action_router(_, query):
 
     if action == "autodel":
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✎  Set Seconds", callback_data="autodel|set")],
-            [InlineKeyboardButton("⊘  Disable",     callback_data="autodel|off")],
-            [InlineKeyboardButton("↩  Back",        callback_data="gset|main")],
+            [InlineKeyboardButton("⏱  Set Delay",   callback_data="autodel|set")],
+            [InlineKeyboardButton("🚫  Disable",     callback_data="autodel|off")],
+            [InlineKeyboardButton("⬅️  Back",        callback_data="gset|main")],
         ])
-        await safe_edit(query.message, caption="<b>⏳ Auto Delete</b>",
+        await safe_edit(query.message,
+                        caption="<b>⏱  Auto Delete</b>\n<b>━━━━━━━━━━━━━━━━━━━━━</b>",
                         reply_markup=keyboard)
 
     elif action == "set":
@@ -485,7 +495,7 @@ async def autodel_action_router(_, query):
         await set_global_setting(KEY, 0)
         await safe_edit(query.message, caption="<b>Auto delete disabled.</b>",
                         reply_markup=InlineKeyboardMarkup(
-                            [[InlineKeyboardButton("↩  Back", callback_data="autodel|autodel")]]))
+                            [[InlineKeyboardButton("⬅️  Back", callback_data="autodel|autodel")]]))
 
     await query.answer()
 
@@ -496,11 +506,12 @@ async def filedel_action_router(_, query):
 
     if action == "filedel":
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✎  Set Seconds", callback_data="filedel|set")],
-            [InlineKeyboardButton("⊘  Disable",     callback_data="filedel|off")],
-            [InlineKeyboardButton("↩  Back",        callback_data="gset|main")],
+            [InlineKeyboardButton("⏱  Set Delay",   callback_data="filedel|set")],
+            [InlineKeyboardButton("🚫  Disable",     callback_data="filedel|off")],
+            [InlineKeyboardButton("⬅️  Back",        callback_data="gset|main")],
         ])
-        await safe_edit(query.message, caption="<b>📦 File Auto Delete</b>",
+        await safe_edit(query.message,
+                        caption="<b>🗂  File Auto Delete</b>\n<b>━━━━━━━━━━━━━━━━━━━━━</b>",
                         reply_markup=keyboard)
 
     elif action == "set":
@@ -516,7 +527,7 @@ async def filedel_action_router(_, query):
         await set_global_setting(KEY, 0)
         await safe_edit(query.message, caption="<b>File auto delete disabled.</b>",
                         reply_markup=InlineKeyboardMarkup(
-                            [[InlineKeyboardButton("↩  Back", callback_data="filedel|filedel")]]))
+                            [[InlineKeyboardButton("⬅️  Back", callback_data="filedel|filedel")]]))
 
     await query.answer()
 
@@ -667,7 +678,7 @@ async def admin_input_handler(bot, message: Message):
     finally:
         admin_temp.pop(uid, None)
 
-    back_kb     = InlineKeyboardMarkup([[InlineKeyboardButton("↩  Back", callback_data=back)]])
+    back_kb     = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️  Back", callback_data=back)]])
     result_text = success_text if success_text else error_text
     await safe_edit(bot_msg, caption=result_text, reply_markup=back_kb)
 
@@ -709,18 +720,19 @@ async def _poster_menu(query: CallbackQuery):
     e_status  = "✅ ON" if enabled else "❌ OFF"
     o_status  = "🌄 Landscape" if landscape else "🖼 Portrait"
     keyboard  = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"{'❌ Disable' if enabled else '✅ Enable'} Poster",
+        [InlineKeyboardButton(f"{'🔴  Disable' if enabled else '🟢  Enable'} Poster",
              callback_data="postertog|toggle_enable")],
-        [InlineKeyboardButton("▣  Portrait",  callback_data="postertog|portrait"),
-         InlineKeyboardButton("▤  Landscape", callback_data="postertog|landscape")],
-        [InlineKeyboardButton("↩  Back",      callback_data="gset|main")],
+        [InlineKeyboardButton("🖼  Portrait",  callback_data="postertog|portrait"),
+         InlineKeyboardButton("🌄  Landscape", callback_data="postertog|landscape")],
+        [InlineKeyboardButton("⬅️  Back",      callback_data="gset|main")],
     ])
     await safe_edit(
         query.message,
         caption=(
-            f"<b>🖼 Poster Settings</b>\n\n"
-            f"Status      : {e_status}\n"
-            f"Orientation : {o_status}"
+            f"<b>🖼  Poster Settings</b>\n"
+            f"<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+            f"Status       {e_status}\n"
+            f"Orientation  {o_status}"
         ),
         reply_markup=keyboard,
     )
