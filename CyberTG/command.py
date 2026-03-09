@@ -21,7 +21,6 @@ from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
-from utils.cyber_font import BTN, UI
 from config import (
     logger,
     ADMIN_USERS,
@@ -146,21 +145,21 @@ def register_command_handlers(cyber: Client):
 
         bot       = await cyber.get_me()
         user_name = message.from_user.first_name
-        lets_dive = UI("Let's dive into entertainment 🌙")
+        lets_dive = "Let's dive into entertainment 🌙"
 
         START_TEXT = (
-            f"<b>{UI(f'Hey {user_name}!')}</b>\n\n"
-            f"<b>{UI(f'Welcome to {bot.first_name}')}</b>\n\n"
-            f"{UI('Your private cinema inside Telegram 🎬')}\n"
-            f"{UI('Send any series name to begin.')}\n\n"
+            f"<b>{f'Hey {user_name}!'}</b>\n\n"
+            f"<b>{f'Welcome to {bot.first_name}'}</b>\n\n"
+            f"{'Your private cinema inside Telegram 🎬'}\n"
+            f"{'Send any series name to begin.'}\n\n"
             f"<blockquote>{lets_dive}</blockquote>"
         )
 
         keyboard = InlineKeyboardMarkup([
-            [BTN("▶  ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ", switch_inline_query_current_chat="")],
-            [BTN("⚡  ʜᴇʟᴘ",  callback_data="help|menu"),
-             BTN("✦  ᴀʙᴏᴜᴛ", callback_data="about|menu")],
-            [BTN("◉  sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ", url="https://t.me/TomxSupport")],
+            [InlineKeyboardButton("▶  ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ", switch_inline_query_current_chat="")],
+            [InlineKeyboardButton("⚡  ʜᴇʟᴘ",  callback_data="help|menu"),
+             InlineKeyboardButton("✦  ᴀʙᴏᴜᴛ", callback_data="about|menu")],
+            [InlineKeyboardButton("◉  sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ", url="https://t.me/TomxSupport")],
         ])
 
         await message.reply_photo(
@@ -274,7 +273,7 @@ def register_command_handlers(cyber: Client):
         )
 
         keyboard = InlineKeyboardMarkup([
-            [BTN("↩  Back", callback_data="gset|main")]
+            [InlineKeyboardButton("↩  Back", callback_data="gset|main")]
         ])
         await wait.edit_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
 
@@ -303,14 +302,14 @@ def register_command_handlers(cyber: Client):
 
         nav = []
         if page > 0:
-            nav.append(BTN("◀ Prev", callback_data=f"serieslist|{page-1}"))
-        nav.append(BTN(f"{page+1}/{total_pages}", callback_data="noop"))
+            nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"serieslist|{page-1}"))
+        nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
         if page < total_pages - 1:
-            nav.append(BTN("Next ▶", callback_data=f"serieslist|{page+1}"))
+            nav.append(InlineKeyboardButton("Next ▶", callback_data=f"serieslist|{page+1}"))
 
         keyboard = InlineKeyboardMarkup([
             nav,
-            [BTN("📥 Export Full List", callback_data="serieslist|export")],
+            [InlineKeyboardButton("📥 Export Full List", callback_data="serieslist|export")],
         ])
 
         if send_new:
@@ -553,7 +552,7 @@ def register_command_handlers(cyber: Client):
             await q.message.edit_text(
                 "✅ <b>All files deleted successfully.</b>",
                 parse_mode=enums.ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([[BTN("↩  Back", callback_data="gset|main")]]),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩  Back", callback_data="gset|main")]]),
             )
         except Exception:
             pass
@@ -618,8 +617,8 @@ def register_command_handlers(cyber: Client):
     @cyber.on_message(filters.command("adminsetting") & filters.user(ADMIN_USERS))
     async def admin_settings(_, message: Message):
         keyboard = InlineKeyboardMarkup([
-            [BTN("⚙️ Global Settings", callback_data="gset|main")],
-            [BTN("❌ Close",           callback_data="close|menu")],
+            [InlineKeyboardButton("⚙️ Global Settings", callback_data="gset|main")],
+            [InlineKeyboardButton("❌ Close",           callback_data="close|menu")],
         ])
         await message.reply(
             "<b>🛠 Admin Panel</b>",
