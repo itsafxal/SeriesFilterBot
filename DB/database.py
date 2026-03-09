@@ -24,6 +24,9 @@ CODEC FIX (this version):
 
 import asyncio
 import random
+
+# Alternating batch counter for "both" target — odd→DB1, even→DB2
+_batch_counter: int = 0
 import re
 from pymongo import MongoClient, TEXT
 from config import (
@@ -479,23 +482,23 @@ async def save_file_to_db(file_doc: dict, target: str = "both"):
     """
     Inserts/updates a single file document.
     target: "db1" | "db2" | "both" | "mongo"
-    "mongo" = randomly pick one of DB1 or DB2 (no dual-write).
+    "both" and "mongo" = randomly pick one of DB1 or DB2 (no dual-write).
     """
     def _sync():
         nonlocal target
-        _target = target
-        if _target == "mongo":
-            _target = random.choice(["db1", "db2"])
+        global _batch_counter
+        if target in ("both", "mongo"):
+            _batch_counter += 1
+            _target = "db1" if _batch_counter % 2 == 1 else "db2"
+        else:
+            _target = target
 
         mongo_ok = False
 
-        if _target in ("db1", "both"):
-            ok = _mongo_upsert(files_collection_1, file_doc)
-            mongo_ok = mongo_ok or ok
-
-        if _target in ("db2", "both"):
-            ok = _mongo_upsert(files_collection_2, file_doc)
-            mongo_ok = mongo_ok or ok
+        if _target == "db1":
+            mongo_ok = _mongo_upsert(files_collection_1, file_doc)
+        elif _target == "db2":
+            mongo_ok = _mongo_upsert(files_collection_2, file_doc)
 
         sql_ok = save_file_to_sql_sync(file_doc, logger)
 
@@ -522,13 +525,9 @@ async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
     if not docs:
         return 0
 
-    # Resolve "mongo" → random single DB before entering thread
-    _target = random.choice(["db1", "db2"]) if target == "mongo" else target
-
     def _sync():
         from pymongo import UpdateOne
 
-        # ── MongoDB bulk_write ────────────────────────────────
         def _build_ops(docs_list):
             ops = []
             for doc in docs_list:
@@ -549,17 +548,30 @@ async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
                 ))
             return ops
 
-        ops = _build_ops(docs)
-
-        if _target in ("db1", "both"):
+        if target in ("both", "mongo"):
+            # Alternate batches: odd counter → DB1, even counter → DB2
+            global _batch_counter
+            _batch_counter += 1
+            if _batch_counter % 2 == 1:
+                try:
+                    files_collection_1.bulk_write(_build_ops(docs), ordered=False)
+                    logger.debug(f"[BATCH] batch #{_batch_counter} → DB1 ({len(docs)} docs)")
+                except Exception as e:
+                    logger.error(f"[BATCH] Mongo bulk_write DB1 error: {e}")
+            else:
+                try:
+                    files_collection_2.bulk_write(_build_ops(docs), ordered=False)
+                    logger.debug(f"[BATCH] batch #{_batch_counter} → DB2 ({len(docs)} docs)")
+                except Exception as e:
+                    logger.error(f"[BATCH] Mongo bulk_write DB2 error: {e}")
+        elif target == "db1":
             try:
-                files_collection_1.bulk_write(ops, ordered=False)
+                files_collection_1.bulk_write(_build_ops(docs), ordered=False)
             except Exception as e:
                 logger.error(f"[BATCH] Mongo bulk_write DB1 error: {e}")
-
-        if _target in ("db2", "both"):
+        elif target == "db2":
             try:
-                files_collection_2.bulk_write(ops, ordered=False)
+                files_collection_2.bulk_write(_build_ops(docs), ordered=False)
             except Exception as e:
                 logger.error(f"[BATCH] Mongo bulk_write DB2 error: {e}")
 
