@@ -125,33 +125,35 @@ def build_caption(series, year, genre, rating,
                   step="season"):
 
     lines = [
-        f"<b>○ {'Title'}: {series}</b>",
-        f"<b>○ {'Released'}: {year or 'N/A'}</b>",
-        f"<b>○ {'Genre'}: {genre or 'N/A'}</b>",
-        f"<b>○ {'Rating'}: {rating or 'N/A'}</b>",
+        f"🎬 <b>{series}</b>",
+        f"<b>━━━━━━━━━━━━━━━━━━━━━</b>",
+        "",
+        f"📅  <b>Year</b>     <code>{year or 'N/A'}</code>",
+        f"🎭  <b>Genre</b>    <code>{genre or 'N/A'}</code>",
+        f"⭐  <b>Rating</b>   <code>{rating or 'N/A'}</code>",
         "",
     ]
 
     if step == "season":
         if seasons:
-            txt = ", ".join(f"S{s}" for s in seasons)
-            lines.append(f"<b>○ {'Seasons'}: {txt}</b>")
+            txt = "  ·  ".join(f"S{s:02d}" for s in seasons)
+            lines.append(f"📂  <b>Seasons</b>  <code>{txt}</code>")
         lines.append("")
-        lines.append(f"<b>{'Select Season'}</b>")
+        lines.append("Select a <b>Season</b> to continue ↓")
 
     elif step == "language":
-        txt = ", ".join(languages)
-        lines.append(f"<b>○ {'Languages'}: {txt}</b>")
+        txt = "  ·  ".join(languages)
+        lines.append(f"🌐  <b>Available</b>  <code>{txt}</code>")
         lines.append("")
-        lines.append(f"<b>{'Select Language'}</b>")
+        lines.append("Select a <b>Language</b> to continue ↓")
 
     elif step == "quality":
-        lt = ", ".join(languages)
-        qt = ", ".join(qualities)
-        lines.append(f"<b>○ {'Language'}: {lt}</b>")
-        lines.append(f"<b>○ {'Quality'}: {qt}</b>")
+        lt = "  ·  ".join(languages)
+        qt = "  ·  ".join(qualities)
+        lines.append(f"🌐  <b>Language</b>   <code>{lt}</code>")
+        lines.append(f"🎞  <b>Quality</b>    <code>{qt}</code>")
         lines.append("")
-        lines.append(f"<b>{'Select Quality'}</b>")
+        lines.append("Select a <b>Quality</b> to continue ↓")
 
     return "\n".join(lines)
 
@@ -195,10 +197,10 @@ def build_season_pages(seasons, uid, series, page=0):
     if total_pages > 1:
         nav = []
         if page > 0:
-            nav.append(InlineKeyboardButton("❮  Prev", callback_data=f"spg|{uid}|{series}|{page-1}"))
+            nav.append(InlineKeyboardButton("◀  Prev", callback_data=f"spg|{uid}|{series}|{page-1}"))
         nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
         if page < total_pages - 1:
-            nav.append(InlineKeyboardButton("Next  ❯", callback_data=f"spg|{uid}|{series}|{page+1}"))
+            nav.append(InlineKeyboardButton("Next  ▶", callback_data=f"spg|{uid}|{series}|{page+1}"))
         rows.append(nav)
 
     return InlineKeyboardMarkup(rows)
@@ -320,16 +322,18 @@ def register_filters(cyber: Client):
         # ── MULTIPLE MATCHES ──────────────────────────────────
         if suggestions:
             lines = [
-                f"<b>{'I Found The Following Series Matched To Your Query'}</b>",
-                f"<b>({m.text.strip()})</b>",
+                f"🔍 <b>Did you mean...</b>",
+                f"<b>━━━━━━━━━━━━━━━━━━━━━</b>",
                 "",
-                f"<b>{'Matched Series'}</b>"
+                f"Found <b>{len(suggestions)}</b> titles matching "
+                f"<code>{m.text.strip()}</code>",
+                "",
+                "Tap a title to select it ↓"
             ]
             buttons = []
             for s in suggestions:
-                lines.append(f"○ {s}")
-                buttons.append([InlineKeyboardButton(s, callback_data=f"sug|{s}")])
-            buttons.append([InlineKeyboardButton("✕  Close", callback_data="close_spell")])
+                buttons.append([InlineKeyboardButton(f"🎬  {s}", callback_data=f"sug|{s}")])
+            buttons.append([InlineKeyboardButton("✖️  Close", callback_data="close_spell")])
 
             msg = await m.reply_photo(
                 SPELL_IMG,
@@ -342,7 +346,13 @@ def register_filters(cyber: Client):
             return
 
         # ── NOTHING FOUND ─────────────────────────────────────
-        msg = await m.reply_text("No Series Found. Please Try Another Title.")
+        msg = await m.reply_text(
+            "🔍 <b>No Results Found</b>\n"
+            "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+            f"No series matched <code>{m.text.strip()}</code>\n\n"
+            "<i>Try a different title or check your spelling.</i>",
+            parse_mode=enums.ParseMode.HTML,
+        )
         if AUTO_DELETE_DELAY > 0:
             delete_message_later(cyber, msg.chat.id, msg.id, AUTO_DELETE_DELAY)
 
@@ -410,7 +420,7 @@ def register_filters(cyber: Client):
         poster_r = await _get_poster(series)
         poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
         # Back → Season select (page 0)
-        back = InlineKeyboardButton("↩  Back", callback_data=f"bk_season|{uid}|{series}")
+        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{series}")
         kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
         await safe_edit(
             q.message.edit_caption(
@@ -435,7 +445,7 @@ def register_filters(cyber: Client):
         qs       = [qc[0] for qc in qc_pairs]   # plain quality list for caption
         poster_r = await _get_poster(series)
         poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
-        back = InlineKeyboardButton("↩  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
+        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
 
         # Build buttons: label shows codec + quality (or just quality if no codec found)
         rows, row = [], []
@@ -477,12 +487,16 @@ def register_filters(cyber: Client):
         link = f"https://t.me/{bot.username}?start={payload}"
 
         # Back → Quality select for this season+language
-        back = InlineKeyboardButton("↩  Back", callback_data=f"bk_qual|{uid}|{series}|{season}|{lang}")
+        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_qual|{uid}|{series}|{season}|{lang}")
         await safe_edit(
             q.message.edit_caption(
-                "Your Files Are Ready. Tap Below To Download.",
+                "✅ <b>Files Ready</b>\n"
+                "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+                "Your files are ready to download.\n"
+                "<i>Tap the button below to get started.</i>",
+                parse_mode=enums.ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬇  Download Files", url=link)],
+                    [InlineKeyboardButton("⬇️  Download Files", url=link)],
                     [back],
                 ])
             ),
@@ -521,7 +535,7 @@ def register_filters(cyber: Client):
         langs = await get_unique_languages_by_season(series, int(season))
         poster_r = await _get_poster(series)
         poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
-        back = InlineKeyboardButton("↩  Back", callback_data=f"bk_season|{uid}|{series}")
+        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{series}")
         kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
         await safe_edit(
             q.message.edit_caption(
@@ -542,7 +556,7 @@ def register_filters(cyber: Client):
         qs       = [qc[0] for qc in qc_pairs]
         poster_r = await _get_poster(series)
         poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
-        back = InlineKeyboardButton("↩  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
+        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
         rows, row = [], []
         for quality, codec in qc_pairs:
             label = _quality_label(quality, codec)
