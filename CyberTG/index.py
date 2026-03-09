@@ -43,12 +43,12 @@ from utils.cyber_filter import extract_links
 # ---------------------------------------------------------------
 
 FETCH_BATCH        = 200   # IDs per get_messages() call (Telegram max)
-CONCURRENT_FETCHES = 4     # parallel calls per round (reduced on FloodWait)
-SAVE_BATCH_SIZE    = 500   # parsed docs buffer before DB flush
-CHECKPOINT_EVERY   = 20    # checkpoint every N rounds
+CONCURRENT_FETCHES = 3     # 3 is safest high-speed value (4 often triggers FloodWait)
+SAVE_BATCH_SIZE    = 800   # parsed docs buffer before DB flush
+CHECKPOINT_EVERY   = 25    # checkpoint every N rounds
 PROGRESS_EVERY     = 15    # seconds between Telegram message edits
-STAGGER_DELAY      = 0.4   # seconds between each concurrent call in a round
-ROUND_COOLDOWN     = 0.3   # seconds to sleep after every round (Telegram rate relief)
+STAGGER_DELAY      = 0.6   # delay between each concurrent request (prevents burst rate limit)
+ROUND_COOLDOWN     = 0.6   # sleep after each round (reduces FloodWait probability)
 MIN_CONCURRENT     = 1     # minimum concurrency after repeated FloodWaits
 
 INDEX_SKIP_KEY   = "INDEX_SKIP_ID"
@@ -336,6 +336,12 @@ async def index_files_task(
 
                 for msg in msgs:
                     checked += 1
+                    if not msg or msg.empty:
+                        skipped += 1
+                        continue
+                    if not (msg.document or msg.video or msg.audio):
+                        skipped += 1
+                        continue
                     doc = await _proc(msg)
                     if doc:
                         buf.append(doc)
