@@ -48,7 +48,7 @@ from pyrogram.types import InlineKeyboardMarkup, ChatJoinRequest, ChatMemberUpda
 from pyrogram.enums import ChatMemberStatus
 from pyrogram.errors import FloodWait
 
-from utils.cyber_font import BTN, UI
+from pyrogram.types import InlineKeyboardButton
 from DB.database import get_global_setting, set_global_setting, mongo_client
 from utils.cyber_delete import delete_message_later
 
@@ -405,28 +405,28 @@ def build_fsub_keyboard(
 
     if statuses is None:
         raw_slots = [
-            (getattr(m, "FSUB_LINK1", None), getattr(m, "FSUB_MODE1", "request"), "CHANNEL 1"),
-            (getattr(m, "FSUB_LINK2", None), getattr(m, "FSUB_MODE2", "request"), "CHANNEL 2"),
+            (getattr(m, "FSUB_LINK1", None), getattr(m, "FSUB_MODE1", "request"), 1),
+            (getattr(m, "FSUB_LINK2", None), getattr(m, "FSUB_MODE2", "request"), 2),
         ]
-        for link, mode, label in raw_slots:
+        for link, mode, slot in raw_slots:
             if not link:
                 continue
-            emoji  = "📢" if mode == "request" else "🔗"
-            action = "REQUEST TO JOIN" if mode == "request" else "JOIN"
-            rows.append([BTN(f"⊕  {label}", url=link)])
+            icon  = "📢" if mode == "request" else "🔗"
+            label = "Request to Join" if mode == "request" else "Join Channel"
+            rows.append([InlineKeyboardButton(f"{icon}  Channel {slot}  —  {label}", url=link)])
         return InlineKeyboardMarkup(rows)
 
-    # Per-status view
+    # Per-status view — only show unsatisfied slots
     for s in statuses:
         if _slot_passes(s):
             continue
-        link  = s["link"]
-        mode  = s["mode"]
-        label = f"CHANNEL {s['slot']}"
+        link = s["link"]
+        mode = s["mode"]
+        slot = s["slot"]
         if link:
-            emoji  = "📢" if mode == "request" else "🔗"
-            action = "REQUEST TO JOIN" if mode == "request" else "JOIN"
-            rows.append([BTN(f"⊕  {label}", url=link)])
+            icon  = "📢" if mode == "request" else "🔗"
+            label = "Request to Join" if mode == "request" else "Join Channel"
+            rows.append([InlineKeyboardButton(f"{icon}  Channel {slot}  —  {label}", url=link)])
 
     return InlineKeyboardMarkup(rows)
 
@@ -434,22 +434,30 @@ def build_fsub_keyboard(
 def fsub_text(statuses: list[dict] | None = None) -> str:
     if not statuses:
         return (
-            "⚠️ <b>Access Restricted</b>\n\n"
-            "Please join the required channel(s) to get your files.\n"
-            "After joining, your files will be sent automatically."
+            "🔒 <b>Members Only</b>\n"
+            "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+            "Join the required channel(s) below to access your files.\n\n"
+            "<i>Your files will be delivered automatically after joining.</i>"
         )
 
     pending   = [s for s in statuses if not _slot_passes(s)]
     satisfied = [s for s in statuses if _slot_passes(s)]
 
-    lines = ["⚠️ <b>Access Restricted</b>\n"]
+    lines = [
+        "🔒 <b>Members Only</b>",
+        "<b>━━━━━━━━━━━━━━━━━━━━━</b>",
+        "",
+    ]
 
     if pending:
-        lines.append("📢 Please join the channel(s) below to continue.")
-        lines.append("Your files will be sent <b>automatically</b> after joining.")
+        count = len(pending)
+        lines.append(f"Join <b>{count}</b> more channel{'s' if count > 1 else ''} to unlock your files.")
+        lines.append("")
+        lines.append("<i>Files will be sent automatically once you're done.</i>")
 
     if satisfied:
-        lines.append(f"\n✅ {len(satisfied)} channel(s) already done.")
+        lines.append("")
+        lines.append(f"✅  <b>{len(satisfied)}</b> channel{'s' if len(satisfied) > 1 else ''} completed.")
 
     return "\n".join(lines)
 
@@ -491,8 +499,11 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
             release_delivery_lock(uid)
             await cyber.send_message(
                 uid,
-                "⚠️ This link has expired.\n"
-                "Please search for the series again to get a new link."
+                "⏳ <b>Link Expired</b>\n"
+                "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+                "This download link has expired.\n"
+                "<i>Please search for the series again to get a fresh link.</i>",
+                parse_mode="html",
             )
             return False
 
@@ -500,7 +511,13 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
 
         if int(owner) != uid:
             release_delivery_lock(uid)
-            await cyber.send_message(uid, "⚠️ This link is not for you.")
+            await cyber.send_message(
+            uid,
+            "⛔ <b>Access Denied</b>\n"
+            "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+            "<i>This link belongs to another user.</i>",
+            parse_mode="html",
+        )
             return False
 
         from CyberTG.files import set_session, deliver_files_direct
