@@ -50,6 +50,9 @@ from DB.database import (
     set_poster_landscape,
     get_caption_clean_keywords,
     set_caption_clean_keywords,
+    get_userbot_string,
+    set_userbot_string,
+    delete_userbot_string,
     sql_db_lock,
 )
 from utils.cyber_delete import delete_message_later
@@ -808,3 +811,138 @@ def register_command_handlers(cyber: Client):
             ),
             parse_mode=enums.ParseMode.HTML,
         )
+
+
+    # ──────────────────────────────────────────────────────────
+    # /setuserbot  — save a Pyrogram string session for indexing
+    # ──────────────────────────────────────────────────────────
+    @cyber.on_message(filters.command("setuserbot") & filters.private & filters.user(ADMIN_USERS))
+    async def setuserbot_cmd(bot, message: Message):
+        """
+        Usage:  /setuserbot <STRING_SESSION>
+        Or:     send the command alone → bot asks you to reply with the string.
+
+        Generates a string session with:
+            python -c "from pyrogram import Client; Client('s', api_id=..., api_hash='...').run()"
+        then copy the printed session string.
+        """
+        parts = message.text.split(maxsplit=1)
+
+        if len(parts) < 2:
+            return await message.reply_text(
+                "📋 <b>Set Userbot String Session</b>\n\n"
+                "Usage:\n"
+                "<code>/setuserbot YOUR_STRING_SESSION</code>\n\n"
+                "ℹ️ Generate a session string with:\n"
+                "<code>python -c \"from pyrogram import Client; "
+                "Client('s', api_id=API_ID, api_hash='API_HASH').run()\"</code>\n\n"
+                "Once set, all index operations will use the userbot account "
+                "instead of the bot — avoiding FloodWait limits.",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        string = parts[1].strip()
+        if len(string) < 50:
+            return await message.reply_text(
+                "❌ That doesn't look like a valid string session.\n"
+                "It should be a long base64-like string (usually 350+ characters).",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        # Disconnect any existing userbot so the new one is picked up fresh
+        try:
+            from CyberTG.index import stop_userbot_client
+            await stop_userbot_client()
+        except Exception:
+            pass
+
+        await set_userbot_string(string)
+
+        # Try connecting immediately to validate
+        try:
+            from CyberTG.index import get_userbot_client
+            client = await get_userbot_client()
+            if client:
+                me = await client.get_me()
+                await message.reply_text(
+                    f"✅ <b>Userbot connected!</b>\n\n"
+                    f"👤 Account : <b>{me.first_name}</b>\n"
+                    f"📱 Username: @{me.username or 'N/A'}\n"
+                    f"🆔 ID      : <code>{me.id}</code>\n\n"
+                    "Future index operations will use this account.",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            else:
+                await message.reply_text(
+                    "⚠️ String saved but could not connect the userbot right now.\n"
+                    "It will be retried on the next index run.",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+        except Exception as e:
+            await message.reply_text(
+                f"⚠️ String saved but validation failed: <code>{e}</code>\n"
+                "Check the string and try again, or it will be retried on next index.",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+    # ──────────────────────────────────────────────────────────
+    # /deluserbot  — remove the saved string session
+    # ──────────────────────────────────────────────────────────
+    @cyber.on_message(filters.command("deluserbot") & filters.private & filters.user(ADMIN_USERS))
+    async def deluserbot_cmd(bot, message: Message):
+        """Remove the saved string session. Indexing reverts to the bot account."""
+        # Disconnect live client
+        try:
+            from CyberTG.index import stop_userbot_client
+            await stop_userbot_client()
+        except Exception:
+            pass
+
+        await delete_userbot_string()
+        await message.reply_text(
+            "🗑 <b>Userbot session removed.</b>\n\n"
+            "Indexing will now use the <b>bot account</b> again.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    # ──────────────────────────────────────────────────────────
+    # /userbotinfo  — show current userbot status
+    # ──────────────────────────────────────────────────────────
+    @cyber.on_message(filters.command("userbotinfo") & filters.private & filters.user(ADMIN_USERS))
+    async def userbotinfo_cmd(bot, message: Message):
+        string = await get_userbot_string()
+        if not string:
+            return await message.reply_text(
+                "ℹ️ <b>No userbot configured.</b>\n\n"
+                "Use /setuserbot to add a string session.",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        # Try to get live status
+        try:
+            from CyberTG.index import get_userbot_client
+            client = await get_userbot_client()
+            if client:
+                me = await client.get_me()
+                status_text = (
+                    f"✅ <b>Userbot Active</b>\n\n"
+                    f"👤 Name    : <b>{me.first_name}</b>\n"
+                    f"📱 Username: @{me.username or 'N/A'}\n"
+                    f"🆔 ID      : <code>{me.id}</code>\n"
+                    f"🔑 String  : <code>{string[:12]}...{string[-6:]}</code>\n\n"
+                    "All index operations use this account."
+                )
+            else:
+                status_text = (
+                    f"⚠️ <b>Userbot string is saved but client is not connected.</b>\n\n"
+                    f"🔑 String : <code>{string[:12]}...{string[-6:]}</code>\n\n"
+                    "It will be retried on the next index run.\n"
+                    "Use /setuserbot to replace the string or /deluserbot to remove it."
+                )
+        except Exception as e:
+            status_text = (
+                f"⚠️ Userbot string saved, but connection check failed: <code>{e}</code>\n"
+                f"🔑 String : <code>{string[:12]}...{string[-6:]}</code>"
+            )
+
+        await message.reply_text(status_text, parse_mode=enums.ParseMode.HTML)
