@@ -23,6 +23,7 @@ CODEC FIX (this version):
 """
 
 import asyncio
+import random
 import re
 from pymongo import MongoClient, TEXT
 from config import (
@@ -477,16 +478,22 @@ def _mongo_upsert(col, file_doc: dict):
 async def save_file_to_db(file_doc: dict, target: str = "both"):
     """
     Inserts/updates a single file document.
-    target: "db1" | "db2" | "both"
+    target: "db1" | "db2" | "both" | "mongo"
+    "mongo" = randomly pick one of DB1 or DB2 (no dual-write).
     """
     def _sync():
+        nonlocal target
+        _target = target
+        if _target == "mongo":
+            _target = random.choice(["db1", "db2"])
+
         mongo_ok = False
 
-        if target in ("db1", "both"):
+        if _target in ("db1", "both"):
             ok = _mongo_upsert(files_collection_1, file_doc)
             mongo_ok = mongo_ok or ok
 
-        if target in ("db2", "both"):
+        if _target in ("db2", "both"):
             ok = _mongo_upsert(files_collection_2, file_doc)
             mongo_ok = mongo_ok or ok
 
@@ -507,11 +514,16 @@ async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
 
     Mongo:  one bulk_write per DB (single round-trip)
     SQLite: one executemany transaction (single round-trip)
+    target: "db1" | "db2" | "both" | "mongo"
+    "mongo" = randomly pick one of DB1 or DB2 (no dual-write).
 
     Returns the number of docs saved/updated.
     """
     if not docs:
         return 0
+
+    # Resolve "mongo" → random single DB before entering thread
+    _target = random.choice(["db1", "db2"]) if target == "mongo" else target
 
     def _sync():
         from pymongo import UpdateOne
@@ -539,13 +551,13 @@ async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
 
         ops = _build_ops(docs)
 
-        if target in ("db1", "both"):
+        if _target in ("db1", "both"):
             try:
                 files_collection_1.bulk_write(ops, ordered=False)
             except Exception as e:
                 logger.error(f"[BATCH] Mongo bulk_write DB1 error: {e}")
 
-        if target in ("db2", "both"):
+        if _target in ("db2", "both"):
             try:
                 files_collection_2.bulk_write(ops, ordered=False)
             except Exception as e:
