@@ -25,14 +25,18 @@ from utils.cyber_filter import extract_links
 # TUNING  (increase CONCURRENT_FETCHES carefully if needed)
 # ---------------------------------------------------------------
 
-FETCH_BATCH        = 200   # IDs per get_messages() call (Telegram max)
-CONCURRENT_FETCHES = 3     # 3 is safest high-speed value (4 often triggers FloodWait)
+FETCH_BATCH        = 100   # IDs per get_messages() call — halved to cut per-call Telegram cost
+CONCURRENT_FETCHES = 2     # safer default; sequential mode makes this the max window count
 SAVE_BATCH_SIZE    = 800   # parsed docs buffer before DB flush
 CHECKPOINT_EVERY   = 25    # checkpoint every N rounds
 PROGRESS_EVERY     = 15    # seconds between Telegram message edits
-STAGGER_DELAY      = 0.6   # delay between each concurrent request (prevents burst rate limit)
-ROUND_COOLDOWN     = 0.6   # sleep after each round (reduces FloodWait probability)
+STAGGER_DELAY      = 1.5   # inter-call delay in sequential fetch mode
+ROUND_COOLDOWN     = 1.0   # base sleep after each round — multiplied by active_conc
 MIN_CONCURRENT     = 1     # minimum concurrency after repeated FloodWaits
+
+# Token-bucket: minimum wall-clock gap between get_messages() calls
+_CALL_INTERVAL     = 1.2   # seconds; enforced inside _fetch_one
+_last_call_time: float = 0.0
 
 INDEX_SKIP_KEY   = "INDEX_SKIP_ID"
 INDEX_STATUS_KEY = "CURRENT_INDEX_TASK"
@@ -134,6 +138,13 @@ def _progress(*, cid, start_id, last_id, checked, saved, skipped, dup,
 # ---------------------------------------------------------------
 
 async def _fetch_one(bot: Client, chat_id: int, id_window: list, fw_count: list) -> list:
+    global _last_call_time
+    # Token-bucket: enforce minimum spacing between get_messages() calls
+    gap = time.monotonic() - _last_call_time
+    if gap < _CALL_INTERVAL:
+        await asyncio.sleep(_CALL_INTERVAL - gap)
+    _last_call_time = time.monotonic()
+
     while True:
         try:
             msgs = await bot.get_messages(chat_id, id_window)
@@ -161,20 +172,17 @@ async def _fetch_round(
     stagger: float = STAGGER_DELAY,
 ) -> list:
     """
-    Fire each window fetch with a small stagger delay between launches.
-    This avoids hammering Telegram with N simultaneous identical requests
-    which reliably triggers FloodWait on the first round.
+    Fetch each window sequentially with a fixed inter-call delay.
+    Sequential > concurrent-with-stagger: all tasks were still in-flight
+    simultaneously with gather(), letting retries collide at the same moment.
+    The token-bucket in _fetch_one adds a hard floor on top of this stagger.
     """
-    tasks = []
+    flat = []
     for i, w in enumerate(windows):
         if i > 0 and stagger > 0:
             await asyncio.sleep(stagger)
-        tasks.append(asyncio.create_task(_fetch_one(bot, chat_id, w, fw_count)))
-
-    results = await asyncio.gather(*tasks)
-    flat = []
-    for batch in results:
-        flat.extend(batch)
+        result = await _fetch_one(bot, chat_id, w, fw_count)
+        flat.extend(result)
     return flat
 
 
@@ -307,15 +315,17 @@ async def index_files_task(
                             f"reducing concurrency to {active_conc[0]}"
                         )
                 else:
-                    if fw_consecutive[0] > 0:
-                        fw_consecutive[0] = 0
+                    # Gradual decay: one lucky clean round no longer zeroes the counter,
+                    # preventing premature concurrency recovery between back-to-back floods.
+                    fw_consecutive[0] = max(fw_consecutive[0] - 1, 0)
                     # Slowly recover concurrency every 10 clean rounds
                     if calls % (10 * active_conc[0]) == 0 and active_conc[0] < CONCURRENT_FETCHES:
                         active_conc[0] = min(active_conc[0] + 1, CONCURRENT_FETCHES)
                         logger.info(f"[INDEX] Recovering concurrency → {active_conc[0]}")
 
-                # Inter-round cooldown — gives Telegram breathing room
-                await asyncio.sleep(ROUND_COOLDOWN)
+                # Inter-round cooldown scales with active concurrency:
+                # at conc=2 → 2.0s, at conc=1 → 1.0s, far safer than a fixed 0.6s
+                await asyncio.sleep(ROUND_COOLDOWN * active_conc[0])
 
                 for msg in msgs:
                     checked += 1
