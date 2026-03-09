@@ -132,24 +132,13 @@ _START_STYLES = [_start_0, _start_1]
 def _end_0(season, total):
     L    = "\u25c4"
     R    = "\u25ba"
-    STAR = "\u2605"
     line1 = f"{L}  THE END  {R}"
-    line2 = f"Season {season:02d}  \u00b7  {total} Files"
-    line3 = f"{STAR}  CyberBot  {STAR}"
     img  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    f1   = _fit_font(line1, _BOLD, W - 30, 64)
-    f2   = _fit_font(line2, _REG,  W - 50, 26)
-    f3   = _fit_font(line3, _REG,  W - 60, 20)
+    f1   = _fit_font(line1, _BOLD, W - 30, 72)
     tw1, th1 = _sz(draw, line1, f1)
-    tw2, th2 = _sz(draw, line2, f2)
-    tw3, th3 = _sz(draw, line3, f3)
-    y1 = (H - (th1 + 8 + th2 + 10 + th3)) // 2 - 4
-    y2 = y1 + th1 + 8
-    y3 = y2 + th2 + 10
+    y1 = (H - th1) // 2
     img = _neon(img, line1, (W - tw1) // 2, y1, f1, (255, 255, 255), (0, 160, 255), radius=20)
-    img = _neon(img, line2, (W - tw2) // 2, y2, f2, (200, 240, 255), (0, 200, 255), radius=9)
-    img = _neon(img, line3, (W - tw3) // 2, y3, f3, (180, 240, 255), (0, 180, 255), radius=7)
     return _dark_card(img, tint=(5, 8, 20))
 
 
