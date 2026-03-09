@@ -155,6 +155,10 @@ async def _fetch_one(bot: Client, chat_id: int, id_window: list, fw_count: list)
             logger.warning(f"[BOT] FloodWait {wait}s - retrying")
             # Extra buffer: wait the full required time plus 20% headroom
             await asyncio.sleep(wait * 1.2 + 1)
+            # Reset token-bucket clock after the sleep so the next call in
+            # _fetch_round waits the full _CALL_INTERVAL before firing again,
+            # preventing an immediate back-to-back flood on retry.
+            _last_call_time = time.monotonic()
         except ChannelPrivate:
             logger.error(f"[BOT] Channel {chat_id} is private/inaccessible")
             return []
