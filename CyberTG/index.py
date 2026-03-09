@@ -1,20 +1,3 @@
-"""
-index.py  -  FAST BOT INDEXER  (no session string)
-====================================================
-
-Speed strategy - zero artificial delay, maximum concurrency:
-  * get_messages() accepts up to 200 IDs per call (Telegram hard limit)
-  * CONCURRENT_FETCHES calls fired simultaneously via asyncio.gather()
-  * Default: 4 x 200 = 800 IDs fetched per round in ~1 network RTT
-  * DB flush overlaps with next fetch round (no idle time)
-  * FloodWait auto-retried - in practice bot GetMessages rarely hits it
-  * Checkpoint saved every N rounds so indexing is resumable after crash
-
-Estimated throughput:
-  4 concurrent x 200 IDs x ~2.5 rounds/sec ~= 2,000 IDs/sec
-  A 100k-message channel indexes in ~50 seconds
-"""
-
 import asyncio
 import gc
 import time
