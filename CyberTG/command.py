@@ -145,21 +145,21 @@ def register_command_handlers(cyber: Client):
 
         bot       = await cyber.get_me()
         user_name = message.from_user.first_name
-        lets_dive = "Let's dive into entertainment 🌙"
 
         START_TEXT = (
-            f"<b>{f'Hey {user_name}!'}</b>\n\n"
-            f"<b>{f'Welcome to {bot.first_name}'}</b>\n\n"
-            f"{'Your private cinema inside Telegram 🎬'}\n"
-            f"{'Send any series name to begin.'}\n\n"
-            f"<blockquote>{lets_dive}</blockquote>"
+            f"✦ <b>Welcome, {user_name}</b>\n"
+            f"<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+            f"🎬 <b>{bot.first_name}</b> — Your premium series library,\n"
+            f"right inside Telegram.\n\n"
+            f"<blockquote>Simply type a series name to get started.\n"
+            f"Browse thousands of titles instantly.</blockquote>"
         )
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("▶  ʙʀᴏᴡsᴇ ʟɪʙʀᴀʀʏ", switch_inline_query_current_chat="")],
-            [InlineKeyboardButton("⚡  ʜᴇʟᴘ",  callback_data="help|menu"),
-             InlineKeyboardButton("✦  ᴀʙᴏᴜᴛ", callback_data="about|menu")],
-            [InlineKeyboardButton("◉  sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ", url="https://t.me/TomxSupport")],
+            [InlineKeyboardButton("🔍  Browse Library", switch_inline_query_current_chat="")],
+            [InlineKeyboardButton("📖  Help",    callback_data="help|menu"),
+             InlineKeyboardButton("ℹ️  About",   callback_data="about|menu")],
+            [InlineKeyboardButton("💬  Support", url="https://t.me/TomxSupport")],
         ])
 
         await message.reply_photo(
@@ -259,21 +259,21 @@ def register_command_handlers(cyber: Client):
 
         text = (
             f"<b>📊 Bot Statistics</b>\n"
-            f"{'─' * 28}\n\n"
-            f"👥 <b>Users</b>     : <code>{users:,}</code>\n"
-            f"📦 <b>Files</b>     : <code>{files:,}</code>\n"
-            f"🎬 <b>Series</b>    : <code>{series:,}</code>\n"
-            f"🏘 <b>Groups</b>    : <code>{groups:,}</code>\n\n"
-            f"<b>🗄 MongoDB</b>\n"
-            f"  Config DB  : <code>{cfg_size}</code>\n"
-            f"  File DB1   : <code>{db1_count:,} files · {db1_size}</code>\n"
-            f"  File DB2   : <code>{db2_count:,} files · {db2_size}</code>\n"
-            f"  Total      : <code>{_fmt_mb(total_mongo)}</code>\n\n"
-            f"<b>💾 SQLite</b>     : <code>{sql_size}</code>\n"
+            f"<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+            f"👥  Users       <code>{users:,}</code>\n"
+            f"🎬  Series      <code>{series:,}</code>\n"
+            f"📦  Files       <code>{files:,}</code>\n"
+            f"🏘  Groups      <code>{groups:,}</code>\n\n"
+            f"<b>🗄  Database</b>\n"
+            f"    Config     <code>{cfg_size}</code>\n"
+            f"    DB1        <code>{db1_count:,} files  ·  {db1_size}</code>\n"
+            f"    DB2        <code>{db2_count:,} files  ·  {db2_size}</code>\n"
+            f"    Total      <code>{_fmt_mb(total_mongo)}</code>\n\n"
+            f"<b>💾  SQLite</b>     <code>{sql_size}</code>"
         )
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("↩  Back", callback_data="gset|main")]
+            [InlineKeyboardButton("⬅️  Back", callback_data="gset|main")]
         ])
         await wait.edit_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
 
@@ -511,12 +511,13 @@ def register_command_handlers(cyber: Client):
         db2    = per_db.get("db2", "?")
 
         await m.reply(
-            f"<b>📊 Quick Stats</b>\n\n"
-            f"👥 Users   : <code>{users:,}</code>\n"
-            f"📦 Files   : <code>{files:,}</code>\n"
-            f"🎬 Series  : <code>{series:,}</code>\n\n"
-            f"🗄 DB1     : <code>{db1:,}</code> files\n"
-            f"🗄 DB2     : <code>{db2:,}</code> files",
+            f"<b>📊 Quick Stats</b>\n"
+            f"<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+            f"👥  Users    <code>{users:,}</code>\n"
+            f"🎬  Series   <code>{series:,}</code>\n"
+            f"📦  Files    <code>{files:,}</code>\n\n"
+            f"🗄  DB1      <code>{db1:,}</code> files\n"
+            f"🗄  DB2      <code>{db2:,}</code> files",
             parse_mode=enums.ParseMode.HTML,
         )
 
@@ -528,14 +529,16 @@ def register_command_handlers(cyber: Client):
         files = await get_total_files()
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✅ Yes, Delete All", callback_data="deleteall_confirm"),
-                InlineKeyboardButton("❌ Cancel",          callback_data="deleteall_cancel"),
+                InlineKeyboardButton("✅  Confirm Delete", callback_data="deleteall_confirm"),
+                InlineKeyboardButton("✖️  Cancel",         callback_data="deleteall_cancel"),
             ]
         ])
         await m.reply(
-            f"⚠️ <b>Delete All Files?</b>\n\n"
-            f"This will permanently delete <b>{files:,} files</b> from all databases.\n\n"
-            f"<b>This action cannot be undone.</b>",
+            f"⚠️ <b>Confirm Deletion</b>\n"
+            f"<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+            f"You are about to permanently delete\n"
+            f"<b>{files:,} files</b> from all databases.\n\n"
+            f"<i>This action cannot be undone.</i>",
             parse_mode=enums.ParseMode.HTML,
             reply_markup=keyboard,
         )
@@ -550,9 +553,11 @@ def register_command_handlers(cyber: Client):
         await delete_all_files()
         try:
             await q.message.edit_text(
-                "✅ <b>All files deleted successfully.</b>",
+                "✅ <b>All files deleted successfully.</b>\n"
+                "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+                "Database has been wiped clean.",
                 parse_mode=enums.ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩  Back", callback_data="gset|main")]]),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️  Back", callback_data="gset|main")]]),
             )
         except Exception:
             pass
@@ -617,11 +622,12 @@ def register_command_handlers(cyber: Client):
     @cyber.on_message(filters.command("adminsetting") & filters.user(ADMIN_USERS))
     async def admin_settings(_, message: Message):
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⚙️ Global Settings", callback_data="gset|main")],
-            [InlineKeyboardButton("❌ Close",           callback_data="close|menu")],
+            [InlineKeyboardButton("⚙️  Global Settings", callback_data="gset|main")],
+            [InlineKeyboardButton("✖️  Close",           callback_data="close|menu")],
         ])
         await message.reply(
-            "<b>🛠 Admin Panel</b>",
+            "<b>🛠  Admin Panel</b>\n"
+            "<b>━━━━━━━━━━━━━━━━━━━━━</b>",
             parse_mode=enums.ParseMode.HTML,
             reply_markup=keyboard,
         )
