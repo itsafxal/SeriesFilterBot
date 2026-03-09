@@ -17,6 +17,7 @@ import time
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
     InlineKeyboardMarkup,
+    InlineKeyboardButton,
     InputMediaPhoto
 )
 from pyrogram.errors import MessageNotModified, FloodWait
@@ -41,7 +42,6 @@ from DB.database import (
 
 from utils.cyber_series import suggest_series, check_owner
 from utils.cyber_filter import encode_payload          # now async
-from utils.cyber_font import BTN, UI, small_caps
 from utils.cyber_delete import delete_message_later
 # get_series_info now called via _get_poster() wrapper in register_filters
 
@@ -125,33 +125,33 @@ def build_caption(series, year, genre, rating,
                   step="season"):
 
     lines = [
-        f"<b>○ {small_caps('Title')}: {small_caps(series)}</b>",
-        f"<b>○ {small_caps('Released')}: {small_caps(year or 'N/A')}</b>",
-        f"<b>○ {small_caps('Genre')}: {small_caps(genre or 'N/A')}</b>",
-        f"<b>○ {small_caps('Rating')}: {small_caps(rating or 'N/A')}</b>",
+        f"<b>○ {'Title'}: {series}</b>",
+        f"<b>○ {'Released'}: {year or 'N/A'}</b>",
+        f"<b>○ {'Genre'}: {genre or 'N/A'}</b>",
+        f"<b>○ {'Rating'}: {rating or 'N/A'}</b>",
         "",
     ]
 
     if step == "season":
         if seasons:
             txt = ", ".join(f"S{s}" for s in seasons)
-            lines.append(f"<b>○ {small_caps('Seasons')}: {small_caps(txt)}</b>")
+            lines.append(f"<b>○ {'Seasons'}: {txt}</b>")
         lines.append("")
-        lines.append(f"<b>{small_caps('Select Season')}</b>")
+        lines.append(f"<b>{'Select Season'}</b>")
 
     elif step == "language":
         txt = ", ".join(languages)
-        lines.append(f"<b>○ {small_caps('Languages')}: {small_caps(txt)}</b>")
+        lines.append(f"<b>○ {'Languages'}: {txt}</b>")
         lines.append("")
-        lines.append(f"<b>{small_caps('Select Language')}</b>")
+        lines.append(f"<b>{'Select Language'}</b>")
 
     elif step == "quality":
         lt = ", ".join(languages)
         qt = ", ".join(qualities)
-        lines.append(f"<b>○ {small_caps('Language')}: {small_caps(lt)}</b>")
-        lines.append(f"<b>○ {small_caps('Quality')}: {small_caps(qt)}</b>")
+        lines.append(f"<b>○ {'Language'}: {lt}</b>")
+        lines.append(f"<b>○ {'Quality'}: {qt}</b>")
         lines.append("")
-        lines.append(f"<b>{small_caps('Select Quality')}</b>")
+        lines.append(f"<b>{'Select Quality'}</b>")
 
     return "\n".join(lines)
 
@@ -167,7 +167,7 @@ def build_grid_keyboard(items, cb_builder, per_row=2, back_btn=None):
     """
     rows, row = [], []
     for it in items:
-        row.append(BTN(it, callback_data=cb_builder(it)))
+        row.append(InlineKeyboardButton(it, callback_data=cb_builder(it)))
         if len(row) == per_row:
             rows.append(row)
             row = []
@@ -185,7 +185,7 @@ def build_season_pages(seasons, uid, series, page=0):
 
     rows, row = [], []
     for s in chunk:
-        row.append(BTN(f"▶  Season {s:02d}", callback_data=f"gss|{uid}|{series}|{s}"))
+        row.append(InlineKeyboardButton(f"▶  Season {s:02d}", callback_data=f"gss|{uid}|{series}|{s}"))
         if len(row) == 3:
             rows.append(row)
             row = []
@@ -195,10 +195,10 @@ def build_season_pages(seasons, uid, series, page=0):
     if total_pages > 1:
         nav = []
         if page > 0:
-            nav.append(BTN("❮  Prev", callback_data=f"spg|{uid}|{series}|{page-1}"))
-        nav.append(BTN(f"{page+1}/{total_pages}", callback_data="noop"))
+            nav.append(InlineKeyboardButton("❮  Prev", callback_data=f"spg|{uid}|{series}|{page-1}"))
+        nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
         if page < total_pages - 1:
-            nav.append(BTN("Next  ❯", callback_data=f"spg|{uid}|{series}|{page+1}"))
+            nav.append(InlineKeyboardButton("Next  ❯", callback_data=f"spg|{uid}|{series}|{page+1}"))
         rows.append(nav)
 
     return InlineKeyboardMarkup(rows)
@@ -320,16 +320,16 @@ def register_filters(cyber: Client):
         # ── MULTIPLE MATCHES ──────────────────────────────────
         if suggestions:
             lines = [
-                f"<b>{small_caps('I Found The Following Series Matched To Your Query')}</b>",
-                f"<b>({small_caps(m.text.strip())})</b>",
+                f"<b>{'I Found The Following Series Matched To Your Query'}</b>",
+                f"<b>({m.text.strip()})</b>",
                 "",
-                f"<b>{small_caps('Matched Series')}</b>"
+                f"<b>{'Matched Series'}</b>"
             ]
             buttons = []
             for s in suggestions:
-                lines.append(f"○ {small_caps(s)}")
-                buttons.append([BTN(s, callback_data=f"sug|{s}")])
-            buttons.append([BTN("✕  Close", callback_data="close_spell")])
+                lines.append(f"○ {s}")
+                buttons.append([InlineKeyboardButton(s, callback_data=f"sug|{s}")])
+            buttons.append([InlineKeyboardButton("✕  Close", callback_data="close_spell")])
 
             msg = await m.reply_photo(
                 SPELL_IMG,
@@ -342,7 +342,7 @@ def register_filters(cyber: Client):
             return
 
         # ── NOTHING FOUND ─────────────────────────────────────
-        msg = await m.reply_text(UI("No Series Found. Please Try Another Title."))
+        msg = await m.reply_text("No Series Found. Please Try Another Title.")
         if AUTO_DELETE_DELAY > 0:
             delete_message_later(cyber, msg.chat.id, msg.id, AUTO_DELETE_DELAY)
 
@@ -410,7 +410,7 @@ def register_filters(cyber: Client):
         poster_r = await _get_poster(series)
         poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
         # Back → Season select (page 0)
-        back = BTN("↩  Back", callback_data=f"bk_season|{uid}|{series}")
+        back = InlineKeyboardButton("↩  Back", callback_data=f"bk_season|{uid}|{series}")
         kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
         await safe_edit(
             q.message.edit_caption(
@@ -435,13 +435,13 @@ def register_filters(cyber: Client):
         qs       = [qc[0] for qc in qc_pairs]   # plain quality list for caption
         poster_r = await _get_poster(series)
         poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
-        back = BTN("↩  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
+        back = InlineKeyboardButton("↩  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
 
         # Build buttons: label shows codec + quality (or just quality if no codec found)
         rows, row = [], []
         for quality, codec in qc_pairs:
             label = _quality_label(quality, codec)
-            row.append(BTN(label, callback_data=f"gqs|{uid}|{series}|{season}|{lang}|{quality}"))
+            row.append(InlineKeyboardButton(label, callback_data=f"gqs|{uid}|{series}|{season}|{lang}|{quality}"))
             if len(row) == 2:
                 rows.append(row)
                 row = []
@@ -477,12 +477,12 @@ def register_filters(cyber: Client):
         link = f"https://t.me/{bot.username}?start={payload}"
 
         # Back → Quality select for this season+language
-        back = BTN("↩  Back", callback_data=f"bk_qual|{uid}|{series}|{season}|{lang}")
+        back = InlineKeyboardButton("↩  Back", callback_data=f"bk_qual|{uid}|{series}|{season}|{lang}")
         await safe_edit(
             q.message.edit_caption(
-                UI("Your Files Are Ready. Tap Below To Download."),
+                "Your Files Are Ready. Tap Below To Download.",
                 reply_markup=InlineKeyboardMarkup([
-                    [BTN("⬇  Download Files", url=link)],
+                    [InlineKeyboardButton("⬇  Download Files", url=link)],
                     [back],
                 ])
             ),
@@ -521,7 +521,7 @@ def register_filters(cyber: Client):
         langs = await get_unique_languages_by_season(series, int(season))
         poster_r = await _get_poster(series)
         poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
-        back = BTN("↩  Back", callback_data=f"bk_season|{uid}|{series}")
+        back = InlineKeyboardButton("↩  Back", callback_data=f"bk_season|{uid}|{series}")
         kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
         await safe_edit(
             q.message.edit_caption(
@@ -542,11 +542,11 @@ def register_filters(cyber: Client):
         qs       = [qc[0] for qc in qc_pairs]
         poster_r = await _get_poster(series)
         poster, year, genre, rating = poster_r if poster_r else (None, None, None, None)
-        back = BTN("↩  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
+        back = InlineKeyboardButton("↩  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
         rows, row = [], []
         for quality, codec in qc_pairs:
             label = _quality_label(quality, codec)
-            row.append(BTN(label, callback_data=f"gqs|{uid}|{series}|{season}|{lang}|{quality}"))
+            row.append(InlineKeyboardButton(label, callback_data=f"gqs|{uid}|{series}|{season}|{lang}|{quality}"))
             if len(row) == 2:
                 rows.append(row)
                 row = []
