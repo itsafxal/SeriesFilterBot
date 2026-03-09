@@ -22,6 +22,63 @@ from utils.cyber_index import (
 from utils.cyber_filter import extract_links
 
 # ---------------------------------------------------------------
+# USERBOT CLIENT  (optional — set via /setuserbot)
+# Shared singleton; created lazily on first index run.
+# ---------------------------------------------------------------
+
+_userbot_client: Optional[Client] = None
+_userbot_lock   = asyncio.Lock()
+
+
+async def get_userbot_client() -> Optional[Client]:
+    """
+    Return a connected userbot Client if a string session is stored,
+    otherwise return None.  The client is created once and reused.
+    """
+    global _userbot_client
+
+    from DB.database import get_userbot_string
+    string = await get_userbot_string()
+    if not string:
+        return None
+
+    async with _userbot_lock:
+        # Re-check after acquiring lock (another coroutine may have created it)
+        if _userbot_client is not None and _userbot_client.is_connected:
+            return _userbot_client
+
+        from config import API_ID, API_HASH
+        try:
+            client = Client(
+                "UserbotIndexer",
+                api_id=API_ID,
+                api_hash=API_HASH,
+                session_string=string,
+                no_updates=True,   # indexer only needs get_messages — no handler overhead
+            )
+            await client.start()
+            _userbot_client = client
+            logger.info("[USERBOT] ✅ Userbot client connected for indexing.")
+        except Exception as e:
+            logger.error(f"[USERBOT] ❌ Failed to connect userbot: {e}")
+            _userbot_client = None
+
+    return _userbot_client
+
+
+async def stop_userbot_client():
+    """Disconnect and clear the cached userbot client."""
+    global _userbot_client
+    async with _userbot_lock:
+        if _userbot_client is not None:
+            try:
+                await _userbot_client.stop()
+                logger.info("[USERBOT] Client disconnected.")
+            except Exception:
+                pass
+            _userbot_client = None
+
+# ---------------------------------------------------------------
 # TUNING  (increase CONCURRENT_FETCHES carefully if needed)
 # ---------------------------------------------------------------
 
@@ -35,7 +92,7 @@ ROUND_COOLDOWN     = 1.0   # base sleep after each round — multiplied by activ
 MIN_CONCURRENT     = 1     # minimum concurrency after repeated FloodWaits
 
 # Token-bucket: minimum wall-clock gap between get_messages() calls
-_CALL_INTERVAL     = 1.2   # seconds; enforced inside _fetch_one
+_CALL_INTERVAL     = 2.0   # seconds; enforced inside _fetch_one
 _last_call_time: float = 0.0
 
 INDEX_SKIP_KEY   = "INDEX_SKIP_ID"
@@ -137,8 +194,15 @@ def _progress(*, cid, start_id, last_id, checked, saved, skipped, dup,
 # FETCH  (concurrent)
 # ---------------------------------------------------------------
 
-async def _fetch_one(bot: Client, chat_id: int, id_window: list, fw_count: list) -> list:
+async def _fetch_one(bot: Client, chat_id: int, id_window: list, fw_count: list,
+                     fetcher: Optional[Client] = None) -> list:
+    """
+    Fetch a window of message IDs.
+    If `fetcher` is provided (userbot), it is used instead of `bot`.
+    Falls back to `bot` on any error if fetcher is set.
+    """
     global _last_call_time
+    client = fetcher or bot
     # Token-bucket: enforce minimum spacing between get_messages() calls
     gap = time.monotonic() - _last_call_time
     if gap < _CALL_INTERVAL:
@@ -147,12 +211,12 @@ async def _fetch_one(bot: Client, chat_id: int, id_window: list, fw_count: list)
 
     while True:
         try:
-            msgs = await bot.get_messages(chat_id, id_window)
+            msgs = await client.get_messages(chat_id, id_window)
             return msgs if isinstance(msgs, list) else [msgs]
         except FloodWait as fw:
             fw_count[0] += 1
             wait = max(int(getattr(fw, "value", 10)), 5)
-            logger.warning(f"[BOT] FloodWait {wait}s - retrying")
+            logger.warning(f"[{'USERBOT' if fetcher else 'BOT'}] FloodWait {wait}s - retrying")
             # Extra buffer: wait the full required time plus 20% headroom
             await asyncio.sleep(wait * 1.2 + 1)
             # Reset token-bucket clock after the sleep so the next call in
@@ -160,10 +224,10 @@ async def _fetch_one(bot: Client, chat_id: int, id_window: list, fw_count: list)
             # preventing an immediate back-to-back flood on retry.
             _last_call_time = time.monotonic()
         except ChannelPrivate:
-            logger.error(f"[BOT] Channel {chat_id} is private/inaccessible")
+            logger.error(f"[INDEX] Channel {chat_id} is private/inaccessible")
             return []
         except Exception as e:
-            logger.error(f"[BOT] get_messages error: {e}")
+            logger.error(f"[INDEX] get_messages error ({type(client).__name__}): {e}")
             await asyncio.sleep(2)
             return []
 
@@ -174,18 +238,17 @@ async def _fetch_round(
     windows: list,
     fw_count: list,
     stagger: float = STAGGER_DELAY,
+    fetcher: Optional[Client] = None,
 ) -> list:
     """
     Fetch each window sequentially with a fixed inter-call delay.
-    Sequential > concurrent-with-stagger: all tasks were still in-flight
-    simultaneously with gather(), letting retries collide at the same moment.
-    The token-bucket in _fetch_one adds a hard floor on top of this stagger.
+    Uses `fetcher` (userbot) when provided, otherwise falls back to `bot`.
     """
     flat = []
     for i, w in enumerate(windows):
         if i > 0 and stagger > 0:
             await asyncio.sleep(stagger)
-        result = await _fetch_one(bot, chat_id, w, fw_count)
+        result = await _fetch_one(bot, chat_id, w, fw_count, fetcher=fetcher)
         flat.extend(result)
     return flat
 
@@ -218,10 +281,30 @@ async def index_files_task(
     bot: Client, status_msg: Message,
     chat_id: int, start_id: int, last_id: int, target: str = "both",
 ):
-    global index_task
+    global index_task, _last_call_time
+
+    # Warm up the token-bucket clock so the very first get_messages() call
+    # doesn't fire instantly after a flood-heavy previous run. Without this,
+    # _last_call_time=0.0 (epoch) lets the first call skip the interval check.
+    _last_call_time = time.monotonic()
+
+    # Mandatory pre-flight pause: Telegram can hold an account in a flood-penalty
+    # window for several minutes after repeated floods. Restarting immediately
+    # hits that window and floods again on the very first call. This 15s pause
+    # lets the server-side window clear before any API call is made.
+    logger.info("[INDEX] Pre-flight cooldown 15s — clearing any server-side flood window...")
+    await asyncio.sleep(15)
+    _last_call_time = time.monotonic()
 
     chat_key     = f"index_{chat_id}"
     target_label = {"db1": "DB1", "db2": "DB2", "both": "DB1+DB2"}.get(target, target)
+
+    # ── Resolve fetcher: userbot if available, else bot ──────────
+    fetcher = await get_userbot_client()
+    if fetcher:
+        logger.info("[INDEX] 🤖 Using USERBOT for get_messages() calls.")
+    else:
+        logger.info("[INDEX] 🤖 Using BOT for get_messages() calls (no userbot configured).")
 
     last_cp  = await get_bot_state(chat_key)
     skip_raw = await get_global_setting(INDEX_SKIP_KEY, 0)
@@ -306,6 +389,7 @@ async def index_files_task(
                 msgs    = await _fetch_round(
                     bot, chat_id, windows, fw_count,
                     stagger=STAGGER_DELAY * (1 + fw_consecutive[0]),  # grow stagger on FloodWait
+                    fetcher=fetcher,
                 )
                 calls += len(windows)
 
@@ -428,8 +512,9 @@ async def compute_effective_start(chat_id: int, default_start: int) -> int:
     return max(default_start, skip_id + 1, int(lp) if lp else 0)
 
 
-def _mode_badge() -> str:
-    return f"Bot mode  `{CONCURRENT_FETCHES} x {FETCH_BATCH}` IDs/round"
+def _mode_badge(userbot: bool = False) -> str:
+    mode = "Userbot" if userbot else "Bot"
+    return f"{mode} mode  `{CONCURRENT_FETCHES} x {FETCH_BATCH}` IDs/round"
 
 
 async def _est(start_id: int, last_id: int) -> str:
@@ -495,7 +580,7 @@ def register_index_handlers(cyber: Client):
         ])
         await bot.send_message(
             message.from_user.id,
-            f"Index Target?\nChannel : `{chat_id}`\nRange   : `{eff_start}` to `{last_id}`\n\n{_mode_badge()}  Est. **{est}**\n\nChoose DB:",
+            f"Index Target?\nChannel : `{chat_id}`\nRange   : `{eff_start}` to `{last_id}`\n\n{_mode_badge(_userbot_client is not None)}  Est. **{est}**\n\nChoose DB:",
             parse_mode=enums.ParseMode.MARKDOWN,
             reply_markup=kb,
         )
@@ -514,7 +599,7 @@ def register_index_handlers(cyber: Client):
         ])
         await bot.send_message(
             message.from_user.id,
-            f"Index Target?\nChannel : `{chat_id}`\nRange   : `{eff_start}` to `{last_id}`\n\n{_mode_badge()}  Est. **{est}**\n\nChoose DB:",
+            f"Index Target?\nChannel : `{chat_id}`\nRange   : `{eff_start}` to `{last_id}`\n\n{_mode_badge(_userbot_client is not None)}  Est. **{est}**\n\nChoose DB:",
             parse_mode=enums.ParseMode.MARKDOWN,
             reply_markup=kb,
         )
@@ -532,7 +617,7 @@ def register_index_handlers(cyber: Client):
         ])
         try:
             await query.message.edit_text(
-                f"Confirm Index\n\nChannel : `{chat_id}`\nRange   : `{s}` to `{l}` ({l-s+1:,} IDs)\nTarget  : **{label}**\n{_mode_badge()}\nEst.    : **{est}**\n\nTap Proceed to start.",
+                f"Confirm Index\n\nChannel : `{chat_id}`\nRange   : `{s}` to `{l}` ({l-s+1:,} IDs)\nTarget  : **{label}**\n{_mode_badge(_userbot_client is not None)}\nEst.    : **{est}**\n\nTap Proceed to start.",
                 parse_mode=enums.ParseMode.MARKDOWN,
                 reply_markup=kb,
             )
@@ -572,7 +657,7 @@ def register_index_handlers(cyber: Client):
 
         status_msg = await safe_send(
             bot, query.from_user.id,
-            f"Index Starting\nChannel : `{chat_id}`\nRange   : `{s}` to `{l}`\nTarget  : **{label}**\n{_mode_badge()}\n\nProgress updates every {PROGRESS_EVERY}s...",
+            f"Index Starting\nChannel : `{chat_id}`\nRange   : `{s}` to `{l}`\nTarget  : **{label}**\n{_mode_badge(_userbot_client is not None)}\n\nProgress updates every {PROGRESS_EVERY}s...",
             parse_mode=enums.ParseMode.MARKDOWN,
             reply_markup=_cancel_kb(),
         )
@@ -613,7 +698,7 @@ def register_index_handlers(cyber: Client):
             return
         try:
             await query.message.edit_text(
-                f"Resuming...\nChannel `{chat_id}` range `{s}` to `{l}`\n{_mode_badge()}",
+                f"Resuming...\nChannel `{chat_id}` range `{s}` to `{l}`\n{_mode_badge(_userbot_client is not None)}",
                 parse_mode=enums.ParseMode.MARKDOWN,
                 reply_markup=_cancel_kb(),
             )
