@@ -413,7 +413,7 @@ def register_index_handlers(cyber: Client):
             file = msg.document or msg.video or msg.audio
             if not file:
                 return
-            ok, _ = await save_series_file_for_bulk_index(msg, target="both")
+            ok, _ = await save_series_file_for_bulk_index(msg, target="mongo")
             fn    = getattr(file, "file_name", None) or "No_Name"
             if ok:
                 from utils.cyber_index import parse_file_name
