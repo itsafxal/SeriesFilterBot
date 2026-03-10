@@ -22,26 +22,32 @@ from utils.cyber_index import (
 from utils.cyber_filter import extract_links
 
 # ---------------------------------------------------------------
-# TUNING — Bot-only, flood-free, normal-fast indexing
+# TUNING — Bot-only, medium-fast flood-free indexing
 # ---------------------------------------------------------------
-# Telegram bot limit: ~30 get_messages() calls/min per bot token.
-# At 50 IDs/call with a 2.5s cooldown → ~24 calls/min → ~1,200 IDs/min.
-# This is comfortably under the limit with headroom to absorb spikes.
-# FETCH_BATCH=50 keeps payloads small; Telegram allows up to 200 but
-# smaller batches = lower chance of a timeout or partial result on busy channels.
+# Telegram bot limit for channels.GetMessages: ~30 req/min hard cap.
+# Sweet spot: 50 IDs/call at 3s cooldown = 20 calls/min = ~1,000 IDs/min.
+# 10k-message channel indexes in ~10 min with zero flood waits.
+#
+# Token bucket adds a rolling 60s hard ceiling as a safety net —
+# prevents MTProto-layer floods even if asyncio sleep drifts.
 
-FETCH_BATCH        = 50    # IDs per get_messages() call (safe bot limit)
-CONCURRENT_FETCHES = 1     # bot token: strictly 1 concurrent fetch — parallel = FloodWait
+FETCH_BATCH        = 50    # IDs per get_messages() call
+CONCURRENT_FETCHES = 1     # strictly 1 — parallel = instant FloodWait
 SAVE_BATCH_SIZE    = 500   # parsed docs buffer before DB flush
 CHECKPOINT_EVERY   = 20    # checkpoint every N rounds
 PROGRESS_EVERY     = 15    # seconds between Telegram message edits
 
-# Adaptive cooldown — starts at BASE, backs off on FloodWait, recovers over time
-_COOLDOWN_BASE = 2.5       # seconds between calls at normal speed (~24 calls/min)
-_COOLDOWN_MAX  = 30.0      # max cooldown after repeated FloodWaits
-_COOLDOWN_STEP_UP   = 1.5  # added on each FloodWait
-_COOLDOWN_STEP_DOWN = 0.1  # subtracted after each clean round (gradual recovery)
-_round_cooldown = _COOLDOWN_BASE  # mutable — updated at runtime
+# Adaptive cooldown — 3s base, backs off on FloodWait, recovers gradually
+_COOLDOWN_BASE      = 3.0  # 3s = 20 calls/min — medium-fast, safe
+_COOLDOWN_MAX       = 45.0 # absolute ceiling after repeated hits
+_COOLDOWN_STEP_UP   = 4.0  # +4s per FloodWait (firm back-off)
+_COOLDOWN_STEP_DOWN = 0.15 # -0.15s per clean round (gradual recovery)
+_round_cooldown     = _COOLDOWN_BASE
+
+# Token bucket — rolling hard ceiling: max 20 calls per 60s
+_BUCKET_CALLS  = 20    # max calls in rolling window
+_BUCKET_WINDOW = 60.0  # window size in seconds
+_bucket_log    = []    # timestamps of recent calls
 
 INDEX_SKIP_KEY   = "INDEX_SKIP_ID"
 INDEX_STATUS_KEY = "CURRENT_INDEX_TASK"
@@ -131,7 +137,7 @@ def _progress(*, cid, start_id, last_id, checked, saved, skipped, dup,
         f"Skipped   : `{skipped:,}`",
         f"Duplicate : `{dup:,}`",
         f"Speed     : `{mps:.0f}` msg/s",
-        f"Fetching  : `{CONCURRENT_FETCHES} x {FETCH_BATCH}` IDs/round  cooldown=`{_round_cooldown:.1f}s`",
+        f"Fetching  : `{FETCH_BATCH}` IDs/call | cooldown=`{_round_cooldown:.1f}s` | bucket=`{len(_bucket_log)}/{_BUCKET_CALLS}`",
     ]
     if fw_count:
         lines.append(f"FloodWait : `{fw_count}` times")
@@ -142,30 +148,57 @@ def _progress(*, cid, start_id, last_id, checked, saved, skipped, dup,
 # FETCH  (concurrent)
 # ---------------------------------------------------------------
 
+async def _bucket_wait():
+    """
+    Token bucket — enforces hard ceiling of _BUCKET_CALLS per _BUCKET_WINDOW.
+    Blocks (sleeps) if the window is full, then records the call timestamp.
+    This prevents Pyrogram's internal MTProto layer from hitting
+    channels.GetMessages flood waits silently.
+    """
+    global _bucket_log
+    while True:
+        now    = time.monotonic()
+        cutoff = now - _BUCKET_WINDOW
+        # Evict old entries outside the rolling window
+        _bucket_log = [t for t in _bucket_log if t > cutoff]
+        if len(_bucket_log) < _BUCKET_CALLS:
+            _bucket_log.append(now)
+            return
+        # Window is full — sleep until the oldest entry expires
+        oldest   = _bucket_log[0]
+        sleep_for = (_BUCKET_WINDOW - (now - oldest)) + 0.5  # +0.5s safety margin
+        logger.info(f"[BUCKET] Rate limit window full — waiting {sleep_for:.1f}s")
+        await asyncio.sleep(max(sleep_for, 1.0))
+
+
 async def _fetch_one(bot: Client, chat_id: int, id_window: list, fw_count: list) -> list:
     global _round_cooldown
     while True:
         try:
+            # Hard rate limit check BEFORE the API call
+            await _bucket_wait()
             msgs = await bot.get_messages(chat_id, id_window)
-            # Successful call → slowly recover cooldown toward base
+            # Successful call — slowly recover cooldown toward base
             _round_cooldown = max(_COOLDOWN_BASE, _round_cooldown - _COOLDOWN_STEP_DOWN)
             return msgs if isinstance(msgs, list) else [msgs]
         except FloodWait as fw:
             fw_count[0] += 1
             wait = max(int(getattr(fw, "value", 15)), 15)
-            # Back off adaptive cooldown
+            # Aggressive back-off on FloodWait
             _round_cooldown = min(_COOLDOWN_MAX, _round_cooldown + _COOLDOWN_STEP_UP)
+            # Also drain the bucket so next calls start fresh after waiting
+            _bucket_log.clear()
             logger.warning(
-                f"[BOT] FloodWait {wait}s — sleeping {wait + 5}s "
-                f"| new cooldown={_round_cooldown:.1f}s"
+                f"[BOT] FloodWait {wait}s — sleeping {wait + 10}s "
+                f"| cooldown now={_round_cooldown:.1f}s | bucket cleared"
             )
-            await asyncio.sleep(wait + 5)   # always wait full time + 5s buffer
+            await asyncio.sleep(wait + 10)  # wait full required time + 10s buffer
         except ChannelPrivate:
             logger.error(f"[BOT] Channel {chat_id} is private/inaccessible")
             return []
         except Exception as e:
             logger.error(f"[BOT] get_messages error: {e}")
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)
             return []
 
 
@@ -213,6 +246,7 @@ async def index_files_task(
 ):
     global index_task, _round_cooldown
     _round_cooldown = _COOLDOWN_BASE   # reset to base speed for each fresh index
+    _bucket_log.clear()                # reset rate-limit bucket
 
     chat_key     = f"index_{chat_id}"
     target_label = {"db1": "DB1", "db2": "DB2", "both": "DB1+DB2"}.get(target, target)
