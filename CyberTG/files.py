@@ -194,7 +194,16 @@ def _normalize_for_query(series: str) -> str:
 
 def _build_caption(template: str, series: str, season: int,
                    episode: int, language: str, quality: str,
-                   file_name: str = "") -> str:
+                   file_name: str = "", stored_caption: str = "") -> str:
+    """
+    Caption priority:
+      1. stored_caption — raw caption saved during indexing (actual source channel caption)
+      2. CUSTOM_FILE_CAPTION template (set via admin panel)
+      3. DEFAULT_CAPTION template (hardcoded fallback)
+    """
+    if stored_caption and stored_caption.strip():
+        return stored_caption.strip()
+
     season_str  = str(season).zfill(2)
     episode_str = str(episode).zfill(2)
     clean_name  = caption_filename(file_name)
@@ -460,7 +469,7 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
     except (TypeError, ValueError):
         auto_delay = 0
 
-    custom_caption = await get_global_setting("CUSTOM_FILE_CAPTION", None)
+    custom_caption   = await get_global_setting("CUSTOM_FILE_CAPTION", None)
     caption_template = custom_caption if custom_caption else DEFAULT_CAPTION
 
     # Clear session early — files are already loaded
@@ -494,7 +503,11 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
         for i, f in enumerate(chunk):
             # Caption: full caption on first file of the first chunk,
             # minimal episode label on the rest
-            if chunk_start == 0 and i == 0:
+            stored_cap = (f.get("caption") or "").strip()
+            if stored_cap:
+                # Use the caption stored from the source channel directly
+                cap = stored_cap
+            elif chunk_start == 0 and i == 0:
                 cap = _build_caption(
                     caption_template, series, season,
                     f.get("episode", 0), language, quality,
