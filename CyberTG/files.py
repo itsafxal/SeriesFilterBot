@@ -53,12 +53,10 @@ from utils.cyber_delete import delete_message_later
 # ─────────────────────────────────────────────────────────────
 
 DEFAULT_CAPTION = (
-    "🎬 <b>{series}</b>\n"
-    "🗓 <b>Season:</b> Season {season}\n"
-    "🎬 <b>Episode:</b> {episode} -\n"
-    "🔊 <b>Audio:</b> {language}\n"
-    "📝 <b>Subtitles:</b> English\n\n"
-    "🍿 <i>Delivered by Series Studio Bot</i>"
+    "<b>{series}</b>\n\n"
+    "<b>{file_name}</b>\n\n"
+    "Season <b>{season}</b> • Episode <b>{episode}</b>\n"
+    "{language} • {quality}"
 )
 
 MEDIA_GROUP_SIZE = 10    # Telegram max per album
