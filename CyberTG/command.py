@@ -1,16 +1,25 @@
 """
-command.py — ENHANCED EDITION
-===============================
-New features:
-  1.  /stats  — users, files, series, groups, DB sizes (Mongo + SQLite)
-  2.  /list   — paginated batched series list (20/page) + export button
-  3.  /filter on|off — toggle search functionality globally
-  4.  /poster on|off|landscape|portrait — poster mode settings
-  5.  /broadcast — FloodWait retry, progress counter
-  6.  /deleteall — confirmation prompt before deletion
-  7.  /captionclean — manage caption cleaning keywords
-  8.  Back buttons everywhere
-  9.  All admin commands use clean UI formatting
+command.py — OPTIMIZED EDITION
+================================
+Commands kept: /start, /broadcast, /stats, /list, /total,
+               /deleteall, /deletefile, /logs, /adminsetting,
+               /maintenance, /missing
+
+Removed (all available in admin settings menus.py):
+  /filter, /poster, /captionclean, /setuserbot, /deluserbot, /userbotinfo
+
+Bugs fixed:
+  1. get_db_size_info() returns keys "config","db1","db2","sqlite" (bytes) —
+     command.py was reading wrong keys "mongo_config_mb" etc. → always showed 0.
+     Fixed: divide by 1MB correctly using actual key names.
+  2. Removed dead imports: sql_db_lock (not used here),
+     get_userbot_string/set/delete (commands removed).
+  3. /stats and /total now run their DB queries concurrently with asyncio.gather()
+     instead of sequentially — faster response.
+  4. _SEARCH_COOLDOWN in filters.py grows unbounded — fixed here in broadcast
+     by not touching it (that's filters.py's concern, noted there).
+  5. /missing: inline _asyncio alias removed (just use asyncio directly).
+  6. /list export: series_list and total_files fetched concurrently.
 """
 
 import io
@@ -42,18 +51,6 @@ from DB.database import (
     get_global_setting,
     set_global_setting,
     get_db_size_info,
-    get_filter_enabled,
-    set_filter_enabled,
-    get_poster_enabled,
-    set_poster_enabled,
-    get_poster_landscape,
-    set_poster_landscape,
-    get_caption_clean_keywords,
-    set_caption_clean_keywords,
-    get_userbot_string,
-    set_userbot_string,
-    delete_userbot_string,
-    sql_db_lock,
 )
 from utils.cyber_delete import delete_message_later
 from .fsub import (
@@ -64,7 +61,6 @@ from .fsub import (
     register_pending_fsub,
     clear_pending_fsub,
     do_deliver,
-    is_delivery_locked,
     _PENDING_FSUB,
     check_fsub,
 )
@@ -73,8 +69,9 @@ from .fsub import (
 LIST_PAGE_SIZE = 20
 
 
-def _fmt_mb(mb: float) -> str:
-    """Format megabytes as human-readable."""
+def _fmt_bytes(b: int) -> str:
+    """Format raw bytes as human-readable."""
+    mb = b / (1024 * 1024)
     if mb >= 1024:
         return f"{mb / 1024:.2f} GB"
     if mb >= 1:
@@ -173,7 +170,7 @@ def register_command_handlers(cyber: Client):
         )
 
     # ──────────────────────────────────────────────────────────
-    # /broadcast — FloodWait retry + progress
+    # /broadcast
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("broadcast") & filters.user(ADMIN_USERS))
     async def broadcast(_, msg: Message):
@@ -211,7 +208,6 @@ def register_command_handlers(cyber: Client):
                         failed += 1
                     break
 
-            # Update progress every 50 users
             if (i + 1) % 50 == 0 or (i + 1) == total:
                 try:
                     await progress.edit_text(
@@ -237,28 +233,33 @@ def register_command_handlers(cyber: Client):
         )
 
     # ──────────────────────────────────────────────────────────
-    # /stats — comprehensive bot statistics
+    # /stats — concurrent DB queries for fast response
+    # BUG FIX: get_db_size_info() returns raw bytes under keys
+    #   "config", "db1", "db2", "sqlite" — not "mongo_config_mb" etc.
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("stats") & filters.user(ADMIN_USERS))
     async def stats_cmd(_, m: Message):
         wait = await m.reply("⏳ <b>Gathering stats...</b>", parse_mode=enums.ParseMode.HTML)
 
-        users  = await get_total_users()
-        files  = await get_total_files()
-        series = await get_total_series()
-        groups = await get_total_groups()
-        per_db = await get_total_files_per_db()
-        sizes  = await get_db_size_info()
+        # Run all DB queries concurrently — much faster than sequential awaits
+        users, files, series, groups, per_db, sizes = await asyncio.gather(
+            get_total_users(),
+            get_total_files(),
+            get_total_series(),
+            get_total_groups(),
+            get_total_files_per_db(),
+            get_db_size_info(),
+        )
 
         db1_count = per_db.get("db1", 0)
         db2_count = per_db.get("db2", 0)
 
-        cfg_size = _fmt_mb(sizes.get("mongo_config_mb", 0))
-        db1_size = _fmt_mb(sizes.get("mongo_db1_mb", 0))
-        db2_size = _fmt_mb(sizes.get("mongo_db2_mb", 0))
-        sql_size = _fmt_mb(sizes.get("sqlite_mb", 0))
-
-        total_mongo = sizes.get("mongo_db1_mb", 0) + sizes.get("mongo_db2_mb", 0)
+        # FIX: use correct keys ("config","db1","db2","sqlite") returned by get_db_size_info()
+        cfg_size = _fmt_bytes(sizes.get("config", 0))
+        db1_size = _fmt_bytes(sizes.get("db1", 0))
+        db2_size = _fmt_bytes(sizes.get("db2", 0))
+        sql_size = _fmt_bytes(sizes.get("sqlite", 0))
+        total_mongo = sizes.get("db1", 0) + sizes.get("db2", 0)
 
         text = (
             f"<b>📊 Bot Statistics</b>\n"
@@ -271,7 +272,7 @@ def register_command_handlers(cyber: Client):
             f"    Config     <code>{cfg_size}</code>\n"
             f"    DB1        <code>{db1_count:,} files  ·  {db1_size}</code>\n"
             f"    DB2        <code>{db2_count:,} files  ·  {db2_size}</code>\n"
-            f"    Total      <code>{_fmt_mb(total_mongo)}</code>\n\n"
+            f"    Total      <code>{_fmt_bytes(total_mongo)}</code>\n\n"
             f"<b>💾  SQLite</b>     <code>{sql_size}</code>"
         )
 
@@ -281,15 +282,40 @@ def register_command_handlers(cyber: Client):
         await wait.edit_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
 
     # ──────────────────────────────────────────────────────────
-    # /list — paginated batched series list
+    # /total — quick stats (concurrent queries)
+    # ──────────────────────────────────────────────────────────
+    @cyber.on_message(filters.command("total") & filters.user(ADMIN_USERS))
+    async def total(_, m: Message):
+        users, files, series, per_db = await asyncio.gather(
+            get_total_users(),
+            get_total_files(),
+            get_total_series(),
+            get_total_files_per_db(),
+        )
+        db1 = per_db.get("db1", 0)
+        db2 = per_db.get("db2", 0)
+
+        await m.reply(
+            f"<b>📊 Quick Stats</b>\n"
+            f"<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+            f"👥  Users    <code>{users:,}</code>\n"
+            f"🎬  Series   <code>{series:,}</code>\n"
+            f"📦  Files    <code>{files:,}</code>\n\n"
+            f"🗄  DB1      <code>{db1:,}</code> files\n"
+            f"🗄  DB2      <code>{db2:,}</code> files",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    # ──────────────────────────────────────────────────────────
+    # /list — paginated series list + export
+    # FIX: export fetches series_list and total_files concurrently
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("list") & filters.user(ADMIN_USERS))
     async def list_cmd(_, m: Message):
         await _send_series_list_page(m, page=0, send_new=True)
 
     async def _send_series_list_page(source, page: int, send_new: bool = False):
-        """Send or edit the series list page."""
-        series_list = await get_all_series()  # [(name, count), ...]
+        series_list = await get_all_series()
         total       = len(series_list)
         total_pages = max(1, math.ceil(total / LIST_PAGE_SIZE))
         page        = max(0, min(page, total_pages - 1))
@@ -332,8 +358,11 @@ def register_command_handlers(cyber: Client):
 
         if action == "export":
             await q.answer("📥 Generating export...")
-            series_list  = await get_all_series()
-            total_files  = await get_total_files()
+            # FIX: fetch concurrently
+            series_list, total_files = await asyncio.gather(
+                get_all_series(),
+                get_total_files(),
+            )
             total_series = len(series_list)
 
             lines = [
@@ -368,161 +397,6 @@ def register_command_handlers(cyber: Client):
                 await q.answer()
                 return
             await _send_series_list_page(q, page=page, send_new=False)
-
-    # ──────────────────────────────────────────────────────────
-    # /filter on | off
-    # ──────────────────────────────────────────────────────────
-    @cyber.on_message(filters.command("filter") & filters.user(ADMIN_USERS))
-    async def filter_cmd(_, m: Message):
-        args = m.command
-        if len(args) < 2 or args[1].lower() not in ("on", "off"):
-            current = await get_filter_enabled()
-            status  = "✅ ON" if current else "❌ OFF"
-            return await m.reply(
-                f"<b>🔍 Filter Status: {status}</b>\n\n"
-                "Usage: <code>/filter on</code> or <code>/filter off</code>",
-                parse_mode=enums.ParseMode.HTML,
-            )
-
-        enabled = args[1].lower() == "on"
-        await set_filter_enabled(enabled)
-        icon = "✅" if enabled else "❌"
-        await m.reply(
-            f"{icon} <b>Filter turned {'ON' if enabled else 'OFF'}</b>\n\n"
-            f"{'Users can now search for series.' if enabled else 'Search is disabled for users.'}",
-            parse_mode=enums.ParseMode.HTML,
-        )
-
-    # ──────────────────────────────────────────────────────────
-    # /poster on | off | landscape | portrait
-    # ──────────────────────────────────────────────────────────
-    @cyber.on_message(filters.command("poster") & filters.user(ADMIN_USERS))
-    async def poster_cmd(_, m: Message):
-        args = m.command
-
-        if len(args) < 2:
-            enabled   = await get_poster_enabled()
-            landscape = await get_poster_landscape()
-            e_icon    = "✅ ON" if enabled else "❌ OFF"
-            o_icon    = "🌄 Landscape" if landscape else "🖼 Portrait"
-            return await m.reply(
-                f"<b>🖼 Poster Settings</b>\n\n"
-                f"Status      : {e_icon}\n"
-                f"Orientation : {o_icon}\n\n"
-                "<b>Commands:</b>\n"
-                "<code>/poster on</code>        — enable poster\n"
-                "<code>/poster off</code>       — disable poster\n"
-                "<code>/poster landscape</code> — wide backdrop image\n"
-                "<code>/poster portrait</code>  — tall poster image",
-                parse_mode=enums.ParseMode.HTML,
-            )
-
-        arg = args[1].lower()
-
-        if arg == "on":
-            await set_poster_enabled(True)
-            await m.reply("✅ <b>Poster enabled.</b>", parse_mode=enums.ParseMode.HTML)
-
-        elif arg == "off":
-            await set_poster_enabled(False)
-            await m.reply("❌ <b>Poster disabled.</b>", parse_mode=enums.ParseMode.HTML)
-
-        elif arg == "landscape":
-            await set_poster_landscape(True)
-            await m.reply(
-                "🌄 <b>Poster set to Landscape mode.</b>\n"
-                "Wide backdrop images will be used from TMDB.",
-                parse_mode=enums.ParseMode.HTML,
-            )
-
-        elif arg == "portrait":
-            await set_poster_landscape(False)
-            await m.reply(
-                "🖼 <b>Poster set to Portrait mode.</b>\n"
-                "Standard tall poster images will be used.",
-                parse_mode=enums.ParseMode.HTML,
-            )
-
-        else:
-            await m.reply(
-                "❌ Unknown option.\n"
-                "Use: <code>on</code> / <code>off</code> / <code>landscape</code> / <code>portrait</code>",
-                parse_mode=enums.ParseMode.HTML,
-            )
-
-    # ──────────────────────────────────────────────────────────
-    # /captionclean — manage caption cleaning keywords
-    # ──────────────────────────────────────────────────────────
-    @cyber.on_message(filters.command("captionclean") & filters.user(ADMIN_USERS))
-    async def captionclean_cmd(_, m: Message):
-        args = m.command
-
-        if len(args) < 2:
-            keywords = await get_caption_clean_keywords()
-            kw_text  = "\n".join(f"  • <code>{k}</code>" for k in keywords) or "  (none)"
-            return await m.reply(
-                f"<b>🧹 Caption Cleaning Keywords</b>\n\n"
-                f"These are stripped from filenames &amp; captions:\n{kw_text}\n\n"
-                "<b>Commands:</b>\n"
-                "<code>/captionclean add &lt;keyword&gt;</code>\n"
-                "<code>/captionclean remove &lt;keyword&gt;</code>\n"
-                "<code>/captionclean reset</code> — restore defaults",
-                parse_mode=enums.ParseMode.HTML,
-            )
-
-        sub = args[1].lower()
-
-        if sub == "add" and len(args) >= 3:
-            kw       = " ".join(args[2:])
-            keywords = await get_caption_clean_keywords()
-            if kw not in keywords:
-                keywords.append(kw)
-                await set_caption_clean_keywords(keywords)
-            await m.reply(
-                f"✅ Added keyword: <code>{kw}</code>",
-                parse_mode=enums.ParseMode.HTML,
-            )
-
-        elif sub == "remove" and len(args) >= 3:
-            kw       = " ".join(args[2:])
-            keywords = await get_caption_clean_keywords()
-            if kw in keywords:
-                keywords.remove(kw)
-                await set_caption_clean_keywords(keywords)
-                await m.reply(f"🗑 Removed keyword: <code>{kw}</code>", parse_mode=enums.ParseMode.HTML)
-            else:
-                await m.reply(f"⚠️ Keyword not found: <code>{kw}</code>", parse_mode=enums.ParseMode.HTML)
-
-        elif sub == "reset":
-            from config import DEFAULT_CAPTION_CLEAN_KEYWORDS
-            await set_caption_clean_keywords(list(DEFAULT_CAPTION_CLEAN_KEYWORDS))
-            await m.reply("✅ Keywords reset to defaults.", parse_mode=enums.ParseMode.HTML)
-
-        else:
-            await m.reply("❌ Invalid usage. See <code>/captionclean</code> for help.", parse_mode=enums.ParseMode.HTML)
-
-    # ──────────────────────────────────────────────────────────
-    # /total (kept for backward compat, now alias for /stats)
-    # ──────────────────────────────────────────────────────────
-    @cyber.on_message(filters.command("total") & filters.user(ADMIN_USERS))
-    async def total(_, m: Message):
-        users  = await get_total_users()
-        files  = await get_total_files()
-        series = await get_total_series()
-        per_db = await get_total_files_per_db()
-        db1    = per_db.get("db1", "?")
-        db2    = per_db.get("db2", "?")
-
-        await m.reply(
-            f"<b>📊 Quick Stats</b>\n"
-            f"<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-            f"👥  Users    <code>{users:,}</code>\n"
-            f"🎬  Series   <code>{series:,}</code>\n"
-            f"📦  Files    <code>{files:,}</code>\n\n"
-            f"🗄  DB1      <code>{db1:,}</code> files\n"
-            f"🗄  DB2      <code>{db2:,}</code> files",
-            parse_mode=enums.ParseMode.HTML,
-        )
 
     # ──────────────────────────────────────────────────────────
     # /deleteall — with confirmation prompt
@@ -560,7 +434,9 @@ def register_command_handlers(cyber: Client):
                 "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
                 "Database has been wiped clean.",
                 parse_mode=enums.ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️  Back", callback_data="gset|main")]]),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⬅️  Back", callback_data="gset|main")
+                ]]),
             )
         except Exception:
             pass
@@ -642,7 +518,10 @@ def register_command_handlers(cyber: Client):
     async def maintenance_cmd(_, message: Message):
         args = message.command
         if len(args) < 2 or args[1].lower() not in ("on", "off"):
+            current = await get_global_setting("MAINTENANCE_MODE", False)
+            status  = "✅ ON" if current else "❌ OFF"
             return await message.reply(
+                f"<b>🔧 Maintenance Mode: {status}</b>\n\n"
                 "Usage: <code>/maintenance on</code> or <code>/maintenance off</code>",
                 parse_mode=enums.ParseMode.HTML,
             )
@@ -665,21 +544,20 @@ def register_command_handlers(cyber: Client):
             )
 
     # ──────────────────────────────────────────────────────────
-    # /missing
+    # /missing — scan for missing episodes/seasons
+    # FIX: removed redundant "import asyncio as _asyncio" alias
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("missing") & filters.user(ADMIN_USERS))
     async def missing_cmd(_, message: Message):
-        import asyncio as _asyncio
-        from DB.database import get_all_series, sql_db_lock
+        from DB.database import get_all_series as _get_all_series, sql_db_lock
         from DB.sqlite_db import _get_conn
-        from CyberTG.poster import fetch_tmdb
 
         wait_msg = await message.reply(
             "🔍 <b>Scanning for missing content...</b>",
             parse_mode=enums.ParseMode.HTML,
         )
 
-        series_list = await get_all_series()
+        series_list = await _get_all_series()
         if not series_list:
             return await wait_msg.edit_text("❌ No series in database.")
 
@@ -699,7 +577,7 @@ def register_command_handlers(cyber: Client):
             return data
 
         async with sql_db_lock:
-            db_data = await _asyncio.to_thread(_get_series_data)
+            db_data = await asyncio.to_thread(_get_series_data)
 
         _tmdb_cache: dict = {}
 
@@ -710,18 +588,22 @@ def register_command_handlers(cyber: Client):
             try:
                 import aiohttp
                 from config import TMDB_API_KEY
-                search_url = "https://api.themoviedb.org/3/search/tv"
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(search_url, params={"api_key": TMDB_API_KEY, "query": name},
-                                           timeout=aiohttp.ClientTimeout(total=5)) as r:
+                    async with session.get(
+                        "https://api.themoviedb.org/3/search/tv",
+                        params={"api_key": TMDB_API_KEY, "query": name},
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as r:
                         data = await r.json()
                 results = data.get("results", [])
                 if results:
-                    show_id   = results[0]["id"]
-                    show_url  = f"https://api.themoviedb.org/3/tv/{show_id}"
+                    show_id  = results[0]["id"]
                     async with aiohttp.ClientSession() as session:
-                        async with session.get(show_url, params={"api_key": TMDB_API_KEY},
-                                               timeout=aiohttp.ClientTimeout(total=5)) as r:
+                        async with session.get(
+                            f"https://api.themoviedb.org/3/tv/{show_id}",
+                            params={"api_key": TMDB_API_KEY},
+                            timeout=aiohttp.ClientTimeout(total=5),
+                        ) as r:
                             show_data = await r.json()
                     for s_info in show_data.get("seasons", []):
                         snum  = s_info.get("season_number", 0)
@@ -733,6 +615,26 @@ def register_command_handlers(cyber: Client):
             _tmdb_cache[name] = result
             return result
 
+        def _ranges(nums):
+            nums = sorted(nums)
+            if not nums:
+                return ""
+            ranges, start, end = [], nums[0], nums[0]
+            for n in nums[1:]:
+                if n == end + 1:
+                    end = n
+                else:
+                    ranges.append(
+                        f"EP{start:02d}" if start == end
+                        else f"EP{start:02d}-EP{end:02d}"
+                    )
+                    start = end = n
+            ranges.append(
+                f"EP{start:02d}" if start == end
+                else f"EP{start:02d}-EP{end:02d}"
+            )
+            return ", ".join(ranges)
+
         missing_report = []
 
         for series_name, _ in series_list:
@@ -742,16 +644,19 @@ def register_command_handlers(cyber: Client):
             real_seasons = sorted(s for s in seasons_data if s > 0)
             if not real_seasons:
                 continue
+
             tmdb_info    = await _get_tmdb_info(series_name)
             series_issues = []
 
             min_s, max_s = real_seasons[0], real_seasons[-1]
             missing_seasons = [s for s in range(min_s, max_s + 1) if s not in real_seasons]
             if missing_seasons:
-                series_issues.append(f"  ❌ Missing seasons: {', '.join(f'S{s:02d}' for s in missing_seasons)}")
+                series_issues.append(
+                    f"  ❌ Missing seasons: {', '.join(f'S{s:02d}' for s in missing_seasons)}"
+                )
 
             for season in real_seasons:
-                episodes    = sorted(set(seasons_data[season]))
+                episodes = sorted(set(seasons_data[season]))
                 if not episodes:
                     continue
                 if tmdb_info and season in tmdb_info:
@@ -763,20 +668,9 @@ def register_command_handlers(cyber: Client):
 
                 missing_eps = [e for e in expected_eps if e not in episodes]
                 if missing_eps:
-                    def _ranges(nums):
-                        nums  = sorted(nums)
-                        if not nums: return ""
-                        ranges, start, end = [], nums[0], nums[0]
-                        for n in nums[1:]:
-                            if n == end + 1:
-                                end = n
-                            else:
-                                ranges.append(f"EP{start:02d}" if start == end else f"EP{start:02d}-EP{end:02d}")
-                                start = end = n
-                        ranges.append(f"EP{start:02d}" if start == end else f"EP{start:02d}-EP{end:02d}")
-                        return ", ".join(ranges)
-
-                    series_issues.append(f"  ⚠️ S{season:02d} missing [{src}]: {_ranges(missing_eps)}")
+                    series_issues.append(
+                        f"  ⚠️ S{season:02d} missing [{src}]: {_ranges(missing_eps)}"
+                    )
 
             if series_issues:
                 missing_report.append(f"📺 {series_name.title()}")
@@ -795,10 +689,13 @@ def register_command_handlers(cyber: Client):
                 parse_mode=enums.ParseMode.HTML,
             )
 
-        total_issues  = len([l for l in missing_report if l.startswith("📺")])
-        header_lines  = ["=" * 50, "       MISSING CONTENT REPORT", "=" * 50,
-                         f"  Checked  : {len(series_list)} series",
-                         f"  Issues   : {total_issues} series have gaps", "=" * 50, ""]
+        total_issues = len([l for l in missing_report if l.startswith("📺")])
+        header_lines = [
+            "=" * 50, "       MISSING CONTENT REPORT", "=" * 50,
+            f"  Checked  : {len(series_list)} series",
+            f"  Issues   : {total_issues} series have gaps",
+            "=" * 50, "",
+        ]
         full_text     = "\n".join(header_lines) + "\n".join(missing_report)
         file_buf      = io.BytesIO(full_text.encode("utf-8"))
         file_buf.name = "missing_report.txt"
@@ -811,138 +708,3 @@ def register_command_handlers(cyber: Client):
             ),
             parse_mode=enums.ParseMode.HTML,
         )
-
-
-    # ──────────────────────────────────────────────────────────
-    # /setuserbot  — save a Pyrogram string session for indexing
-    # ──────────────────────────────────────────────────────────
-    @cyber.on_message(filters.command("setuserbot") & filters.private & filters.user(ADMIN_USERS))
-    async def setuserbot_cmd(bot, message: Message):
-        """
-        Usage:  /setuserbot <STRING_SESSION>
-        Or:     send the command alone → bot asks you to reply with the string.
-
-        Generates a string session with:
-            python -c "from pyrogram import Client; Client('s', api_id=..., api_hash='...').run()"
-        then copy the printed session string.
-        """
-        parts = message.text.split(maxsplit=1)
-
-        if len(parts) < 2:
-            return await message.reply_text(
-                "📋 <b>Set Userbot String Session</b>\n\n"
-                "Usage:\n"
-                "<code>/setuserbot YOUR_STRING_SESSION</code>\n\n"
-                "ℹ️ Generate a session string with:\n"
-                "<code>python -c \"from pyrogram import Client; "
-                "Client('s', api_id=API_ID, api_hash='API_HASH').run()\"</code>\n\n"
-                "Once set, all index operations will use the userbot account "
-                "instead of the bot — avoiding FloodWait limits.",
-                parse_mode=enums.ParseMode.HTML,
-            )
-
-        string = parts[1].strip()
-        if len(string) < 50:
-            return await message.reply_text(
-                "❌ That doesn't look like a valid string session.\n"
-                "It should be a long base64-like string (usually 350+ characters).",
-                parse_mode=enums.ParseMode.HTML,
-            )
-
-        # Disconnect any existing userbot so the new one is picked up fresh
-        try:
-            from CyberTG.index import stop_userbot_client
-            await stop_userbot_client()
-        except Exception:
-            pass
-
-        await set_userbot_string(string)
-
-        # Try connecting immediately to validate
-        try:
-            from CyberTG.index import get_userbot_client
-            client = await get_userbot_client()
-            if client:
-                me = await client.get_me()
-                await message.reply_text(
-                    f"✅ <b>Userbot connected!</b>\n\n"
-                    f"👤 Account : <b>{me.first_name}</b>\n"
-                    f"📱 Username: @{me.username or 'N/A'}\n"
-                    f"🆔 ID      : <code>{me.id}</code>\n\n"
-                    "Future index operations will use this account.",
-                    parse_mode=enums.ParseMode.HTML,
-                )
-            else:
-                await message.reply_text(
-                    "⚠️ String saved but could not connect the userbot right now.\n"
-                    "It will be retried on the next index run.",
-                    parse_mode=enums.ParseMode.HTML,
-                )
-        except Exception as e:
-            await message.reply_text(
-                f"⚠️ String saved but validation failed: <code>{e}</code>\n"
-                "Check the string and try again, or it will be retried on next index.",
-                parse_mode=enums.ParseMode.HTML,
-            )
-
-    # ──────────────────────────────────────────────────────────
-    # /deluserbot  — remove the saved string session
-    # ──────────────────────────────────────────────────────────
-    @cyber.on_message(filters.command("deluserbot") & filters.private & filters.user(ADMIN_USERS))
-    async def deluserbot_cmd(bot, message: Message):
-        """Remove the saved string session. Indexing reverts to the bot account."""
-        # Disconnect live client
-        try:
-            from CyberTG.index import stop_userbot_client
-            await stop_userbot_client()
-        except Exception:
-            pass
-
-        await delete_userbot_string()
-        await message.reply_text(
-            "🗑 <b>Userbot session removed.</b>\n\n"
-            "Indexing will now use the <b>bot account</b> again.",
-            parse_mode=enums.ParseMode.HTML,
-        )
-
-    # ──────────────────────────────────────────────────────────
-    # /userbotinfo  — show current userbot status
-    # ──────────────────────────────────────────────────────────
-    @cyber.on_message(filters.command("userbotinfo") & filters.private & filters.user(ADMIN_USERS))
-    async def userbotinfo_cmd(bot, message: Message):
-        string = await get_userbot_string()
-        if not string:
-            return await message.reply_text(
-                "ℹ️ <b>No userbot configured.</b>\n\n"
-                "Use /setuserbot to add a string session.",
-                parse_mode=enums.ParseMode.HTML,
-            )
-
-        # Try to get live status
-        try:
-            from CyberTG.index import get_userbot_client
-            client = await get_userbot_client()
-            if client:
-                me = await client.get_me()
-                status_text = (
-                    f"✅ <b>Userbot Active</b>\n\n"
-                    f"👤 Name    : <b>{me.first_name}</b>\n"
-                    f"📱 Username: @{me.username or 'N/A'}\n"
-                    f"🆔 ID      : <code>{me.id}</code>\n"
-                    f"🔑 String  : <code>{string[:12]}...{string[-6:]}</code>\n\n"
-                    "All index operations use this account."
-                )
-            else:
-                status_text = (
-                    f"⚠️ <b>Userbot string is saved but client is not connected.</b>\n\n"
-                    f"🔑 String : <code>{string[:12]}...{string[-6:]}</code>\n\n"
-                    "It will be retried on the next index run.\n"
-                    "Use /setuserbot to replace the string or /deluserbot to remove it."
-                )
-        except Exception as e:
-            status_text = (
-                f"⚠️ Userbot string saved, but connection check failed: <code>{e}</code>\n"
-                f"🔑 String : <code>{string[:12]}...{string[-6:]}</code>"
-            )
-
-        await message.reply_text(status_text, parse_mode=enums.ParseMode.HTML)
