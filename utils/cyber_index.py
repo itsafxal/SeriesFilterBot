@@ -210,6 +210,43 @@ def _parse_season_episode(name: str) -> tuple[int, int]:
     return season, episode
 
 
+# ─────────────────────────────────────────────────────────────
+# SERIES GUARD — accepts any file that looks like a TV series.
+# Rejects only plain movies / music / random docs with no season marker.
+#
+# Accepted:
+#   S01E01, S01EP01, S01E01E02, Season 1 Episode 1, 1x01  — episode files
+#   S01, S1, Season 1, Season01                            — season-only packs
+#   Show.S02.Complete.mkv, Season 3 Batch                  — full-season packs
+#
+# Rejected: bare filenames with zero season/episode markers
+# ─────────────────────────────────────────────────────────────
+
+_SERIES_GUARD_RE = re.compile(
+    r"""
+    (?:
+        [sS]\d{1,3}[\s._\-]*[eE][pP]?\d{1,3}          # S01E01 / S01EP01 / S01 E01
+      | [sS]\d{1,3}[eE]\d{1,3}[eE]\d{1,3}              # S01E01E02 (multi-ep)
+      | Season[\s._\-]*\d+[\s._\-]*Episode[\s._\-]*\d+ # Season 1 Episode 1
+      | \d{1,2}x\d{1,2}                                 # 1x01
+      | [sS]\d{1,3}\b                                   # S01 / S1 alone (season pack)
+      | Season[\s._\-]*\d+\b                            # Season 1 / Season01 alone
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _is_series_file(file_name: str, caption: str = "") -> bool:
+    """
+    Returns True if the file contains any season or episode marker —
+    including season-only packs like S01, Season 2, Show.S02.Complete.mkv.
+    Returns False only for files with NO season/episode indicator at all.
+    """
+    combined = f"{file_name} {caption}"
+    return bool(_SERIES_GUARD_RE.search(combined))
+
+
 def _parse_quality(name: str, caption: str = "") -> str:
     combined = f"{name} {caption}"
     for pattern, label in _QUALITY_MAP:
@@ -623,7 +660,13 @@ async def save_series_file_for_bulk_index(
         if not file_name:
             return False, 0
 
-        channel_id = msg.chat.id if msg.chat else None
+        # ── SERIES GUARD — skip non-series files (movies, music, etc.) ──
+        caption_raw = getattr(msg, "caption", None) or ""
+        if not isinstance(caption_raw, str):
+            caption_raw = str(caption_raw)
+        if not _is_series_file(file_name, caption_raw):
+            logger.debug(f"[cyber_index] ⏭ Not a series file (no S/E marker): {file_name}")
+            return False, 0
         message_id = msg.id
 
         if not channel_id:
@@ -728,6 +771,11 @@ async def parse_message_to_doc(msg) -> dict | None:
         caption = getattr(msg, "caption", None) or ""
         if not isinstance(caption, str):
             caption = str(caption)
+
+        # ── SERIES GUARD — skip non-series files (movies, music, etc.) ──
+        if not _is_series_file(file_name, caption):
+            logger.debug(f"[cyber_index] ⏭ Not a series file (no S/E marker): {file_name}")
+            return None
 
         season, episode = _parse_season_episode(file_name)
         quality         = _parse_quality(file_name, caption)
