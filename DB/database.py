@@ -29,7 +29,7 @@ import asyncio
 import threading as _threading
 _batch_counter: int = 0
 _batch_counter_lock = _threading.Lock()
-from pymongo import MongoClient
+from pymongo import MongoClient, TEXT
 from config import (
     MONGO_URI_CONFIG,
     MONGO_URI_DB1,
