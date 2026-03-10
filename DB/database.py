@@ -23,12 +23,13 @@ CODEC FIX (this version):
 """
 
 import asyncio
-import random
 
 # Alternating batch counter for "both" target — odd→DB1, even→DB2
+# FIX: protected by a threading.Lock to prevent race conditions in concurrent async tasks
+import threading as _threading
 _batch_counter: int = 0
-import re
-from pymongo import MongoClient, TEXT
+_batch_counter_lock = _threading.Lock()
+from pymongo import MongoClient
 from config import (
     MONGO_URI_CONFIG,
     MONGO_URI_DB1,
@@ -133,7 +134,10 @@ _ensure_file_indexes(files_collection_1)
 _ensure_file_indexes(files_collection_2)
 state_collection.create_index([("_id", 1)])
 try:
-    sticker_collection.drop_index("brand_1_season_1")
+    _idx_names = [i["name"] for i in sticker_collection.list_indexes()]
+    if "brand_1_season_1" in _idx_names:
+        sticker_collection.drop_index("brand_1_season_1")
+        logger.info("Dropped legacy sticker index 'brand_1_season_1'")
 except Exception:
     pass
 _safe_create_index(
@@ -148,6 +152,14 @@ logger.info("✅ MongoDB indexes ensured on all 3 clients.")
 # ─────────────────────────────────────────────────────────────
 # SQLite imports
 # ─────────────────────────────────────────────────────────────
+
+# ── Async query cache — wraps lru_cache results to skip lock on hot paths ──
+# Entries are invalidated by clear_all_caches() which calls this function.
+_async_cache: dict = {}
+
+def _invalidate_async_cache():
+    """Clear async-layer cache. Called by clear_all_caches() in sqlite_db."""
+    _async_cache.clear()
 
 from .sqlite_db import (
     SQLITE_DB_PATH,
@@ -184,41 +196,13 @@ from .sqlite_db import (
 # SQL INIT  —  migrate from BOTH Mongo file DBs
 # ─────────────────────────────────────────────────────────────
 
-class _MergedCursor:
-    """
-    Wraps two pymongo cursors and iterates them as one logical stream.
-    Exposes count_documents() by summing both collections.
-    """
-    def __init__(self, col1, col2, projection):
-        self._col1 = col1
-        self._col2 = col2
-        self._proj = projection
-
-    def count_documents(self, filt):
-        try:
-            return (
-                self._col1.count_documents(filt)
-                + self._col2.count_documents(filt)
-            )
-        except Exception:
-            return 0
-
-    def find(self, filt=None, projection=None):
-        filt       = filt or {}
-        projection = projection or self._proj
-        yield from self._col1.find(filt, projection)
-        yield from self._col2.find(filt, projection)
-
-    def __iter__(self):
-        return self.find()
-
-
 def initialize_sql_db():
     """
     Synchronously initialises the SQL database.
     Migrates from BOTH Mongo file collections, then runs two repair passes:
       1. normalized_name repair  — fixes series titles from old normalizer
       2. codec repair            — backfills codec for pre-codec-detection rows
+    FIX: removed duplicate dead _MergedCursor class; uses inline _Merged only.
     """
     logger.info("[INIT] Starting migration from BOTH MongoDB file DBs → SQLite...")
 
@@ -323,10 +307,13 @@ async def get_bot_state(chat_id):
 
 
 async def delete_all_index_states():
-    keys = await get_all_bot_state_keys()
-    for k in keys:
-        if k.startswith("index_"):
-            await save_bot_state(k, None)
+    """FIX: delete docs instead of nulling — avoids ghost documents in state_collection."""
+    def _sync():
+        try:
+            state_collection.delete_many({"_id": {"$regex": "^index_"}})
+        except Exception as e:
+            logger.error(f"delete_all_index_states error: {e}")
+    await asyncio.to_thread(_sync)
 
 
 async def get_all_bot_state_keys():
@@ -357,13 +344,23 @@ async def set_index_channels(channel_list: list):
 # ─────────────────────────────────────────────────────────────
 
 async def get_series_summary(series_name: str):
+    key = ("summary", series_name)
+    if key in _async_cache:
+        return _async_cache[key]
     async with sql_db_lock:
-        return await asyncio.to_thread(get_series_summary_sync, series_name)
+        result = await asyncio.to_thread(get_series_summary_sync, series_name)
+    _async_cache[key] = result
+    return result
 
 
 async def search_series(query: str):
+    key = ("search", query)
+    if key in _async_cache:
+        return _async_cache[key]
     async with sql_db_lock:
-        return await asyncio.to_thread(search_series_sync, query)
+        result = await asyncio.to_thread(search_series_sync, query)
+    _async_cache[key] = result
+    return result
 
 
 async def get_unique_languages_by_name(series_name: str):
@@ -393,10 +390,13 @@ async def get_all_files_by_season_and_quality(
 
 
 async def get_unique_languages_by_season(series_name: str, season: int):
+    key = ("langs_season", series_name, season)
+    if key in _async_cache:
+        return _async_cache[key]
     async with sql_db_lock:
-        return await asyncio.to_thread(
-            get_unique_languages_by_season_sync, series_name, season
-        )
+        result = await asyncio.to_thread(get_unique_languages_by_season_sync, series_name, season)
+    _async_cache[key] = result
+    return result
 
 
 async def get_unique_qualities_by_lang_season(
@@ -412,10 +412,15 @@ async def get_unique_qualities_with_codec(
     series_name: str, language: str, season: int
 ):
     """Returns list of (quality, codec) tuples for building quality buttons."""
+    key = ("qc", series_name, language, season)
+    if key in _async_cache:
+        return _async_cache[key]
     async with sql_db_lock:
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             get_unique_qualities_with_codec_sync, series_name, language, season
         )
+    _async_cache[key] = result
+    return result
 
 
 async def get_file_by_message_id_and_channel_id(channel_id: int, message_id: int):
@@ -457,7 +462,7 @@ def _mongo_upsert(col, file_doc: dict):
         codec = (file_doc.get("codec") or "").strip()
 
         # Build $set — all fields always, codec only when non-empty
-        set_fields = {k: v for k, v in file_doc.items() if k != "codec"}
+        set_fields = {k: v for k, v in file_doc.items() if k not in ("codec", "_id")}
         if codec:
             set_fields["codec"] = codec
 
@@ -485,25 +490,25 @@ async def save_file_to_db(file_doc: dict, target: str = "both"):
     "both" and "mongo" = randomly pick one of DB1 or DB2 (no dual-write).
     """
     def _sync():
-        nonlocal target
         global _batch_counter
         if target in ("both", "mongo"):
-            _batch_counter += 1
-            _target = "db1" if _batch_counter % 2 == 1 else "db2"
+            with _batch_counter_lock:
+                _batch_counter += 1
+                _resolved = "db1" if _batch_counter % 2 == 1 else "db2"
         else:
-            _target = target
+            _resolved = target
 
         mongo_ok = False
-
-        if _target == "db1":
+        if _resolved == "db1":
             mongo_ok = _mongo_upsert(files_collection_1, file_doc)
-        elif _target == "db2":
+        elif _resolved == "db2":
             mongo_ok = _mongo_upsert(files_collection_2, file_doc)
 
         sql_ok = save_file_to_sql_sync(file_doc, logger)
 
         if sql_ok or mongo_ok:
             clear_all_caches()
+            _invalidate_async_cache()
 
         return sql_ok
 
@@ -532,7 +537,7 @@ async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
             ops = []
             for doc in docs_list:
                 codec      = (doc.get("codec") or "").strip()
-                set_fields = {k: v for k, v in doc.items() if k != "codec"}
+                set_fields = {k: v for k, v in doc.items() if k not in ("codec", "_id")}
                 if codec:
                     set_fields["codec"] = codec
                 ops.append(UpdateOne(
@@ -551,17 +556,17 @@ async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
         if target in ("both", "mongo"):
             # Alternate batches: odd counter → DB1, even counter → DB2
             global _batch_counter
-            _batch_counter += 1
-            if _batch_counter % 2 == 1:
+            with _batch_counter_lock:
+                _batch_counter += 1
+                _use_db1 = (_batch_counter % 2 == 1)
+            if _use_db1:
                 try:
                     files_collection_1.bulk_write(_build_ops(docs), ordered=False)
-                    logger.debug(f"[BATCH] batch #{_batch_counter} → DB1 ({len(docs)} docs)")
                 except Exception as e:
                     logger.error(f"[BATCH] Mongo bulk_write DB1 error: {e}")
             else:
                 try:
                     files_collection_2.bulk_write(_build_ops(docs), ordered=False)
-                    logger.debug(f"[BATCH] batch #{_batch_counter} → DB2 ({len(docs)} docs)")
                 except Exception as e:
                     logger.error(f"[BATCH] Mongo bulk_write DB2 error: {e}")
         elif target == "db1":
@@ -579,6 +584,7 @@ async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
         saved = save_file_docs_batch_sync(docs, logger)
         if saved:
             clear_all_caches()
+            _invalidate_async_cache()
         return saved
 
     return await asyncio.to_thread(_sync)
@@ -593,6 +599,7 @@ async def delete_all_files():
                 logger.error(f"delete_all_files error ({col.full_name}): {e}")
         delete_all_files_sync()
         clear_all_caches()
+        _invalidate_async_cache()
 
     await asyncio.to_thread(_sync)
 
@@ -618,6 +625,7 @@ async def update_file_id(channel_id: int, message_id: int, new_file_id: str):
         update_file_id_sync(channel_id, message_id, new_file_id)
         if updated:
             clear_all_caches()
+            _invalidate_async_cache()
         logger.info(f"[FILE_ID_REFRESH] ch={channel_id} msg={message_id} updated={updated}")
 
     await asyncio.to_thread(_sync)
@@ -644,7 +652,7 @@ async def remove_group(chat_id: int):
 async def get_total_groups() -> int:
     def _sync():
         try:
-            return groups_collection.count_documents({})
+            return groups_collection.estimated_document_count()
         except Exception:
             return 0
     return await asyncio.to_thread(_sync)
@@ -671,8 +679,8 @@ async def get_db_size_info() -> dict:
         # SQLite
         try:
             import os
-            from utils.sqlite_db import DB_PATH
-            info["sqlite"] = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+            from DB.sqlite_db import SQLITE_DB_PATH as _SQL_PATH
+            info["sqlite"] = os.path.getsize(_SQL_PATH) if os.path.exists(_SQL_PATH) else 0
         except Exception:
             info["sqlite"] = 0
         return info
@@ -803,6 +811,7 @@ async def delete_one_file(channel_id: int, msg_id: int):
                 logger.error(f"delete_one_file error ({col.full_name}): {e}")
         delete_one_file_sync(channel_id, msg_id)
         clear_all_caches()
+        _invalidate_async_cache()
 
     await asyncio.to_thread(_sync)
 
@@ -823,13 +832,15 @@ async def get_all_series() -> list:
 
 
 async def get_total_files_per_db() -> dict:
+    """FIX: use estimated_document_count (O(1) index scan) instead of
+    count_documents({}) (full collection scan) — much faster on large DBs."""
     def _sync():
         try:
-            c1 = files_collection_1.count_documents({})
+            c1 = files_collection_1.estimated_document_count()
         except Exception:
             c1 = -1
         try:
-            c2 = files_collection_2.count_documents({})
+            c2 = files_collection_2.estimated_document_count()
         except Exception:
             c2 = -1
         return {"db1": c1, "db2": c2}
@@ -867,7 +878,7 @@ async def get_all_users():
 async def get_total_users() -> int:
     def _sync():
         try:
-            return users_collection.count_documents({})
+            return users_collection.estimated_document_count()
         except Exception as e:
             logger.error(f"get_total_users error: {e}")
             return 0
@@ -929,70 +940,90 @@ async def repair_normalized_names_in_mongo():
     The conflicting duplicate documents are deleted to keep DB clean.
     """
     def _repair_col(col):
+        """
+        FIX: true streaming cursor — never loads full collection into RAM.
+        Processes docs in CHUNK-sized bulk_write batches.
+        batch_size only controls network chunk size, not memory — list() would
+        still OOM on large collections, so we iterate the cursor directly.
+        """
+        from pymongo import UpdateOne
+        from pymongo.errors import BulkWriteError
+        CHUNK = 5000
         updated  = 0
         skipped  = 0
         conflict = 0
 
-        try:
-            docs = list(col.find({}, {"_id": 1, "file_name": 1, "normalized_name": 1}))
-        except Exception as e:
-            logger.error(f"repair_normalized_names_in_mongo: fetch error ({col.full_name}): {e}")
-            return 0, 0, 0
-
-        from pymongo import UpdateOne
-        bulk = []
-        for doc in docs:
-            file_name = doc.get("file_name") or ""
-            old_norm  = doc.get("normalized_name") or ""
-            new_norm  = _normalized_series_from_filename(file_name).lower()
-            if new_norm and new_norm != old_norm:
-                bulk.append(UpdateOne(
-                    {"_id": doc["_id"]},
-                    {"$set": {"normalized_name": new_norm}},
-                ))
-
-        if not bulk:
-            skipped = len(docs)
-            return updated, skipped, conflict
-
-        try:
-            result  = col.bulk_write(bulk, ordered=False)
-            updated = result.modified_count
-        except Exception as e:
-            # BulkWriteError — extract partial results and count conflicts
-            from pymongo.errors import BulkWriteError
-            if isinstance(e, BulkWriteError):
-                details   = e.details or {}
-                updated   = details.get("nModified", 0)
-                write_errs = details.get("writeErrors", [])
-                dup_ids   = []
-                for err in write_errs:
+        def _flush(ops):
+            nonlocal updated, conflict
+            if not ops:
+                return
+            try:
+                r = col.bulk_write(ops, ordered=False)
+                updated += r.modified_count
+            except BulkWriteError as bwe:
+                d = bwe.details or {}
+                updated += d.get("nModified", 0)
+                dup_ids = []
+                for err in d.get("writeErrors", []):
                     if err.get("code") == 11000:
                         conflict += 1
-                        # The _id of the doc that FAILED to update (it's the duplicate)
-                        op = err.get("op", {})
-                        failed_id = op.get("q", {}).get("_id")
-                        if failed_id:
-                            dup_ids.append(failed_id)
+                        fid = err.get("op", {}).get("q", {}).get("_id")
+                        if fid:
+                            dup_ids.append(fid)
                     else:
                         logger.error(
                             f"repair_normalized_names_in_mongo: non-dup error "
                             f"({col.full_name}): {err.get('errmsg')}"
                         )
-                # Delete the conflicting duplicates — they are stale old-norm docs
                 if dup_ids:
                     try:
-                        del_result = col.delete_many({"_id": {"$in": dup_ids}})
+                        dr = col.delete_many({"_id": {"$in": dup_ids}})
                         logger.info(
-                            f"[REPAIR] {col.full_name}: deleted {del_result.deleted_count} "
+                            f"[REPAIR] {col.full_name}: deleted {dr.deleted_count} "
                             f"conflicting duplicate docs"
                         )
                     except Exception as de:
                         logger.error(f"[REPAIR] Failed to delete duplicates: {de}")
-            else:
+            except Exception as e:
                 logger.error(
                     f"repair_normalized_names_in_mongo: bulk_write error ({col.full_name}): {e}"
                 )
+
+        try:
+            cursor = col.find(
+                {}, {"_id": 1, "file_name": 1, "normalized_name": 1},
+                batch_size=CHUNK,
+                no_cursor_timeout=True,
+            )
+        except Exception as e:
+            logger.error(f"repair_normalized_names_in_mongo: cursor open error ({col.full_name}): {e}")
+            return 0, 0, 0
+
+        total_docs = 0
+        pending    = []
+        try:
+            for doc in cursor:
+                total_docs += 1
+                file_name = doc.get("file_name") or ""
+                old_norm  = doc.get("normalized_name") or ""
+                new_norm  = _normalized_series_from_filename(file_name).lower()
+                if new_norm and new_norm != old_norm:
+                    pending.append(UpdateOne(
+                        {"_id": doc["_id"]},
+                        {"$set": {"normalized_name": new_norm}},
+                    ))
+                if len(pending) >= CHUNK:
+                    _flush(pending)
+                    pending = []
+            _flush(pending)
+            skipped = total_docs - updated - conflict
+        except Exception as e:
+            logger.error(f"repair_normalized_names_in_mongo: iteration error ({col.full_name}): {e}")
+        finally:
+            try:
+                cursor.close()
+            except Exception:
+                pass
 
         return updated, skipped, conflict
 
