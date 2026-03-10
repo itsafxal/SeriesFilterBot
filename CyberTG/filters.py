@@ -9,6 +9,8 @@ FIXES:
   5. Removed duplicate imports
   6. _quality_label: safely handles empty/None codec and normalizes quality key lookup
      so "720p", "1080p" etc. always display correctly when no codec is detected
+  7. _safe_reply_photo / _safe_edit_media: catch WebpageMediaEmpty and fall back to
+     text-only so a bad DEFAULT_POSTER / SPELL_IMG never crashes the handler
 """
 
 import math
@@ -20,7 +22,7 @@ from pyrogram.types import (
     InlineKeyboardButton,
     InputMediaPhoto
 )
-from pyrogram.errors import MessageNotModified, FloodWait
+from pyrogram.errors import MessageNotModified, FloodWait, WebpageMediaEmpty
 
 from config import (
     DEFAULT_POSTER,
@@ -73,6 +75,63 @@ async def safe_edit(coro, q):
         await __import__("asyncio").sleep(fw.value)
     except Exception:
         await q.answer()
+
+
+async def _safe_reply_photo(m, photo: str, caption: str, parse_mode, reply_markup):
+    """
+    Try reply_photo with the given URL.
+    If Telegram rejects it (WebpageMediaEmpty / bad URL), fall back to reply_text
+    so the handler never crashes due to a broken poster/fallback URL.
+    """
+    if photo:
+        try:
+            return await m.reply_photo(
+                photo,
+                caption=caption,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+            )
+        except (WebpageMediaEmpty, Exception) as e:
+            # Log once so the admin knows the URL is broken, then fall through
+            import logging
+            logging.getLogger("BOT").warning(
+                f"[POSTER] reply_photo failed for URL={photo!r}: {e}. "
+                "Falling back to text reply. Fix DEFAULT_POSTER / SPELL_IMG in config.py "
+                "to use a direct image URL (ending in .jpg/.png), not an ibb.co page URL."
+            )
+    # Fallback: text-only (caption becomes the message body)
+    return await m.reply_text(
+        caption,
+        parse_mode=parse_mode,
+        reply_markup=reply_markup,
+    )
+
+
+async def _safe_edit_media(q, photo: str, caption: str, parse_mode, reply_markup):
+    """
+    Try edit_media with the given URL.
+    Falls back to edit_caption if the URL is bad.
+    """
+    if photo:
+        try:
+            return await q.message.edit_media(
+                InputMediaPhoto(photo, caption=caption, parse_mode=parse_mode),
+                reply_markup=reply_markup,
+            )
+        except (WebpageMediaEmpty, Exception) as e:
+            import logging
+            logging.getLogger("BOT").warning(
+                f"[POSTER] edit_media failed for URL={photo!r}: {e}. Falling back to edit_caption."
+            )
+    # Fallback: just update the caption, keep existing photo
+    try:
+        return await q.message.edit_caption(
+            caption,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+        )
+    except (MessageNotModified, Exception):
+        pass
 
 
 # =================================================
@@ -309,11 +368,12 @@ def register_filters(cyber: Client):
             kb = build_season_pages(seasons, uid, series)
 
             photo = poster or DEFAULT_POSTER
-            msg = await m.reply_photo(
+            msg = await _safe_reply_photo(
+                m,
                 photo,
                 caption=build_caption(series, year, genre, rating, seasons=seasons),
                 parse_mode=enums.ParseMode.HTML,
-                reply_markup=kb
+                reply_markup=kb,
             )
             if AUTO_DELETE_DELAY > 0:
                 delete_message_later(cyber, msg.chat.id, msg.id, AUTO_DELETE_DELAY)
@@ -335,11 +395,12 @@ def register_filters(cyber: Client):
                 buttons.append([InlineKeyboardButton(f"🎬  {s}", callback_data=f"sug|{s}")])
             buttons.append([InlineKeyboardButton("✖️  Close", callback_data="close_spell")])
 
-            msg = await m.reply_photo(
+            msg = await _safe_reply_photo(
+                m,
                 SPELL_IMG,
                 caption="\n".join(lines),
                 parse_mode=enums.ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(buttons)
+                reply_markup=InlineKeyboardMarkup(buttons),
             )
             if AUTO_DELETE_DELAY > 0:
                 delete_message_later(cyber, msg.chat.id, msg.id, AUTO_DELETE_DELAY)
@@ -373,13 +434,12 @@ def register_filters(cyber: Client):
         seasons = list((await get_series_summary(series))["seasons"])
         kb = build_season_pages(seasons, q.from_user.id, series)
         await safe_edit(
-            q.message.edit_media(
-                InputMediaPhoto(
-                    poster or DEFAULT_POSTER,
-                    caption=build_caption(series, year, genre, rating, seasons=seasons),
-                    parse_mode=enums.ParseMode.HTML
-                ),
-                reply_markup=kb
+            _safe_edit_media(
+                q,
+                poster or DEFAULT_POSTER,
+                caption=build_caption(series, year, genre, rating, seasons=seasons),
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=kb,
             ),
             q
         )
