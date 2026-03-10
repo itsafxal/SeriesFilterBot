@@ -22,15 +22,26 @@ from utils.cyber_index import (
 from utils.cyber_filter import extract_links
 
 # ---------------------------------------------------------------
-# TUNING  (increase CONCURRENT_FETCHES carefully if needed)
+# TUNING — Bot-only, flood-free, normal-fast indexing
 # ---------------------------------------------------------------
+# Telegram bot limit: ~30 get_messages() calls/min per bot token.
+# At 50 IDs/call with a 2.5s cooldown → ~24 calls/min → ~1,200 IDs/min.
+# This is comfortably under the limit with headroom to absorb spikes.
+# FETCH_BATCH=50 keeps payloads small; Telegram allows up to 200 but
+# smaller batches = lower chance of a timeout or partial result on busy channels.
 
-FETCH_BATCH        = 200   # IDs per get_messages() call (Telegram max)
-CONCURRENT_FETCHES = 1     # bot token: 1 concurrent fetch only — parallel calls trigger FloodWait
-SAVE_BATCH_SIZE    = 800   # parsed docs buffer before DB flush
-CHECKPOINT_EVERY   = 25    # checkpoint every N rounds
+FETCH_BATCH        = 50    # IDs per get_messages() call (safe bot limit)
+CONCURRENT_FETCHES = 1     # bot token: strictly 1 concurrent fetch — parallel = FloodWait
+SAVE_BATCH_SIZE    = 500   # parsed docs buffer before DB flush
+CHECKPOINT_EVERY   = 20    # checkpoint every N rounds
 PROGRESS_EVERY     = 15    # seconds between Telegram message edits
-ROUND_COOLDOWN     = 3.5   # 1 call per 3.5s ≈ 17 calls/min — safely under bot's ~20/min limit
+
+# Adaptive cooldown — starts at BASE, backs off on FloodWait, recovers over time
+_COOLDOWN_BASE = 2.5       # seconds between calls at normal speed (~24 calls/min)
+_COOLDOWN_MAX  = 30.0      # max cooldown after repeated FloodWaits
+_COOLDOWN_STEP_UP   = 1.5  # added on each FloodWait
+_COOLDOWN_STEP_DOWN = 0.1  # subtracted after each clean round (gradual recovery)
+_round_cooldown = _COOLDOWN_BASE  # mutable — updated at runtime
 
 INDEX_SKIP_KEY   = "INDEX_SKIP_ID"
 INDEX_STATUS_KEY = "CURRENT_INDEX_TASK"
@@ -120,7 +131,7 @@ def _progress(*, cid, start_id, last_id, checked, saved, skipped, dup,
         f"Skipped   : `{skipped:,}`",
         f"Duplicate : `{dup:,}`",
         f"Speed     : `{mps:.0f}` msg/s",
-        f"Fetching  : `{CONCURRENT_FETCHES} x {FETCH_BATCH}` IDs/round",
+        f"Fetching  : `{CONCURRENT_FETCHES} x {FETCH_BATCH}` IDs/round  cooldown=`{_round_cooldown:.1f}s`",
     ]
     if fw_count:
         lines.append(f"FloodWait : `{fw_count}` times")
@@ -132,22 +143,29 @@ def _progress(*, cid, start_id, last_id, checked, saved, skipped, dup,
 # ---------------------------------------------------------------
 
 async def _fetch_one(bot: Client, chat_id: int, id_window: list, fw_count: list) -> list:
+    global _round_cooldown
     while True:
         try:
             msgs = await bot.get_messages(chat_id, id_window)
+            # Successful call → slowly recover cooldown toward base
+            _round_cooldown = max(_COOLDOWN_BASE, _round_cooldown - _COOLDOWN_STEP_DOWN)
             return msgs if isinstance(msgs, list) else [msgs]
         except FloodWait as fw:
             fw_count[0] += 1
-            wait = max(int(getattr(fw, "value", 10)), 5)
-            logger.warning(f"[BOT] FloodWait {wait}s - retrying")
-            # Extra buffer: wait the full required time plus 20% headroom
-            await asyncio.sleep(wait * 1.2 + 1)
+            wait = max(int(getattr(fw, "value", 15)), 15)
+            # Back off adaptive cooldown
+            _round_cooldown = min(_COOLDOWN_MAX, _round_cooldown + _COOLDOWN_STEP_UP)
+            logger.warning(
+                f"[BOT] FloodWait {wait}s — sleeping {wait + 5}s "
+                f"| new cooldown={_round_cooldown:.1f}s"
+            )
+            await asyncio.sleep(wait + 5)   # always wait full time + 5s buffer
         except ChannelPrivate:
             logger.error(f"[BOT] Channel {chat_id} is private/inaccessible")
             return []
         except Exception as e:
             logger.error(f"[BOT] get_messages error: {e}")
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             return []
 
 
@@ -193,7 +211,8 @@ async def index_files_task(
     bot: Client, status_msg: Message,
     chat_id: int, start_id: int, last_id: int, target: str = "both",
 ):
-    global index_task
+    global index_task, _round_cooldown
+    _round_cooldown = _COOLDOWN_BASE   # reset to base speed for each fresh index
 
     chat_key     = f"index_{chat_id}"
     target_label = {"db1": "DB1", "db2": "DB2", "both": "DB1+DB2"}.get(target, target)
@@ -273,8 +292,8 @@ async def index_files_task(
                 msgs = await _fetch_round(bot, chat_id, [window], fw_count)
                 calls += 1
 
-                # Fixed cooldown — 3.5s keeps bot safely under ~20 calls/min limit
-                await asyncio.sleep(ROUND_COOLDOWN)
+                # Adaptive cooldown — flood-free bot speed
+                await asyncio.sleep(_round_cooldown)
 
                 for msg in msgs:
                     checked += 1
@@ -374,7 +393,7 @@ async def compute_effective_start(chat_id: int, default_start: int) -> int:
 
 
 def _mode_badge() -> str:
-    return f"Bot mode  `{CONCURRENT_FETCHES} x {FETCH_BATCH}` IDs/round"
+    return f"Bot mode  `{CONCURRENT_FETCHES} x {FETCH_BATCH}` IDs/round | cooldown `{_COOLDOWN_BASE}s` adaptive"
 
 
 async def _est(start_id: int, last_id: int) -> str:
