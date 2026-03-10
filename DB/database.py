@@ -993,7 +993,6 @@ async def repair_normalized_names_in_mongo():
             cursor = col.find(
                 {}, {"_id": 1, "file_name": 1, "normalized_name": 1},
                 batch_size=CHUNK,
-                no_cursor_timeout=True,
             )
         except Exception as e:
             logger.error(f"repair_normalized_names_in_mongo: cursor open error ({col.full_name}): {e}")
