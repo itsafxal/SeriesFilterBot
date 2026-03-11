@@ -17,7 +17,7 @@ from utils.cyber_poster import (
 
 async def fetch_tmdb(series_name: str, landscape: bool = False):
     url    = "https://api.themoviedb.org/3/search/tv"
-    params = {"api_key": TMDB_API_KEY, "query": series_name}
+    params = {"api_key": TMDB_API_KEY(), "query": series_name}
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -73,7 +73,7 @@ async def fetch_tmdb(series_name: str, landscape: bool = False):
 
 async def fetch_omdb(series_name: str):
     url    = "http://www.omdbapi.com/"
-    params = {"apikey": OMDB_API_KEY, "t": series_name, "type": "series"}
+    params = {"apikey": OMDB_API_KEY(), "t": series_name, "type": "series"}
 
     try:
         async with aiohttp.ClientSession() as session:
