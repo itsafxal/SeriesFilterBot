@@ -667,6 +667,8 @@ async def save_series_file_for_bulk_index(
         if not _is_series_file(file_name, caption_raw):
             logger.debug(f"[cyber_index] ⏭ Not a series file (no S/E marker): {file_name}")
             return False, 0
+
+        channel_id = msg.chat.id if msg.chat else None
         message_id = msg.id
 
         if not channel_id:
