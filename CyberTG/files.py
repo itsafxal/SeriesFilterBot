@@ -222,13 +222,72 @@ def _build_caption(template: str, series: str, season: int,
 # FORWARD FALLBACK  (stale file_id → copy from source channel)
 # ─────────────────────────────────────────────────────────────
 
+async def _refresh_file_id(cyber, channel_id: int, message_id: int) -> str | None:
+    """
+    Re-fetch the source message to get a fresh file_id.
+    Used when the stored file_id has expired (Telegram invalidates them periodically).
+    Returns the new file_id string, or None if the message is unreachable.
+    """
+    try:
+        msgs = await cyber.get_messages(channel_id, message_id)
+        msg  = msgs if not isinstance(msgs, list) else (msgs[0] if msgs else None)
+        if not msg:
+            return None
+        media = (
+            getattr(msg, "video",    None)
+            or getattr(msg, "audio",    None)
+            or getattr(msg, "document", None)
+        )
+        if media and getattr(media, "file_id", None):
+            return media.file_id
+    except Exception as e:
+        logger.debug(f"[REFRESH] get_messages ch={channel_id} msg={message_id}: {e}")
+    return None
+
+
 async def _forward_fallback(cyber, user_id: int, f: dict,
                              caption: str, auto_delay: int) -> bool:
+    """
+    Stale file_id recovery:
+      1. Re-fetch the source message to obtain a fresh file_id.
+      2. Send directly to user using that fresh file_id (no copy/forward).
+      3. Persist the new file_id to DB so future deliveries are instant.
+    Falls back to copy_message only if get_messages itself fails.
+    """
     channel_id = f.get("channel_id")
     message_id = f.get("message_id")
+    file_name  = f.get("file_name", "unknown")
+
     if not channel_id or not message_id:
-        logger.warning(f"[FALLBACK] No source for {f.get('file_name')} — skipping")
+        logger.warning(f"[FALLBACK] No source info for {file_name} — skipping")
         return False
+
+    # ── Step 1: refresh file_id via get_messages ──────────────
+    fresh_id = await _refresh_file_id(cyber, channel_id, message_id)
+
+    if fresh_id:
+        # ── Step 2: send directly with fresh file_id ──────────
+        f_fresh = {**f, "file_id": fresh_id}
+        ok = await _safe_send_single(cyber, user_id, f_fresh, caption, auto_delay)
+        if ok:
+            # ── Step 3: persist new file_id so next delivery is instant ──
+            try:
+                asyncio.create_task(update_file_id(channel_id, message_id, fresh_id))
+            except Exception:
+                pass
+            logger.info(
+                f"[FALLBACK] ✅ refreshed file_id for {file_name} "
+                f"ch={channel_id} msg={message_id}"
+            )
+            return True
+        logger.warning(f"[FALLBACK] send with fresh file_id failed for {file_name}")
+        return False
+
+    # ── Step 4: get_messages failed — try copy_message as last resort ──
+    logger.warning(
+        f"[FALLBACK] get_messages failed for ch={channel_id} msg={message_id} "
+        f"— trying copy_message"
+    )
     try:
         sent = await cyber.copy_message(
             chat_id=user_id,
@@ -239,18 +298,17 @@ async def _forward_fallback(cyber, user_id: int, f: dict,
         )
         if sent and auto_delay > 0:
             delete_message_later(cyber, user_id, sent.id, auto_delay)
-        # Refresh stale file_id in background
         try:
             media = (
                 getattr(sent, "document", None)
-                or getattr(sent, "video", None)
-                or getattr(sent, "audio", None)
+                or getattr(sent, "video",    None)
+                or getattr(sent, "audio",    None)
             )
             if media and media.file_id:
                 asyncio.create_task(update_file_id(channel_id, message_id, media.file_id))
         except Exception:
             pass
-        logger.info(f"[FALLBACK] ✅ ch={channel_id} msg={message_id} → uid={user_id}")
+        logger.info(f"[FALLBACK] ✅ copy_message ch={channel_id} msg={message_id} → uid={user_id}")
         return True
     except Exception as e:
         logger.error(f"[FALLBACK] ❌ ch={channel_id} msg={message_id}: {e}")
@@ -323,8 +381,7 @@ async def _send_end_sticker(cyber, user_id: int, season: int,
 async def _safe_send_group(cyber, user_id: int, media_group: list,
                             auto_delay: int,
                             source_files: list | None = None) -> list:
-    """
-    Send a media group with FloodWait retry. Returns sent messages.
+    """Send a media group with FloodWait retry. Returns sent messages.
     source_files: original file dicts parallel to media_group — used to
     fall back to per-file sending when the group itself is rejected.
     """
@@ -342,8 +399,8 @@ async def _safe_send_group(cyber, user_id: int, media_group: list,
         except Exception as e:
             err = str(e)
             logger.error(f"[SEND] send_media_group failed uid={user_id}: {e}")
-            # FIX: MEDIA_EMPTY / FILE_ID_INVALID — media group was rejected wholesale.
-            # Fall back to sending each file individually so nothing is silently dropped.
+            # MEDIA_EMPTY / stale file_ids — fall back to per-file send
+            # so nothing is silently dropped.
             if source_files and any(k in err for k in (
                 "MEDIA_EMPTY", "FILE_ID_INVALID", "FILE_REFERENCE_EXPIRED", "MEDIA_INVALID"
             )):
@@ -356,7 +413,7 @@ async def _safe_send_group(cyber, user_id: int, media_group: list,
                     ok = await _safe_send_single(cyber, user_id, f, cap, auto_delay)
                     if ok:
                         sent_fallback.append(True)
-                return sent_fallback  # length = how many succeeded
+                return sent_fallback
             return []
 
 
@@ -543,7 +600,7 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
                 fallback_items.append((f, cap))
 
         # Send the group (if any files have valid file_ids)
-        # FIX 1: Split by media_type — Telegram rejects mixed-type groups (MEDIA_EMPTY).
+        # FIX 1: Split by media_type — Telegram rejects mixed-type groups.
         # FIX 2: Pass source_files so _safe_send_group can fall back per-file on failure.
         if group_items:
             type_buckets: dict[str, list] = {}
@@ -555,7 +612,6 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
                 media_list   = [im for im, _ in bucket]
                 source_files = [f  for _,  f in bucket]
                 if len(media_list) == 1:
-                    # send_media_group needs >=2 items -- send single instead
                     cap = media_list[0].caption or ""
                     await _safe_send_single(cyber, user_id, source_files[0], cap, auto_delay)
                     sent_count += 1
