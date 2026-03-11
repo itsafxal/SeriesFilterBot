@@ -212,7 +212,18 @@ def _build_caption(template: str, series: str, season: int,
             language=language,
             quality=quality,
         )
-    except Exception:
+    except KeyError as e:
+        logger.warning(f"[CAPTION] Unknown placeholder {e} in template — using default")
+        return DEFAULT_CAPTION.format(
+            series=series,
+            file_name=clean_name,
+            season=season_str,
+            episode=episode_str,
+            language=language,
+            quality=quality,
+        )
+    except Exception as e:
+        logger.warning(f"[CAPTION] Template format error: {e} — using fallback")
         return f"<b>{series}</b>\nS{season_str}E{episode_str} • {language} • {quality}"
 
 
@@ -570,7 +581,6 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
 
     # ── Send files ────────────────────────────────────────────
     sent_count  = 0
-    first_file  = True   # track globally for first-file full caption
 
     # Telegram send_media_group rules:
     #   - Min 2, Max 10 items per group
@@ -583,22 +593,18 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
     all_items = []   # list of (f, cap, file_id, normalised_type)
 
     for i, f in enumerate(files):
-        if first_file:
-            cap = _build_caption(
-                caption_template, series, season,
-                f.get("episode", 0), language, quality,
-                f.get("file_name", ""),
-            )
-        else:
-            ep  = str(f.get("episode", 0)).zfill(2)
-            cap = f"<b>Episode {ep}</b>"
+        # Every file gets its own full caption built from the template
+        cap = _build_caption(
+            caption_template, series, season,
+            f.get("episode", 0), language, quality,
+            f.get("file_name", ""),
+        )
 
         raw_type = (f.get("media_type") or "document").lower()
         # Normalise: video treated as document so they can be grouped together
         norm_type = "document" if raw_type in ("video", "document") else raw_type
 
         all_items.append((f, cap, f.get("file_id"), norm_type))
-        first_file = False
 
     # Split into groupable (document/video) and solo (audio, no file_id)
     groupable = [(f, cap, fid) for f, cap, fid, t in all_items if t == "document" and fid]
