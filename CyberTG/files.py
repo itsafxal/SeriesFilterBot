@@ -321,8 +321,13 @@ async def _send_end_sticker(cyber, user_id: int, season: int,
 # ─────────────────────────────────────────────────────────────
 
 async def _safe_send_group(cyber, user_id: int, media_group: list,
-                            auto_delay: int) -> list:
-    """Send a media group with FloodWait retry. Returns sent messages."""
+                            auto_delay: int,
+                            source_files: list | None = None) -> list:
+    """
+    Send a media group with FloodWait retry. Returns sent messages.
+    source_files: original file dicts parallel to media_group — used to
+    fall back to per-file sending when the group itself is rejected.
+    """
     while True:
         try:
             sent_msgs = await cyber.send_media_group(user_id, media_group)
@@ -335,7 +340,23 @@ async def _safe_send_group(cyber, user_id: int, media_group: list,
             logger.warning(f"[SEND] FloodWait {wait}s uid={user_id}")
             await asyncio.sleep(wait + 1)
         except Exception as e:
+            err = str(e)
             logger.error(f"[SEND] send_media_group failed uid={user_id}: {e}")
+            # FIX: MEDIA_EMPTY / FILE_ID_INVALID — media group was rejected wholesale.
+            # Fall back to sending each file individually so nothing is silently dropped.
+            if source_files and any(k in err for k in (
+                "MEDIA_EMPTY", "FILE_ID_INVALID", "FILE_REFERENCE_EXPIRED", "MEDIA_INVALID"
+            )):
+                logger.warning(
+                    f"[SEND] Falling back to per-file send for {len(source_files)} files"
+                )
+                sent_fallback = []
+                for f in source_files:
+                    cap = (f.get("caption") or "").strip() or f"<b>Episode {str(f.get('episode', 0)).zfill(2)}</b>"
+                    ok = await _safe_send_single(cyber, user_id, f, cap, auto_delay)
+                    if ok:
+                        sent_fallback.append(True)
+                return sent_fallback  # length = how many succeeded
             return []
 
 
@@ -522,8 +543,8 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
                 fallback_items.append((f, cap))
 
         # Send the group (if any files have valid file_ids)
-        # FIX: Telegram rejects media groups with mixed types (MEDIA_EMPTY).
-        # Split group_items by media_type before sending.
+        # FIX 1: Split by media_type — Telegram rejects mixed-type groups (MEDIA_EMPTY).
+        # FIX 2: Pass source_files so _safe_send_group can fall back per-file on failure.
         if group_items:
             type_buckets: dict[str, list] = {}
             for im, f in group_items:
@@ -531,15 +552,18 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
                 type_buckets.setdefault(mtype, []).append((im, f))
 
             for mtype, bucket in type_buckets.items():
-                media_list = [im for im, _ in bucket]
+                media_list   = [im for im, _ in bucket]
+                source_files = [f  for _,  f in bucket]
                 if len(media_list) == 1:
                     # send_media_group needs >=2 items -- send single instead
-                    f   = bucket[0][1]
-                    cap = bucket[0][0].caption or ""
-                    await _safe_send_single(cyber, user_id, f, cap, auto_delay)
+                    cap = media_list[0].caption or ""
+                    await _safe_send_single(cyber, user_id, source_files[0], cap, auto_delay)
                     sent_count += 1
                 else:
-                    sent = await _safe_send_group(cyber, user_id, media_list, auto_delay)
+                    sent = await _safe_send_group(
+                        cyber, user_id, media_list, auto_delay,
+                        source_files=source_files
+                    )
                     sent_count += len(sent)
 
         # Send fallback files (no file_id) individually
