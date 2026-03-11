@@ -591,7 +591,7 @@ def register_command_handlers(cyber: Client):
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
                         "https://api.themoviedb.org/3/search/tv",
-                        params={"api_key": TMDB_API_KEY, "query": name},
+                        params={"api_key": TMDB_API_KEY(), "query": name},
                         timeout=aiohttp.ClientTimeout(total=5),
                     ) as r:
                         data = await r.json()
@@ -601,7 +601,7 @@ def register_command_handlers(cyber: Client):
                     async with aiohttp.ClientSession() as session:
                         async with session.get(
                             f"https://api.themoviedb.org/3/tv/{show_id}",
-                            params={"api_key": TMDB_API_KEY},
+                            params={"api_key": TMDB_API_KEY()},
                             timeout=aiohttp.ClientTimeout(total=5),
                         ) as r:
                             show_data = await r.json()
