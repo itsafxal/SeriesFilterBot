@@ -50,7 +50,7 @@ from DB.database import (
     get_poster_landscape,
 )
 
-from utils.cyber_series import suggest_series, suggest_series_with_year, format_suggestion_label, check_owner
+from utils.cyber_series import suggest_series, check_owner
 from utils.cyber_filter import encode_payload
 from utils.cyber_delete import delete_message_later
 
@@ -216,14 +216,6 @@ async def _get_poster(series: str, settings: dict):
 # ─────────────────────────────────────────────────────────────
 
 async def resolve_series_with_suggestions(text: str):
-    """
-    Returns (exact_match_title | None, [(title, year), ...])
-
-    Suggestions are (title, year) tuples where:
-      - title is in our SQL DB
-      - title is confirmed by TMDB or OMDB
-      - NF Lucifer / custom-named titles not in TMDB/OMDB are excluded
-    """
     if not text:
         return None, []
 
@@ -232,24 +224,32 @@ async def resolve_series_with_suggestions(text: str):
         return None, []
 
     try:
-        # Use new validated suggestion engine (DB + TMDB/OMDB filter)
-        suggestions = await suggest_series_with_year(query, limit=4)
+        results = await search_series(query)
     except Exception:
         return None, []
 
-    if not suggestions:
+    if not isinstance(results, (list, tuple)):
         return None, []
 
-    # Single result that closely matches → treat as direct match
-    if len(suggestions) == 1:
-        title, year = suggestions[0]
-        query_words  = query.split()
-        result_words = title.lower().split()
-        if len(query_words) >= len(result_words):
-            return title, []
-        return None, suggestions
+    if not results:
+        try:
+            fuzzy = await suggest_series(query)
+            if isinstance(fuzzy, (list, tuple)):
+                return None, list(dict.fromkeys(fuzzy))[:4]
+        except Exception:
+            pass
+        return None, []
 
-    return None, suggestions
+    unique      = list(dict.fromkeys(results))[:4]
+    query_words = query.split()
+
+    if len(unique) == 1:
+        result_words = unique[0].lower().split()
+        if len(query_words) >= len(result_words):
+            return unique[0], []
+        return None, unique
+
+    return None, unique
 
 
 # ─────────────────────────────────────────────────────────────
@@ -429,11 +429,8 @@ def register_filters(cyber: Client):
                 "Tap a title to select it ↓",
             ]
             buttons = [
-                [InlineKeyboardButton(
-                    f"🎬  {format_suggestion_label(title, year)}",
-                    callback_data=f"sug|{title}",   # callback uses raw title (no year)
-                )]
-                for title, year in suggestions
+                [InlineKeyboardButton(f"🎬  {s}", callback_data=f"sug|{s}")]
+                for s in suggestions
             ]
             buttons.append([InlineKeyboardButton("✖️  Close", callback_data="close_spell")])
             msg = await _safe_reply_photo(
@@ -444,6 +441,8 @@ def register_filters(cyber: Client):
             )
             if auto_del > 0 and msg:
                 delete_message_later(cyber, msg.chat.id, msg.id, auto_del)
+                # Also delete the user's original typed message
+                delete_message_later(cyber, m.chat.id, m.id, auto_del)
             return
 
         # ── NOTHING FOUND ─────────────────────────────────────
@@ -456,6 +455,8 @@ def register_filters(cyber: Client):
         )
         if auto_del > 0 and msg:
             delete_message_later(cyber, msg.chat.id, msg.id, auto_del)
+            # Also delete the user's original typed message
+            delete_message_later(cyber, m.chat.id, m.id, auto_del)
 
     # ── SUGGESTION CLICK ──────────────────────────────────────
 
@@ -465,6 +466,7 @@ def register_filters(cyber: Client):
         if q.from_user.id not in __import__("config").ADMIN_USERS and settings["maintenance"]:
             return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
         series = q.data.split("|", 1)[1]
+        auto_del = settings["auto_delete_delay"]
         poster, year, genre, rating = await _get_poster(series, settings)
         seasons = list((await get_series_summary(series))["seasons"])
         kb = build_season_pages(seasons, q.from_user.id, series)
@@ -477,6 +479,12 @@ def register_filters(cyber: Client):
             ),
             q,
         )
+        # Reschedule auto-delete on the now-edited message (series poster)
+        # The old delete timer from the suggestion message is still running but
+        # editing the message doesn't cancel it — we schedule a fresh one so
+        # the series poster also gets cleaned up at the correct delay.
+        if auto_del > 0 and q.message:
+            delete_message_later(cyber, q.message.chat.id, q.message.id, auto_del)
 
     @cyber.on_callback_query(filters.regex("^close_spell$"))
     async def close_spell(_, q):
