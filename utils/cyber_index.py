@@ -311,7 +311,37 @@ _LANG_CACHE: dict[str, str] = {}
 _LANG_API_SEM = asyncio.Semaphore(3)   # max 3 concurrent HTTP calls
 
 
-async def _get_language_from_api(normalized_name: str) -> str:
+async def _resolve_language(file_name: str, caption: str, normalized_name: str) -> str:
+    """
+    Language resolution — strict priority chain:
+
+    CAPTION_LANG ENABLED:
+      1. Search caption alone → found → use it
+      2. Search file_name alone → found → use it
+      3. TMDB / OMDB → found → use it
+      4. Return "Unknown"
+
+    CAPTION_LANG DISABLED:
+      1. Search file_name alone → found → use it
+      2. TMDB / OMDB → found → use it
+      3. Return "Unknown"
+    """
+    use_caption_lang = await _get_caption_lang_flag()
+
+    if use_caption_lang:
+        # Step 1 — caption only
+        if caption and caption.strip():
+            lang = _parse_language(caption, "")
+            if lang != "Unknown":
+                return lang
+
+    # Step 2 — filename only
+    lang = _parse_language(file_name, "")
+    if lang != "Unknown":
+        return lang
+
+    # Step 3 — TMDB / OMDB
+    return await _get_language_from_api(normalized_name)
     """
     Returns language from cache or TMDB/OMDB API.
     Semaphore prevents more than 3 concurrent HTTP calls.
@@ -682,9 +712,6 @@ async def save_series_file_for_bulk_index(
         quality         = _parse_quality(file_name, caption)
         codec           = _parse_codec(file_name, caption)
 
-        use_caption_lang = await _get_caption_lang_flag()
-        lang_caption     = caption if use_caption_lang else ""
-        language         = _parse_language(file_name, lang_caption)
         normalized_name  = _normalized_series_name(file_name)
 
         if not normalized_name:
@@ -697,8 +724,8 @@ async def save_series_file_for_bulk_index(
             if width or height:
                 quality = _quality_from_resolution(width, height)
 
-        if language == "Unknown":
-            language = await _get_language_from_api(normalized_name)
+        use_caption_lang = await _get_caption_lang_flag()
+        language         = await _resolve_language(file_name, caption, normalized_name)
 
         norm_lower = normalized_name.lower()
         is_dup = await _episode_exists_with_codec_check(
@@ -789,17 +816,13 @@ async def parse_message_to_doc(msg) -> dict | None:
             if width or height:
                 quality = _quality_from_resolution(width, height)
 
-        use_caption_lang = await _get_caption_lang_flag()
-        lang_caption     = caption if use_caption_lang else ""
-        language         = _parse_language(file_name, lang_caption)
-        normalized_name  = _normalized_series_name(file_name)
+        normalized_name = _normalized_series_name(file_name)
 
         if not normalized_name:
             return None
 
-        # Language API fallback — non-blocking (semaphore + bulk-index fast-path)
-        if language == "Unknown":
-            language = await _get_language_from_api(normalized_name)
+        use_caption_lang = await _get_caption_lang_flag()
+        language         = await _resolve_language(file_name, caption, normalized_name)
 
         clean_kw = await _get_clean_keywords()
 
