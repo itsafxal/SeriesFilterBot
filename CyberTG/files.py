@@ -491,8 +491,33 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
         query_name, season, quality, language
     )
 
+    files = await get_all_files_by_season_and_quality(
+        query_name, season, quality, language
+    )
+
     if not files:
-        logger.warning(f"[DELIVER] no files found uid={user_id} query={query_name!r}")
+        # ── Debug: try LIKE fallback to diagnose name mismatch ──
+        logger.warning(
+            f"[DELIVER] no files found uid={user_id} "
+            f"query={query_name!r} season={season} quality={quality!r} lang={language!r}"
+        )
+        # Try LIKE fallback in case stored name differs slightly
+        try:
+            from DB.sqlite_db import _get_conn
+            def _like_fallback():
+                conn = _get_conn()
+                cur  = conn.cursor()
+                cur.execute(
+                    "SELECT DISTINCT normalized_name, season, quality, language FROM files "
+                    "WHERE normalized_name LIKE ? COLLATE NOCASE LIMIT 5",
+                    (f"%{query_name.split()[0]}%",)
+                )
+                return cur.fetchall()
+            rows = await asyncio.to_thread(_like_fallback)
+            logger.warning(f"[DELIVER] LIKE fallback candidates: {rows}")
+        except Exception as _e:
+            logger.warning(f"[DELIVER] LIKE fallback error: {_e}")
+
         await cyber.send_message(user_id, "❌ No files found.")
         clear_session(user_id)
         if on_complete:
