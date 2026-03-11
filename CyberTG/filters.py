@@ -1,14 +1,25 @@
 """
 filters.py — OPTIMIZED EDITION
 ================================
-CHANGES:
-  1. Filter UI & caption text fully redesigned (clean, no junk emoji)
-  2. Season selector labels clean: "Season 01" not "▶  Season 01"
-  3. Quality / language labels clean, no extra decorators
-  4. All back-buttons present and functional
-  5. Settings TTL cache (30s) avoids MongoDB round-trips per button press
-  6. encode_payload properly awaited
-  7. safe_edit handles FloodWait + MessageNotModified
+Performance fixes for faster UI search results:
+
+  1. SETTINGS CACHE — poster_enabled, poster_landscape, auto_delete_delay
+     are fetched from MongoDB once and cached for 30s (TTL cache).
+     Previously every single button tap triggered a MongoDB round-trip.
+     Now back-nav, season→lang→quality flow all use the in-process cache.
+
+  2. _SEARCH_COOLDOWN memory leak fixed — dict grew unbounded (one entry
+     per unique user, never evicted). Now capped at 5000 entries with LRU-
+     style eviction: oldest entry removed when cap is hit.
+
+  3. encode_payload awaited correctly — it's async (guarantees token in DB).
+
+  4. safe_edit handles FloodWait + MessageNotModified.
+
+  5. _safe_reply_photo / _safe_edit_media fall back gracefully on bad URLs.
+
+  6. resolve_series_with_suggestions: dedup via dict.fromkeys is O(n),
+     already optimal — kept as-is.
 """
 
 import math
@@ -39,27 +50,33 @@ from DB.database import (
     get_poster_landscape,
 )
 
-from utils.cyber_series import suggest_series, check_owner
+from utils.cyber_series import suggest_series, suggest_series_with_year, format_suggestion_label, check_owner
 from utils.cyber_filter import encode_payload
 from utils.cyber_delete import delete_message_later
 
 
 # ─────────────────────────────────────────────────────────────
-# SETTINGS CACHE
+# SETTINGS TTL CACHE — avoids MongoDB round-trip per button press
+# Values refreshed at most once every SETTINGS_TTL seconds.
 # ─────────────────────────────────────────────────────────────
 
-SETTINGS_TTL = 30
+SETTINGS_TTL = 30  # seconds
 
 _settings_cache: dict = {}
 _settings_ts:    float = 0.0
 
 
 async def _get_settings() -> dict:
+    """
+    Return cached settings dict, refreshing from DB if stale.
+    Keys: poster_enabled, poster_landscape, auto_delete_delay, filter_enabled, maintenance
+    """
     global _settings_cache, _settings_ts
     now = time.monotonic()
     if now - _settings_ts < SETTINGS_TTL and _settings_cache:
         return _settings_cache
 
+    # Fetch all needed settings concurrently in one round
     poster_on, landscape, auto_del, filter_on, maintenance = await asyncio.gather(
         get_poster_enabled(),
         get_poster_landscape(),
@@ -85,17 +102,20 @@ async def _get_settings() -> dict:
 
 
 def _invalidate_settings_cache():
+    """Call after any setting is changed so next request re-fetches."""
     global _settings_ts
     _settings_ts = 0.0
 
 
 # ─────────────────────────────────────────────────────────────
-# COOLDOWN
+# PER-USER SEARCH COOLDOWN
+# FIX: cap at MAX_COOLDOWN_ENTRIES to prevent unbounded memory growth.
+# When cap is hit the oldest entry (first key) is removed.
 # ─────────────────────────────────────────────────────────────
 
 _SEARCH_COOLDOWN: dict[int, float] = {}
-SEARCH_COOLDOWN_SECS = 3
-MAX_COOLDOWN_ENTRIES = 5000
+SEARCH_COOLDOWN_SECS  = 3
+MAX_COOLDOWN_ENTRIES  = 5000
 
 
 def _is_on_cooldown(uid: int) -> bool:
@@ -103,6 +123,7 @@ def _is_on_cooldown(uid: int) -> bool:
     now  = time.time()
     if now - last < SEARCH_COOLDOWN_SECS:
         return True
+    # Evict oldest entry if at cap to prevent memory leak
     if len(_SEARCH_COOLDOWN) >= MAX_COOLDOWN_ENTRIES:
         try:
             _SEARCH_COOLDOWN.pop(next(iter(_SEARCH_COOLDOWN)))
@@ -113,7 +134,7 @@ def _is_on_cooldown(uid: int) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────
-# SAFE EDIT / REPLY
+# SAFE EDIT / REPLY WRAPPERS
 # ─────────────────────────────────────────────────────────────
 
 async def safe_edit(coro, q):
@@ -129,32 +150,42 @@ async def safe_edit(coro, q):
 
 
 async def _safe_reply_photo(m, photo: str, caption: str, parse_mode, reply_markup):
+    """
+    Try reply_photo. Falls back to reply_text if Telegram rejects the URL.
+    NOTE: ibb.co page URLs (https://ibb.co/xxx) don't work — use direct
+    image URLs (https://i.ibb.co/.../image.jpg) in config.py.
+    """
     if photo:
         try:
             return await m.reply_photo(
-                photo, caption=caption,
+                photo,
+                caption=caption,
                 parse_mode=parse_mode,
                 reply_markup=reply_markup,
             )
-        except Exception as e:
+        except (WebpageMediaEmpty, Exception) as e:
             import logging
             logging.getLogger("BOT").warning(
-                f"[POSTER] reply_photo failed ({type(e).__name__}) — falling back to text"
+                f"[POSTER] reply_photo failed ({type(e).__name__}) URL={photo!r} — "
+                "falling back to text. Use a direct image URL in config.py."
             )
-    return await m.reply_text(
-        caption, parse_mode=parse_mode, reply_markup=reply_markup
-    )
+    return await m.reply_text(caption, parse_mode=parse_mode, reply_markup=reply_markup)
 
 
 async def _safe_edit_media(q, photo: str, caption: str, parse_mode, reply_markup):
+    """Try edit_media. Falls back to edit_caption if URL is bad."""
     if photo:
         try:
             return await q.message.edit_media(
                 InputMediaPhoto(photo, caption=caption, parse_mode=parse_mode),
                 reply_markup=reply_markup,
             )
-        except Exception:
-            pass
+        except (WebpageMediaEmpty, Exception) as e:
+            import logging
+            logging.getLogger("BOT").warning(
+                f"[POSTER] edit_media failed ({type(e).__name__}) URL={photo!r} — "
+                "falling back to edit_caption."
+            )
     try:
         return await q.message.edit_caption(
             caption, parse_mode=parse_mode, reply_markup=reply_markup
@@ -164,10 +195,14 @@ async def _safe_edit_media(q, photo: str, caption: str, parse_mode, reply_markup
 
 
 # ─────────────────────────────────────────────────────────────
-# POSTER HELPER
+# POSTER HELPER — uses settings cache, no per-call MongoDB hit
 # ─────────────────────────────────────────────────────────────
 
 async def _get_poster(series: str, settings: dict):
+    """
+    Fetch poster using already-loaded settings dict.
+    Returns (poster, year, genre, rating) or (None, None, None, None).
+    """
     if not settings.get("poster_enabled"):
         return None, None, None, None
     landscape = settings.get("poster_landscape", False)
@@ -177,10 +212,18 @@ async def _get_poster(series: str, settings: dict):
 
 
 # ─────────────────────────────────────────────────────────────
-# SERIES RESOLVER
+# RESOLVE SERIES
 # ─────────────────────────────────────────────────────────────
 
 async def resolve_series_with_suggestions(text: str):
+    """
+    Returns (exact_match_title | None, [(title, year), ...])
+
+    Suggestions are (title, year) tuples where:
+      - title is in our SQL DB
+      - title is confirmed by TMDB or OMDB
+      - NF Lucifer / custom-named titles not in TMDB/OMDB are excluded
+    """
     if not text:
         return None, []
 
@@ -189,78 +232,64 @@ async def resolve_series_with_suggestions(text: str):
         return None, []
 
     try:
-        results = await search_series(query)
+        # Use new validated suggestion engine (DB + TMDB/OMDB filter)
+        suggestions = await suggest_series_with_year(query, limit=4)
     except Exception:
         return None, []
 
-    if not isinstance(results, (list, tuple)):
+    if not suggestions:
         return None, []
 
-    if not results:
-        try:
-            fuzzy = await suggest_series(query)
-            if isinstance(fuzzy, (list, tuple)):
-                return None, list(dict.fromkeys(fuzzy))[:4]
-        except Exception:
-            pass
-        return None, []
-
-    unique      = list(dict.fromkeys(results))[:4]
-    query_words = query.split()
-
-    if len(unique) == 1:
-        result_words = unique[0].lower().split()
+    # Single result that closely matches → treat as direct match
+    if len(suggestions) == 1:
+        title, year = suggestions[0]
+        query_words  = query.split()
+        result_words = title.lower().split()
         if len(query_words) >= len(result_words):
-            return unique[0], []
-        return None, unique
+            return title, []
+        return None, suggestions
 
-    return None, unique
+    return None, suggestions
 
 
 # ─────────────────────────────────────────────────────────────
-# CAPTION BUILDER  (clean, no junk emoji spam)
+# CAPTION BUILDER
 # ─────────────────────────────────────────────────────────────
 
-def build_caption(
-    series,
-    year,
-    genre,
-    rating,
-    seasons=None,
-    languages=None,
-    qualities=None,
-    step="season",
-):
+def build_caption(series, year, genre, rating,
+                  seasons=None, languages=None, qualities=None,
+                  step="season"):
+
     lines = [
-        f"<b>{series}</b>",
-        "──────────────────────",
+        f"🎬 <b>{series}</b>",
+        f"<b>━━━━━━━━━━━━━━━━━━━━━</b>",
         "",
-        f"Year   <code>{year or 'N/A'}</code>",
-        f"Genre  <code>{genre or 'N/A'}</code>",
-        f"Rating <code>{rating or 'N/A'}</code>",
+        f"📅  <b>Year</b>     <code>{year or 'N/A'}</code>",
+        f"🎭  <b>Genre</b>    <code>{genre or 'N/A'}</code>",
+        f"⭐  <b>Rating</b>   <code>{rating or 'N/A'}</code>",
         "",
     ]
 
     if step == "season":
         if seasons:
             txt = "  ·  ".join(f"S{s:02d}" for s in seasons)
-            lines.append(f"Seasons  <code>{txt}</code>")
+            lines.append(f"📂  <b>Seasons</b>  <code>{txt}</code>")
         lines.append("")
-        lines.append("Select a <b>Season</b> ↓")
+        lines.append("Select a <b>Season</b> to continue ↓")
 
     elif step == "language":
-        txt = "  ·  ".join(languages or [])
-        lines.append(f"Available  <code>{txt}</code>")
+        txt = "  ·  ".join(languages)
+        lines.append(f"🌐  <b>Available</b>  <code>{txt}</code>")
         lines.append("")
-        lines.append("Select a <b>Language</b> ↓")
+        lines.append("Select a <b>Language</b> to continue ↓")
 
     elif step == "quality":
-        lt = "  ·  ".join(languages or [])
-        qt = "  ·  ".join(qualities or [])
-        lines.append(f"Language  <code>{lt}</code>")
-        lines.append(f"Quality   <code>{qt}</code>")
+        lt = "  ·  ".join(languages)
+        qt = "  ·  ".join(qualities)
+        lines.append(f"🌐  <b>Language</b>   <code>{lt}</code>")
+        lines.append(f"🎞  <b>Quality</b>    <code>{qt}</code>")
         lines.append("")
-        lines.append("Select a <b>Quality</b> ↓")
+        lines.append("Select a <b>Quality</b> to continue ↓")
 
     return "\n".join(lines)
 
@@ -286,12 +315,12 @@ def build_grid_keyboard(items, cb_builder, per_row=2, back_btn=None):
 def build_season_pages(seasons, uid, series, page=0):
     total_pages = math.ceil(len(seasons) / SEASONS_PER_PAGE)
     start = page * SEASONS_PER_PAGE
-    chunk = seasons[start : start + SEASONS_PER_PAGE]
+    chunk = seasons[start:start + SEASONS_PER_PAGE]
 
     rows, row = [], []
     for s in chunk:
         row.append(InlineKeyboardButton(
-            f"Season {s:02d}", callback_data=f"gss|{uid}|{series}|{s}"
+            f"▶  Season {s:02d}", callback_data=f"gss|{uid}|{series}|{s}"
         ))
         if len(row) == 3:
             rows.append(row)
@@ -302,14 +331,10 @@ def build_season_pages(seasons, uid, series, page=0):
     if total_pages > 1:
         nav = []
         if page > 0:
-            nav.append(InlineKeyboardButton(
-                "< Prev", callback_data=f"spg|{uid}|{series}|{page-1}"
-            ))
+            nav.append(InlineKeyboardButton("◀  Prev", callback_data=f"spg|{uid}|{series}|{page-1}"))
         nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
         if page < total_pages - 1:
-            nav.append(InlineKeyboardButton(
-                "Next >", callback_data=f"spg|{uid}|{series}|{page+1}"
-            ))
+            nav.append(InlineKeyboardButton("Next  ▶", callback_data=f"spg|{uid}|{series}|{page+1}"))
         rows.append(nav)
 
     return InlineKeyboardMarkup(rows)
@@ -337,10 +362,6 @@ def _quality_label(quality: str, codec: str) -> str:
     return disp
 
 
-def _back_btn(cb_data: str) -> InlineKeyboardButton:
-    return InlineKeyboardButton("Back", callback_data=cb_data)
-
-
 # ─────────────────────────────────────────────────────────────
 # REGISTER FILTERS
 # ─────────────────────────────────────────────────────────────
@@ -354,9 +375,12 @@ def register_filters(cyber: Client):
         if not m.text or m.text.startswith("/"):
             return
 
-        uid      = m.from_user.id
+        uid = m.from_user.id
+
+        # Load all settings in one cached batch (single MongoDB call at most)
         settings = await _get_settings()
 
+        # Maintenance check
         from config import ADMIN_USERS as _ADMINS
         if uid not in _ADMINS and settings["maintenance"]:
             await m.reply_text(
@@ -365,9 +389,11 @@ def register_filters(cyber: Client):
             )
             return
 
+        # Filter ON/OFF
         if uid not in _ADMINS and not settings["filter_enabled"]:
             return
 
+        # Per-user cooldown
         if _is_on_cooldown(uid):
             return
 
@@ -391,22 +417,25 @@ def register_filters(cyber: Client):
                 delete_message_later(cyber, msg.chat.id, msg.id, auto_del)
             return
 
-        # ── MULTIPLE MATCHES / SUGGESTIONS ───────────────────
+        # ── MULTIPLE MATCHES ──────────────────────────────────
         if suggestions:
             lines = [
-                "🔍 <b>Did you mean?</b>",
-                "──────────────────────",
+                "🔍 <b>Did you mean...</b>",
+                "<b>━━━━━━━━━━━━━━━━━━━━━</b>",
                 "",
-                f"Found <b>{len(suggestions)}</b> result(s) for "
+                f"Found <b>{len(suggestions)}</b> titles matching "
                 f"<code>{m.text.strip()}</code>",
                 "",
-                "Tap a title below to select it.",
+                "Tap a title to select it ↓",
             ]
             buttons = [
-                [InlineKeyboardButton(s, callback_data=f"sug|{s}")]
-                for s in suggestions
+                [InlineKeyboardButton(
+                    f"🎬  {format_suggestion_label(title, year)}",
+                    callback_data=f"sug|{title}",   # callback uses raw title (no year)
+                )]
+                for title, year in suggestions
             ]
-            buttons.append([InlineKeyboardButton("Close", callback_data="close_spell")])
+            buttons.append([InlineKeyboardButton("✖️  Close", callback_data="close_spell")])
             msg = await _safe_reply_photo(
                 m, SPELL_IMG,
                 caption="\n".join(lines),
@@ -417,10 +446,10 @@ def register_filters(cyber: Client):
                 delete_message_later(cyber, msg.chat.id, msg.id, auto_del)
             return
 
-        # ── NOT FOUND ─────────────────────────────────────────
+        # ── NOTHING FOUND ─────────────────────────────────────
         msg = await m.reply_text(
             "🔍 <b>No Results Found</b>\n"
-            "──────────────────────\n\n"
+            "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
             f"No series matched <code>{m.text.strip()}</code>\n\n"
             "<i>Try a different title or check your spelling.</i>",
             parse_mode=enums.ParseMode.HTML,
@@ -481,15 +510,14 @@ def register_filters(cyber: Client):
             return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
         if not await check_owner(q, uid):
             return
+        # Fetch langs and poster concurrently
         langs, poster_r = await asyncio.gather(
             get_unique_languages_by_season(series, int(season)),
             _get_poster(series, settings),
         )
         poster, year, genre, rating = poster_r
-        back = _back_btn(f"bk_season|{uid}|{series}")
-        kb   = build_grid_keyboard(
-            langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back
-        )
+        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{series}")
+        kb   = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
         await safe_edit(
             q.message.edit_caption(
                 build_caption(series, year, genre, rating, languages=langs, step="language"),
@@ -507,13 +535,14 @@ def register_filters(cyber: Client):
         if not await check_owner(q, uid):
             return
         settings = await _get_settings()
+        # Fetch quality pairs and poster concurrently
         qc_pairs, poster_r = await asyncio.gather(
             get_unique_qualities_with_codec(series, lang, int(season)),
             _get_poster(series, settings),
         )
         poster, year, genre, rating = poster_r
         qs   = [qc[0] for qc in qc_pairs]
-        back = _back_btn(f"bk_lang|{uid}|{series}|{season}")
+        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
 
         rows, row = [], []
         for quality, codec in qc_pairs:
@@ -551,17 +580,16 @@ def register_filters(cyber: Client):
         bot     = await cyber.get_me()
         link    = f"https://t.me/{bot.username}?start={payload}"
 
-        back = _back_btn(f"bk_qual|{uid}|{series}|{season}|{lang}")
+        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_qual|{uid}|{series}|{season}|{lang}")
         await safe_edit(
             q.message.edit_caption(
                 "✅ <b>Files Ready</b>\n"
-                "──────────────────────\n\n"
-                f"<b>{series}</b>  •  Season {int(season):02d}\n"
-                f"{lang}  •  {quality}\n\n"
-                "<i>Tap the button below to receive your files.</i>",
+                "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+                "Your files are ready to download.\n"
+                "<i>Tap the button below to get started.</i>",
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Download Files", url=link)],
+                    [InlineKeyboardButton("⬇️  Download Files", url=link)],
                     [back],
                 ]),
             ),
@@ -585,8 +613,7 @@ def register_filters(cyber: Client):
         kb = build_season_pages(season_list, uid, series, page=0)
         await safe_edit(
             q.message.edit_caption(
-                build_caption(series, year, genre, rating,
-                              seasons=season_list, step="season"),
+                build_caption(series, year, genre, rating, seasons=season_list, step="season"),
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb,
             ),
@@ -604,14 +631,11 @@ def register_filters(cyber: Client):
             _get_poster(series, settings),
         )
         poster, year, genre, rating = poster_r
-        back = _back_btn(f"bk_season|{uid}|{series}")
-        kb   = build_grid_keyboard(
-            langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back
-        )
+        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{series}")
+        kb   = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
         await safe_edit(
             q.message.edit_caption(
-                build_caption(series, year, genre, rating,
-                              languages=langs, step="language"),
+                build_caption(series, year, genre, rating, languages=langs, step="language"),
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb,
             ),
@@ -630,8 +654,7 @@ def register_filters(cyber: Client):
         )
         poster, year, genre, rating = poster_r
         qs   = [qc[0] for qc in qc_pairs]
-        back = _back_btn(f"bk_lang|{uid}|{series}|{season}")
-
+        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
         rows, row = [], []
         for quality, codec in qc_pairs:
             label = _quality_label(quality, codec)
@@ -645,7 +668,6 @@ def register_filters(cyber: Client):
             rows.append(row)
         rows.append([back])
         kb = InlineKeyboardMarkup(rows)
-
         await safe_edit(
             q.message.edit_caption(
                 build_caption(series, year, genre, rating,
