@@ -508,6 +508,7 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
             return False
 
         owner, series, season, lang, quality = decoded
+        print(f"[FSUB] decoded → series={series!r} season={season} lang={lang!r} quality={quality!r} owner={owner}")
 
         if int(owner) != uid:
             release_delivery_lock(uid)
@@ -529,6 +530,7 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
             "language": lang,
             "quality":  quality,
         })
+        print(f"[FSUB] session set uid={uid} → series={series!r} season={season} lang={lang!r} quality={quality!r}")
 
         async def _after_delivery():
             release_delivery_lock(uid)
