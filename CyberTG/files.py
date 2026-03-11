@@ -522,17 +522,25 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
                 fallback_items.append((f, cap))
 
         # Send the group (if any files have valid file_ids)
+        # FIX: Telegram rejects media groups with mixed types (MEDIA_EMPTY).
+        # Split group_items by media_type before sending.
         if group_items:
-            media_list = [im for im, _ in group_items]
-            if len(media_list) == 1:
-                # send_media_group needs ≥2 items — send single instead
-                f   = group_items[0][1]
-                cap = group_items[0][0].caption or ""
-                await _safe_send_single(cyber, user_id, f, cap, auto_delay)
-                sent_count += 1
-            else:
-                sent = await _safe_send_group(cyber, user_id, media_list, auto_delay)
-                sent_count += len(sent)
+            type_buckets: dict[str, list] = {}
+            for im, f in group_items:
+                mtype = (f.get("media_type") or "document").lower()
+                type_buckets.setdefault(mtype, []).append((im, f))
+
+            for mtype, bucket in type_buckets.items():
+                media_list = [im for im, _ in bucket]
+                if len(media_list) == 1:
+                    # send_media_group needs >=2 items -- send single instead
+                    f   = bucket[0][1]
+                    cap = bucket[0][0].caption or ""
+                    await _safe_send_single(cyber, user_id, f, cap, auto_delay)
+                    sent_count += 1
+                else:
+                    sent = await _safe_send_group(cyber, user_id, media_list, auto_delay)
+                    sent_count += len(sent)
 
         # Send fallback files (no file_id) individually
         for f, cap in fallback_items:
