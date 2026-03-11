@@ -91,11 +91,10 @@ async def encode_payload(series: str, season, lang: str, quality: str, uid) -> s
 
 async def _persist_payload_to_mongo(uid: int, token: str, data: dict):
     try:
-        from DB.database import mongo_client
-        col = mongo_client["SeriesBotDB"]["pending_delivery"]
+        from DB.database import pending_collection  # correct collection: config_db["pending_delivery"]
 
         def _sync():
-            col.update_one(
+            pending_collection.update_one(
                 {"token": token},
                 {"$set": {
                     "user_id": uid,
@@ -139,10 +138,9 @@ async def decode_payload_async(payload: str):
     # ── 2. MongoDB (slow path — survives restarts) ───────────
     print(f"[PAYLOAD] Checking MongoDB for token={token}...")
     try:
-        from DB.database import mongo_client
-        col = mongo_client["SeriesBotDB"]["pending_delivery"]
+        from DB.database import pending_collection  # correct collection
 
-        doc = await asyncio.to_thread(lambda: col.find_one({"token": token}))
+        doc = await asyncio.to_thread(lambda: pending_collection.find_one({"token": token}))
 
         if not doc:
             print(f"[PAYLOAD] ❌ Token {token} not found anywhere")
