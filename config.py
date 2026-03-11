@@ -16,9 +16,9 @@ MONGO_URI_DB2    = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cl
 ADMIN_USERS = [5794562450]
 
 # IMAGES
-START_IMG      = "https://ibb.co/1tSFHQKw"
-SPELL_IMG      = "https://ibb.co/1tSFHQKw"
-DEFAULT_POSTER = "https://ibb.co/1tSFHQKw"
+START_IMG      = "https://files.catbox.moe/ivj3km.jpg"
+SPELL_IMG      = "https://files.catbox.moe/krlzjs.jpg"
+DEFAULT_POSTER = "https://files.catbox.moe/rjj4do.jpg"
 
 # POSTER API
 TMDB_API_KEY          = "0e027f75bc7f6a14139ad3e6fe76ed97"
