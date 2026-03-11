@@ -1,29 +1,30 @@
 """
-files.py — FAST MEDIA GROUP EDITION
-======================================
-Key changes vs old version:
+files.py — FILE_ID ONLY EDITION
+=================================
+KEY CHANGES (per requirements):
 
-  1. MEDIA GROUP BATCHING — files sent in groups of up to 10 using
-     send_media_group(). Telegram renders these as a single album (like
-     the screenshot). 10-file album = 1 API call instead of 10.
+  1. FILE_ID ONLY — all sends use send_document/send_video/send_audio
+     with the stored file_id. NO copy_message, NO channel forwarding,
+     NO channel_id needed at delivery time.
 
-  2. ZERO BASE_DELAY — removed the old 1.3s sleep between every file.
-     Groups are sent back-to-back. FloodWait is handled reactively
-     (sleep only when Telegram actually complains).
+  2. STALE FILE_ID RECOVERY — re-fetches the source message via
+     get_messages() to refresh the file_id, then retries send.
+     If get_messages also fails → reports error to user (no copy fallback).
 
-  3. CONCURRENT FALLBACKS — when a file_id is stale the forward fallback
-     runs immediately inside the group builder, not as a queued job.
+  3. MEDIA GROUP WITH FALLBACK — tries send_media_group() first.
+     If it fails for any reason, falls back to individual sends
+     (still file_id only). Never silently drops files.
 
-  4. SIMPLE LINEAR SEND — no queue/worker/task machinery needed when
-     sending groups. Delivery is a single async loop: build group → send →
-     next group. Much simpler and faster.
+  4. CAPTION PRIORITY:
+     a. stored_caption (saved during index, e.g. source channel caption)
+     b. CUSTOM_FILE_CAPTION admin template
+     c. DEFAULT_FILE_CAPTION from config.py
+     Template variables: {series} {file_name} {season} {episode}
+                         {language} {quality} {year} {genre} {rating}
 
-  5. CAPTION on first file only — Telegram only shows one caption per
-     album. First file gets the full caption; others get a minimal label.
+  5. Progress message deleted after all groups sent.
 
-  6. PROGRESS deleted after all groups sent (not per-file).
-
-  7. Session + sticker logic unchanged — fully compatible.
+  6. Session + sticker logic unchanged.
 """
 
 import time
@@ -31,10 +32,10 @@ import asyncio
 import re
 
 from pyrogram import enums
-from pyrogram.errors import FloodWait, MessageNotModified, BadRequest
+from pyrogram.errors import FloodWait, BadRequest
 from pyrogram.types import InputMediaDocument, InputMediaVideo, InputMediaAudio
 
-from config import logger, STICKER_ENABLED, PROGRESS_MESSAGE_ENABLED
+from config import logger, STICKER_ENABLED, PROGRESS_MESSAGE_ENABLED, DEFAULT_FILE_CAPTION
 from DB.database import (
     get_all_files_by_season_and_quality,
     get_global_setting,
@@ -51,13 +52,6 @@ from utils.cyber_delete import delete_message_later
 # ─────────────────────────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────
-
-DEFAULT_CAPTION = (
-    "<b>{series}</b>\n\n"
-    "<b>{file_name}</b>\n\n"
-    "Season <b>{season}</b> • Episode <b>{episode}</b>\n"
-    "{language} • {quality}"
-)
 
 MEDIA_GROUP_SIZE = 10    # Telegram max per album
 SESSION_TTL      = 600   # 10 minutes
@@ -148,7 +142,7 @@ def clear_session(user_id: int):
 
 
 # ─────────────────────────────────────────────────────────────
-# FILENAME / CAPTION HELPERS
+# HELPERS
 # ─────────────────────────────────────────────────────────────
 
 def caption_filename(name: str) -> str:
@@ -158,7 +152,7 @@ def caption_filename(name: str) -> str:
     name = re.sub(r"@\S+", "", name)
     name = re.sub(r"\[.*?\]|\(.*?\)", "", name)
     name = re.sub(r"[._\-]+", " ", name)
-    JUNK = r"\b(bluray|webrip|webdl|web|hdrip|x264|x265|hevc|aac|10bit|ddp5\.1|strife|yts|tgx|rip|hq)\b"
+    JUNK = r"\b(bluray|webrip|webdl|web|hdrip|x264|x265|hevc|aac|10bit|ddp5\.1|hq)\b"
     name = re.sub(JUNK, "", name, flags=re.IGNORECASE)
     name = re.sub(r"\b(4k|2160p|1080p|720p|480p|360p)\b", "", name, flags=re.IGNORECASE)
     name = re.sub(r"\bS\d{1,3}E\d{1,3}\b", "", name, flags=re.IGNORECASE)
@@ -180,24 +174,31 @@ def _normalize_for_query(series: str) -> str:
         return normalized.lower() if normalized else series.lower()
     except Exception:
         pass
-    try:
-        from utils.cyber_index import _normalized_series_name
-        normalized = _normalized_series_name(series)
-        return normalized.lower() if normalized else series.lower()
-    except Exception:
-        pass
     s = series.replace(".", " ").replace("_", " ")
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
-def _build_caption(template: str, series: str, season: int,
-                   episode: int, language: str, quality: str,
-                   file_name: str = "", stored_caption: str = "") -> str:
+def _build_caption(
+    template: str,
+    series: str,
+    season: int,
+    episode: int,
+    language: str,
+    quality: str,
+    file_name: str = "",
+    stored_caption: str = "",
+    year: str = "",
+    genre: str = "",
+    rating: str = "",
+) -> str:
     """
     Caption priority:
-      1. stored_caption — raw caption saved during indexing (actual source channel caption)
-      2. CUSTOM_FILE_CAPTION template (set via admin panel)
-      3. DEFAULT_CAPTION template (hardcoded fallback)
+      1. stored_caption (raw caption from index, e.g. source channel caption)
+      2. Template (CUSTOM_FILE_CAPTION or DEFAULT_FILE_CAPTION)
+
+    Template placeholders:
+      {series} {file_name} {season} {episode} {language}
+      {quality} {year} {genre} {rating}
     """
     if stored_caption and stored_caption.strip():
         return stored_caption.strip()
@@ -213,20 +214,23 @@ def _build_caption(template: str, series: str, season: int,
             episode=episode_str,
             language=language,
             quality=quality,
+            year=year or "N/A",
+            genre=genre or "N/A",
+            rating=rating or "N/A",
         )
     except Exception:
         return f"<b>{series}</b>\nS{season_str}E{episode_str} • {language} • {quality}"
 
 
 # ─────────────────────────────────────────────────────────────
-# FORWARD FALLBACK  (stale file_id → copy from source channel)
+# STALE FILE_ID REFRESH  (file_id only — no copy_message)
 # ─────────────────────────────────────────────────────────────
 
 async def _refresh_file_id(cyber, channel_id: int, message_id: int) -> str | None:
     """
-    Re-fetch the source message to get a fresh file_id.
-    Used when the stored file_id has expired (Telegram invalidates them periodically).
-    Returns the new file_id string, or None if the message is unreachable.
+    Re-fetch the source message via get_messages() to obtain a fresh file_id.
+    Returns the new file_id string, or None if unreachable.
+    Does NOT use copy_message or forward — file_id only.
     """
     try:
         msgs = await cyber.get_messages(channel_id, message_id)
@@ -243,76 +247,6 @@ async def _refresh_file_id(cyber, channel_id: int, message_id: int) -> str | Non
     except Exception as e:
         logger.debug(f"[REFRESH] get_messages ch={channel_id} msg={message_id}: {e}")
     return None
-
-
-async def _forward_fallback(cyber, user_id: int, f: dict,
-                             caption: str, auto_delay: int) -> bool:
-    """
-    Stale file_id recovery:
-      1. Re-fetch the source message to obtain a fresh file_id.
-      2. Send directly to user using that fresh file_id (no copy/forward).
-      3. Persist the new file_id to DB so future deliveries are instant.
-    Falls back to copy_message only if get_messages itself fails.
-    """
-    channel_id = f.get("channel_id")
-    message_id = f.get("message_id")
-    file_name  = f.get("file_name", "unknown")
-
-    if not channel_id or not message_id:
-        logger.warning(f"[FALLBACK] No source info for {file_name} — skipping")
-        return False
-
-    # ── Step 1: refresh file_id via get_messages ──────────────
-    fresh_id = await _refresh_file_id(cyber, channel_id, message_id)
-
-    if fresh_id:
-        # ── Step 2: send directly with fresh file_id ──────────
-        f_fresh = {**f, "file_id": fresh_id}
-        ok = await _safe_send_single(cyber, user_id, f_fresh, caption, auto_delay)
-        if ok:
-            # ── Step 3: persist new file_id so next delivery is instant ──
-            try:
-                asyncio.create_task(update_file_id(channel_id, message_id, fresh_id))
-            except Exception:
-                pass
-            logger.info(
-                f"[FALLBACK] ✅ refreshed file_id for {file_name} "
-                f"ch={channel_id} msg={message_id}"
-            )
-            return True
-        logger.warning(f"[FALLBACK] send with fresh file_id failed for {file_name}")
-        return False
-
-    # ── Step 4: get_messages failed — try copy_message as last resort ──
-    logger.warning(
-        f"[FALLBACK] get_messages failed for ch={channel_id} msg={message_id} "
-        f"— trying copy_message"
-    )
-    try:
-        sent = await cyber.copy_message(
-            chat_id=user_id,
-            from_chat_id=channel_id,
-            message_id=message_id,
-            caption=caption,
-            parse_mode=enums.ParseMode.HTML,
-        )
-        if sent and auto_delay > 0:
-            delete_message_later(cyber, user_id, sent.id, auto_delay)
-        try:
-            media = (
-                getattr(sent, "document", None)
-                or getattr(sent, "video",    None)
-                or getattr(sent, "audio",    None)
-            )
-            if media and media.file_id:
-                asyncio.create_task(update_file_id(channel_id, message_id, media.file_id))
-        except Exception:
-            pass
-        logger.info(f"[FALLBACK] ✅ copy_message ch={channel_id} msg={message_id} → uid={user_id}")
-        return True
-    except Exception as e:
-        logger.error(f"[FALLBACK] ❌ ch={channel_id} msg={message_id}: {e}")
-        return False
 
 
 # ─────────────────────────────────────────────────────────────
@@ -332,9 +266,9 @@ async def _send_start_sticker(cyber, user_id: int, season: int, auto_delay: int)
             except Exception:
                 cached = None
         if not cached:
-            style_idx      = await get_sticker_style(season, kind="start")
-            buf, chosen    = make_start_sticker(season, style_idx=style_idx)
-            msg            = await cyber.send_sticker(user_id, buf)
+            style_idx   = await get_sticker_style(season, kind="start")
+            buf, chosen = make_start_sticker(season, style_idx=style_idx)
+            msg         = await cyber.send_sticker(user_id, buf)
             media = getattr(msg, "sticker", None) or getattr(msg, "document", None)
             if media and getattr(media, "file_id", None):
                 await save_sticker_cache(season, media.file_id, kind="start")
@@ -346,8 +280,7 @@ async def _send_start_sticker(cyber, user_id: int, season: int, auto_delay: int)
         logger.warning(f"[STICKER] start sticker failed: {e}")
 
 
-async def _send_end_sticker(cyber, user_id: int, season: int,
-                             total: int, auto_delay: int):
+async def _send_end_sticker(cyber, user_id: int, season: int, total: int, auto_delay: int):
     if not STICKER_ENABLED:
         return
     try:
@@ -360,9 +293,9 @@ async def _send_end_sticker(cyber, user_id: int, season: int,
             except Exception:
                 cached = None
         if not cached:
-            style_idx      = await get_sticker_style(season, kind="end")
-            buf, chosen    = make_end_sticker(season, total, style_idx=style_idx)
-            msg            = await cyber.send_sticker(user_id, buf)
+            style_idx   = await get_sticker_style(season, kind="end")
+            buf, chosen = make_end_sticker(season, total, style_idx=style_idx)
+            msg         = await cyber.send_sticker(user_id, buf)
             media = getattr(msg, "sticker", None) or getattr(msg, "document", None)
             if media and getattr(media, "file_id", None):
                 await save_sticker_cache(season, media.file_id, kind="end")
@@ -375,56 +308,29 @@ async def _send_end_sticker(cyber, user_id: int, season: int,
 
 
 # ─────────────────────────────────────────────────────────────
-# SAFE SEND WRAPPERS  (with FloodWait retry)
+# CORE SEND — FILE_ID ONLY
 # ─────────────────────────────────────────────────────────────
 
-async def _safe_send_group(cyber, user_id: int, media_group: list,
-                            auto_delay: int,
-                            source_files: list | None = None) -> list:
-    """Send a media group with FloodWait retry. Returns sent messages.
-    source_files: original file dicts parallel to media_group — used to
-    fall back to per-file sending when the group itself is rejected.
+async def _safe_send_single(
+    cyber, user_id: int, f: dict, caption: str, auto_delay: int
+) -> bool:
     """
-    while True:
-        try:
-            sent_msgs = await cyber.send_media_group(user_id, media_group)
-            if auto_delay > 0 and sent_msgs:
-                for sm in sent_msgs:
-                    delete_message_later(cyber, user_id, sm.id, auto_delay)
-            return sent_msgs or []
-        except FloodWait as fw:
-            wait = max(int(getattr(fw, "value", 10)), 5)
-            logger.warning(f"[SEND] FloodWait {wait}s uid={user_id}")
-            await asyncio.sleep(wait + 1)
-        except Exception as e:
-            err = str(e)
-            logger.error(f"[SEND] send_media_group failed uid={user_id}: {e}")
-            # MEDIA_EMPTY / stale file_ids — fall back to per-file send
-            # so nothing is silently dropped.
-            if source_files and any(k in err for k in (
-                "MEDIA_EMPTY", "FILE_ID_INVALID", "FILE_REFERENCE_EXPIRED", "MEDIA_INVALID"
-            )):
-                logger.warning(
-                    f"[SEND] Falling back to per-file send for {len(source_files)} files"
-                )
-                sent_fallback = []
-                for f in source_files:
-                    cap = (f.get("caption") or "").strip() or f"<b>Episode {str(f.get('episode', 0)).zfill(2)}</b>"
-                    ok = await _safe_send_single(cyber, user_id, f, cap, auto_delay)
-                    if ok:
-                        sent_fallback.append(True)
-                return sent_fallback
-            return []
-
-
-async def _safe_send_single(cyber, user_id: int, f: dict,
-                              caption: str, auto_delay: int) -> bool:
-    """Send a single file (fallback for files that can't be in a group)."""
+    Send a single file using its file_id only.
+    On stale file_id → refresh via get_messages() and retry once.
+    No copy_message, no channel forwarding.
+    """
     file_id    = f.get("file_id")
-    media_type = f.get("media_type", "document")
-    while True:
-        try:
-            if file_id:
+    media_type = (f.get("media_type") or "document").lower()
+    channel_id = f.get("channel_id")
+    message_id = f.get("message_id")
+
+    if not file_id:
+        logger.warning(f"[SEND] No file_id for {f.get('file_name')} — skipping")
+        return False
+
+    for attempt in range(2):
+        while True:
+            try:
                 if media_type == "video":
                     sent = await cyber.send_video(
                         user_id, file_id,
@@ -443,68 +349,126 @@ async def _safe_send_single(cyber, user_id: int, f: dict,
                 if sent and auto_delay > 0:
                     delete_message_later(cyber, user_id, sent.id, auto_delay)
                 return True
-            else:
-                return await _forward_fallback(cyber, user_id, f, caption, auto_delay)
+
+            except FloodWait as fw:
+                wait = max(int(getattr(fw, "value", 10)), 5)
+                logger.warning(f"[SEND] FloodWait {wait}s uid={user_id}")
+                await asyncio.sleep(wait + 1)
+
+            except BadRequest as e:
+                err = str(e)
+                if any(k in err for k in (
+                    "MEDIA_EMPTY", "FILE_ID_INVALID", "FILE_REFERENCE_EXPIRED"
+                )):
+                    if attempt == 0 and channel_id and message_id:
+                        logger.warning(
+                            f"[SEND] Stale file_id for {f.get('file_name')} — "
+                            f"refreshing from source ch={channel_id} msg={message_id}"
+                        )
+                        fresh = await _refresh_file_id(cyber, channel_id, message_id)
+                        if fresh:
+                            file_id = fresh
+                            f       = {**f, "file_id": fresh}
+                            # Persist so next delivery is instant
+                            try:
+                                asyncio.create_task(
+                                    update_file_id(channel_id, message_id, fresh)
+                                )
+                            except Exception:
+                                pass
+                            break   # break inner while → retry outer for-loop
+                    logger.error(
+                        f"[SEND] Cannot refresh file_id for {f.get('file_name')} — skipping"
+                    )
+                    return False
+                logger.error(f"[SEND] BadRequest uid={user_id} file={f.get('file_name')}: {e}")
+                return False
+
+            except Exception as e:
+                logger.error(f"[SEND] uid={user_id} file={f.get('file_name')}: {e}")
+                return False
+
+    return False
+
+
+async def _safe_send_group(
+    cyber,
+    user_id: int,
+    media_group: list,
+    auto_delay: int,
+    source_files: list | None = None,
+    caption_map: dict | None = None,
+) -> list:
+    """
+    Send a media group with FloodWait retry.
+    Falls back to per-file (file_id-only) sends on group rejection.
+    """
+    while True:
+        try:
+            sent_msgs = await cyber.send_media_group(user_id, media_group)
+            if auto_delay > 0 and sent_msgs:
+                for sm in sent_msgs:
+                    delete_message_later(cyber, user_id, sm.id, auto_delay)
+            return sent_msgs or []
+
         except FloodWait as fw:
             wait = max(int(getattr(fw, "value", 10)), 5)
             logger.warning(f"[SEND] FloodWait {wait}s uid={user_id}")
             await asyncio.sleep(wait + 1)
-        except BadRequest as e:
-            err = str(e)
-            if any(k in err for k in ("MEDIA_EMPTY", "FILE_ID_INVALID", "FILE_REFERENCE_EXPIRED")):
-                logger.warning(f"[SEND] stale file_id for {f.get('file_name')} — trying fallback")
-                return await _forward_fallback(cyber, user_id, f, caption, auto_delay)
-            logger.error(f"[SEND] BadRequest uid={user_id} file={f.get('file_name')}: {e}")
-            return False
+
         except Exception as e:
-            logger.error(f"[SEND] failed uid={user_id} file={f.get('file_name')}: {e}")
-            return False
+            err = str(e)
+            logger.warning(f"[SEND] send_media_group failed uid={user_id}: {e} — falling back")
+            if source_files:
+                sent_fallback = []
+                for f in source_files:
+                    cap = (caption_map or {}).get(id(f), "") or (
+                        f"<b>Episode {str(f.get('episode', 0)).zfill(2)}</b>"
+                    )
+                    ok = await _safe_send_single(cyber, user_id, f, cap, auto_delay)
+                    if ok:
+                        sent_fallback.append(True)
+                return sent_fallback
+            return []
 
-
-# ─────────────────────────────────────────────────────────────
-# BUILD InputMedia OBJECT FOR A FILE
-# ─────────────────────────────────────────────────────────────
 
 def _make_input_media(f: dict, caption: str) -> object | None:
-    """
-    Build a Pyrogram InputMedia* object from a file dict.
-    Returns None if no file_id (those files go to forward fallback instead).
-    Caption is only set on the first file of each group (Telegram shows
-    one caption per album).
-    """
     file_id    = f.get("file_id")
     if not file_id:
         return None
     media_type = (f.get("media_type") or "document").lower()
     if media_type == "video":
-        return InputMediaVideo(media=file_id, caption=caption,
-                               parse_mode=enums.ParseMode.HTML)
+        return InputMediaVideo(
+            media=file_id, caption=caption, parse_mode=enums.ParseMode.HTML
+        )
     elif media_type == "audio":
-        return InputMediaAudio(media=file_id, caption=caption,
-                               parse_mode=enums.ParseMode.HTML)
+        return InputMediaAudio(
+            media=file_id, caption=caption, parse_mode=enums.ParseMode.HTML
+        )
     else:
-        return InputMediaDocument(media=file_id, caption=caption,
-                                  parse_mode=enums.ParseMode.HTML)
+        return InputMediaDocument(
+            media=file_id, caption=caption, parse_mode=enums.ParseMode.HTML
+        )
 
 
 # ─────────────────────────────────────────────────────────────
-# MAIN DELIVERY — MEDIA GROUP BATCHING
+# MAIN DELIVERY
 # ─────────────────────────────────────────────────────────────
 
 async def deliver_files_direct(cyber, user_id: int, on_complete=None):
     """
-    Deliver all files as media group albums (up to 10 per group).
+    Deliver all files for the user's session.
 
     Flow:
       1. Load session → fetch files from SQLite
-      2. Send start sticker
-      3. Loop files in chunks of MEDIA_GROUP_SIZE:
-           a. Build InputMedia list (skip files with no file_id → fallback)
-           b. send_media_group() — 1 API call per 10 files
-           c. Files with stale/no file_id → _forward_fallback (copy_message)
-      4. Send end sticker
-      5. Delete progress message
-      6. Call on_complete callback
+      2. Fetch custom caption template + poster metadata (for template vars)
+      3. Send start sticker
+      4. Loop files in MEDIA_GROUP_SIZE chunks:
+           a. Build InputMedia list (file_id only)
+           b. send_media_group() → fallback to per-file on failure
+      5. Send end sticker
+      6. Delete progress message
+      7. Call on_complete callback
     """
     session = await get_session_async(user_id)
     if not session:
@@ -538,17 +502,24 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
     total = len(files)
     logger.info(f"[DELIVER] {total} files → uid={user_id}")
 
-    # Fetch settings once
-    auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
-    try:
-        auto_delay = int(auto_delay) if auto_delay else 0
-    except (TypeError, ValueError):
-        auto_delay = 0
-
+    # ── Fetch settings ────────────────────────────────────────
+    auto_delay       = await get_global_setting("FILE_AUTODEL_DELAY", 0)
+    auto_delay       = int(auto_delay) if auto_delay else 0
     custom_caption   = await get_global_setting("CUSTOM_FILE_CAPTION", None)
-    caption_template = custom_caption if custom_caption else DEFAULT_CAPTION
+    caption_template = custom_caption if custom_caption else DEFAULT_FILE_CAPTION
 
-    # Clear session early — files are already loaded
+    # Fetch poster metadata for template variables (year/genre/rating)
+    year = genre = rating = ""
+    try:
+        from CyberTG.poster import get_series_info as _gsi
+        _, _year, _genre, _rating = await _gsi(series)
+        year   = _year   or ""
+        genre  = _genre  or ""
+        rating = _rating or ""
+    except Exception:
+        pass
+
+    # Clear session early
     clear_session(user_id)
 
     # Progress message
@@ -566,42 +537,42 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
     # Start sticker
     await _send_start_sticker(cyber, user_id, season, auto_delay)
 
-    # ── Send files in media groups ────────────────────────────
     sent_count = 0
 
     for chunk_start in range(0, total, MEDIA_GROUP_SIZE):
         chunk = files[chunk_start : chunk_start + MEDIA_GROUP_SIZE]
 
-        # Separate files that can go in group vs those needing fallback
-        group_items  = []   # (InputMedia, f) tuples for the group
-        fallback_items = [] # files with no file_id → copy_message
-
+        # Per-file caption building
+        captions = {}
         for i, f in enumerate(chunk):
-            # Caption: full caption on first file of the first chunk,
-            # minimal episode label on the rest
             stored_cap = (f.get("caption") or "").strip()
             if stored_cap:
-                # Use the caption stored from the source channel directly
                 cap = stored_cap
             elif chunk_start == 0 and i == 0:
                 cap = _build_caption(
                     caption_template, series, season,
                     f.get("episode", 0), language, quality,
                     f.get("file_name", ""),
+                    year=year, genre=genre, rating=rating,
                 )
             else:
                 ep  = str(f.get("episode", 0)).zfill(2)
                 cap = f"<b>Episode {ep}</b>"
+            captions[id(f)] = cap
 
+        # Build InputMedia list (only files with valid file_id)
+        group_items  = []  # (InputMedia, f) tuples
+        no_id_items  = []  # files with no file_id at all
+
+        for f in chunk:
+            cap         = captions[id(f)]
             input_media = _make_input_media(f, cap)
             if input_media is not None:
                 group_items.append((input_media, f))
             else:
-                fallback_items.append((f, cap))
+                no_id_items.append((f, cap))
 
-        # Send the group (if any files have valid file_ids)
-        # FIX 1: Split by media_type — Telegram rejects mixed-type groups.
-        # FIX 2: Pass source_files so _safe_send_group can fall back per-file on failure.
+        # Send grouped by media_type
         if group_items:
             type_buckets: dict[str, list] = {}
             for im, f in group_items:
@@ -611,33 +582,37 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
             for mtype, bucket in type_buckets.items():
                 media_list   = [im for im, _ in bucket]
                 source_files = [f  for _,  f in bucket]
+                cap_map      = {id(f): captions[id(f)] for f in source_files}
+
                 if len(media_list) == 1:
-                    cap = media_list[0].caption or ""
-                    await _safe_send_single(cyber, user_id, source_files[0], cap, auto_delay)
-                    sent_count += 1
+                    cap = captions[id(source_files[0])]
+                    ok  = await _safe_send_single(
+                        cyber, user_id, source_files[0], cap, auto_delay
+                    )
+                    if ok:
+                        sent_count += 1
                 else:
                     sent = await _safe_send_group(
                         cyber, user_id, media_list, auto_delay,
-                        source_files=source_files
+                        source_files=source_files,
+                        caption_map=cap_map,
                     )
                     sent_count += len(sent)
 
-        # Send fallback files (no file_id) individually
-        for f, cap in fallback_items:
-            ok = await _forward_fallback(cyber, user_id, f, cap, auto_delay)
-            if ok:
-                sent_count += 1
+        # Files without file_id — log and skip (no copy_message fallback)
+        for f, cap in no_id_items:
+            logger.warning(
+                f"[DELIVER] No file_id for {f.get('file_name')} "
+                f"ch={f.get('channel_id')} msg={f.get('message_id')} — skipped"
+            )
 
     # ── Cleanup ───────────────────────────────────────────────
-
-    # Delete progress message
     if progress_msg:
         try:
             await cyber.delete_messages(user_id, progress_msg.id)
         except Exception:
             pass
 
-    # End sticker
     await _send_end_sticker(cyber, user_id, season, total, auto_delay)
 
     logger.info(f"[DELIVER] ✅ done uid={user_id} sent={sent_count}/{total}")
