@@ -307,10 +307,6 @@ def _parse_language(name: str, caption: str = "") -> str:
 # FIX: semaphore limits concurrent HTTP calls to prevent blocking
 # ─────────────────────────────────────────────────────────────
 
-_LANG_CACHE: dict[str, str] = {}
-_LANG_API_SEM = asyncio.Semaphore(3)   # max 3 concurrent HTTP calls
-
-
 async def _resolve_language(file_name: str, caption: str, normalized_name: str) -> str:
     """
     Language resolution — strict priority chain:
@@ -342,6 +338,17 @@ async def _resolve_language(file_name: str, caption: str, normalized_name: str) 
 
     # Step 3 — TMDB / OMDB
     return await _get_language_from_api(normalized_name)
+
+
+# ─────────────────────────────────────────────────────────────
+# TMDB / OMDB LANGUAGE FALLBACK
+# ─────────────────────────────────────────────────────────────
+
+_LANG_CACHE: dict[str, str] = {}
+_LANG_API_SEM = asyncio.Semaphore(3)
+
+
+async def _get_language_from_api(normalized_name: str) -> str:
     """
     Returns language from cache or TMDB/OMDB API.
     Semaphore prevents more than 3 concurrent HTTP calls.
@@ -369,11 +376,8 @@ async def _resolve_language(file_name: str, caption: str, normalized_name: str) 
         logger.debug(f"[LANG] SQLite lookup failed for {key!r}: {e}")
 
     # ── HTTP API (rate-limited) ───────────────────────────────
-    # During bulk index, if all 3 slots are busy, skip and return "Unknown"
-    # so the batch isn't held up for a single unknown-language file.
     acquired = _LANG_API_SEM.locked()
     if acquired and _CAPTION_LANG_CACHE is not None:
-        # We're in a bulk index run and semaphore is at limit — skip API
         _LANG_CACHE[key] = "Unknown"
         return "Unknown"
 
