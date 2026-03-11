@@ -108,7 +108,7 @@ async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
             async with aiohttp.ClientSession() as s:
                 async with s.get(
                     "https://api.themoviedb.org/3/search/tv",
-                    params={"api_key": TMDB_API_KEY, "query": title},
+                    params={"api_key": TMDB_API_KEY(), "query": title},
                     timeout=aiohttp.ClientTimeout(total=5),
                 ) as r:
                     data = await r.json()
@@ -128,7 +128,7 @@ async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
                 async with aiohttp.ClientSession() as s:
                     async with s.get(
                         "http://www.omdbapi.com/",
-                        params={"apikey": OMDB_API_KEY, "t": title, "type": "series"},
+                        params={"apikey": OMDB_API_KEY(), "t": title, "type": "series"},
                         timeout=aiohttp.ClientTimeout(total=5),
                     ) as r:
                         data = await r.json()
