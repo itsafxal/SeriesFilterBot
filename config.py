@@ -1,80 +1,80 @@
-"""
-config.py — OPTIMIZED EDITION
-================================
-All bot configuration in one place.
-"""
-
 import logging
 from logging.handlers import RotatingFileHandler
+from pymongo import TEXT
 
-# ── BOT CREDENTIALS ────────────────────────────────────────────
-API_ID    = 28643132
-API_HASH  = "510c3009ea589830a89e045bf8aae656"
+# BOT SETTINGS
+API_ID = 28643132
+API_HASH = "510c3009ea589830a89e045bf8aae656"
 BOT_TOKEN = "8333630020:AAE4ZBaAjzU_Qs5CyxHpkLs6vwn1jJxoXco"
 
-# ── MONGO DB (3 separate URIs for 3 logical DBs) ───────────────
+# MONGO DB
 MONGO_URI_CONFIG = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
 MONGO_URI_DB1    = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
 MONGO_URI_DB2    = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
 
-# ── ADMIN ──────────────────────────────────────────────────────
+# ADMIN ID
 ADMIN_USERS = [5794562450]
 
-# ── IMAGES ────────────────────────────────────────────────────
+# IMAGES
 START_IMG      = "https://files.catbox.moe/ivj3km.jpg"
 SPELL_IMG      = "https://files.catbox.moe/krlzjs.jpg"
 DEFAULT_POSTER = "https://files.catbox.moe/rjj4do.jpg"
 
-# ── POSTER / TMDB / OMDB ──────────────────────────────────────
-TMDB_API_KEY         = "0e027f75bc7f6a14139ad3e6fe76ed97"
-OMDB_API_KEY         = "f93ab313"
-TMDB_CACHE_DB        = "/tmp/TMDB_cache.db"
-TMDB_IMAGE_BASE      = "https://image.tmdb.org/t/p/w500"   # portrait
-TMDB_IMAGE_BASE_WIDE = "https://image.tmdb.org/t/p/w780"   # landscape
+# POSTER API
+import random as _random
 
-# ── POSTER DEFAULTS (admin can override via /adminsetting) ────
+# ── Dual API keys — randomly rotated to double rate limits ──────
+# Add your 2nd key in index [1] for each pool
+TMDB_API_KEYS = [
+    "0e027f75bc7f6a14139ad3e6fe76ed97",   # TMDB key 1
+    "0e027f75bc7f6a14139ad3e6fe76ed97",   # TMDB key 2  ← replace with 2nd key
+]
+OMDB_API_KEYS = [
+    "f93ab313",   # OMDB key 1
+    "f93ab313",   # OMDB key 2  ← replace with 2nd key
+]
+
+def TMDB_API_KEY() -> str:
+    """Returns a random TMDB key from the pool on every call."""
+    return _random.choice(TMDB_API_KEYS)
+
+def OMDB_API_KEY() -> str:
+    """Returns a random OMDB key from the pool on every call."""
+    return _random.choice(OMDB_API_KEYS)
+TMDB_CACHE_DB         = "/tmp/TMDB_cache.db"
+TMDB_IMAGE_BASE       = "https://image.tmdb.org/t/p/w500"       # portrait (default)
+TMDB_IMAGE_BASE_WIDE  = "https://image.tmdb.org/t/p/w780"       # landscape / wide
+
+# ── Poster defaults (admin can override via /poster command) ──
 POSTER_ENABLED   = True    # show/hide poster
-POSTER_LANDSCAPE = False   # False=portrait, True=landscape
+POSTER_LANDSCAPE = False   # False = portrait (w500), True = landscape (w780)
 
-# ── FILE CAPTION FORMAT ───────────────────────────────────────
-# Available placeholders: {series}, {file_name}, {season},
-#   {episode}, {language}, {quality}, {year}, {genre}, {rating}
-DEFAULT_FILE_CAPTION = (
-    "<b>{series}</b>\n\n"
-    "<b>{file_name}</b>\n\n"
-    "📅 Season <b>{season}</b>  •  Episode <b>{episode}</b>\n"
-    "🌐 {language}  •  🎞 {quality}"
-)
-
-# ── CAPTION CLEANING ──────────────────────────────────────────
-# Keywords stripped from file_name_clean / caption_clean at save time.
-# Admin can add/remove via admin settings.
+# ── Caption cleaning defaults ──────────────────────────────────
+# Keywords removed from file_name_clean / caption_clean at save time.
+# Admin can add/remove via /captionclean command.
 DEFAULT_CAPTION_CLEAN_KEYWORDS = [
     "@", "t.me", "Telegram", "www.", "http://", "https://",
 ]
 
-# ── STICKER & PROGRESS ────────────────────────────────────────
+
+# ── Sticker & progress settings ────────────────────────────────
 STICKER_ENABLED          = True   # season start/end stickers
-PROGRESS_MESSAGE_ENABLED = True   # "Preparing N files…" — deleted when done
+PROGRESS_MESSAGE_ENABLED = True   # "Sending files... X/Y" — deleted when done
 
-# ── FILTER DEFAULT ────────────────────────────────────────────
-FILTER_ENABLED_DEFAULT = True
+# ── Filter default ─────────────────────────────────────────────
+FILTER_ENABLED_DEFAULT = True   # global filter on/off default
 
-# ── INDEX ─────────────────────────────────────────────────────
-INDEX_BATCH_SIZE    = 100          # files per dedup/save batch
-INDEX_CHANNELS      = []
+# AS YOUR WISH
+INDEX_BATCH_SIZE   = 100          # files per dedup/save batch
 
-# ── UI LIMITS ─────────────────────────────────────────────────
+INDEX_CHANNELS     = []
 MAX_CALLBACK_LENGTH = 50
-SEASONS_PER_PAGE    = 9
+SEASONS_PER_PAGE   = 9
+FORCE_SUB_CHANNEL  = None
+LOG_FILE_PATH      = "bot.log"
+MAX_LOG_SIZE       = 10 * 1024 * 1024
 
-# ── FSub ──────────────────────────────────────────────────────
-FORCE_SUB_CHANNEL = None
-
-# ── LOGGING ───────────────────────────────────────────────────
-LOG_FILE_PATH = "bot.log"
-MAX_LOG_SIZE  = 10 * 1024 * 1024   # 10 MB
-
+# LOGGING INFO
 formatter = logging.Formatter(
     "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 )
@@ -83,7 +83,7 @@ file_handler = RotatingFileHandler(
     LOG_FILE_PATH,
     maxBytes=MAX_LOG_SIZE,
     backupCount=5,
-    encoding="utf-8",
+    encoding="utf-8"
 )
 file_handler.setFormatter(formatter)
 
@@ -98,12 +98,12 @@ root_logger.addHandler(console_handler)
 logger = logging.getLogger("BOT")
 logger.info("Logger initialized")
 
-# ── Silence noisy third-party loggers ────────────────────────
-for _name in [
+# ✅ Silence APScheduler logs
+for name in [
     "apscheduler",
     "apscheduler.scheduler",
     "apscheduler.executors",
     "apscheduler.executors.default",
     "apscheduler.jobstores",
 ]:
-    logging.getLogger(_name).setLevel(logging.CRITICAL)
+    logging.getLogger(name).setLevel(logging.CRITICAL)
