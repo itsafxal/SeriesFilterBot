@@ -27,7 +27,7 @@ import random as _random
 # Add your 2nd key in index [1] for each pool
 TMDB_API_KEYS = [
     "0e027f75bc7f6a14139ad3e6fe76ed97",   # TMDB key 1
-    "0e027f75bc7f6a14139ad3e6fe76ed97",   # TMDB key 2  ← replace with 2nd key
+    "d13fa0ad942cf34ce943a82c95dc3e92",   # TMDB key 2  ← replace with 2nd key
 ]
 OMDB_API_KEYS = [
     "f93ab313",   # OMDB key 1
