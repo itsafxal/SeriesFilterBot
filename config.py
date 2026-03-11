@@ -31,7 +31,7 @@ TMDB_API_KEYS = [
 ]
 OMDB_API_KEYS = [
     "f93ab313",   # OMDB key 1
-    "f93ab313",   # OMDB key 2  ← replace with 2nd key
+    "fd7c2997",   # OMDB key 2  ← replace with 2nd key
 ]
 
 def TMDB_API_KEY() -> str:
