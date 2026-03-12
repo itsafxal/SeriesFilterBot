@@ -148,6 +148,13 @@ async def run_bot_async(cyber: Client):
     except Exception as e:
         logger.exception(f"[STARTUP] ❌ Failed to load FSub settings: {e}")
 
+    try:
+        from utils.cyber_filebot import load_filebot_config
+        await load_filebot_config()
+        logger.info("[STARTUP] ✅ File bot config loaded.")
+    except Exception as e:
+        logger.warning(f"[STARTUP] File bot config load failed (non-fatal): {e}")
+
     # ── Mongo normalized_name repair — background, non-blocking ──
     async def _mongo_repair_bg():
         try:
