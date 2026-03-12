@@ -545,7 +545,7 @@ def register_filters(cyber: Client):
             q,
         )
 
-    # ── LANGUAGE → QUALITY ────────────────────────────────────
+    # ── LANGUAGE → QUALITY (direct URL buttons) ───────────────
 
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q):
@@ -553,10 +553,11 @@ def register_filters(cyber: Client):
         if not await check_owner(q, uid):
             return
         settings = await _get_settings()
-        # Fetch quality pairs and poster concurrently
-        qc_pairs, poster_r = await asyncio.gather(
+        # Fetch quality pairs, poster, and bot info concurrently
+        qc_pairs, poster_r, bot = await asyncio.gather(
             get_unique_qualities_with_codec(series, lang, int(season)),
             _get_poster(series, settings),
+            cyber.get_me(),
         )
         poster, year, genre, rating = poster_r
         qs   = [qc[0] for qc in qc_pairs]
@@ -564,10 +565,10 @@ def register_filters(cyber: Client):
 
         rows, row = [], []
         for quality, codec in qc_pairs:
-            label = _quality_label(quality, codec)
-            row.append(InlineKeyboardButton(
-                label, callback_data=f"gqs|{uid}|{series}|{season}|{lang}|{quality}"
-            ))
+            label   = _quality_label(quality, codec)
+            payload = await encode_payload(series, season, lang, quality, uid)
+            link    = f"https://t.me/{bot.username}?start={payload}"
+            row.append(InlineKeyboardButton(f"⬇️  {label}", url=link))
             if len(row) == 2:
                 rows.append(row)
                 row = []
@@ -582,34 +583,6 @@ def register_filters(cyber: Client):
                               languages=[lang], qualities=qs, step="quality"),
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb,
-            ),
-            q,
-        )
-
-    # ── QUALITY → DOWNLOAD LINK ───────────────────────────────
-
-    @cyber.on_callback_query(filters.regex("^gqs\\|"))
-    async def gqs(_, q):
-        _, uid, series, season, lang, quality = q.data.split("|")
-        if not await check_owner(q, uid):
-            return
-
-        payload = await encode_payload(series, season, lang, quality, uid)
-        bot     = await cyber.get_me()
-        link    = f"https://t.me/{bot.username}?start={payload}"
-
-        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_qual|{uid}|{series}|{season}|{lang}")
-        await safe_edit(
-            q.message.edit_caption(
-                "✅ <b>Files Ready</b>\n"
-                "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-                "Your files are ready to download.\n"
-                "<i>Tap the button below to get started.</i>",
-                parse_mode=enums.ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬇️  Download Files", url=link)],
-                    [back],
-                ]),
             ),
             q,
         )
@@ -666,19 +639,20 @@ def register_filters(cyber: Client):
         if not await check_owner(q, uid):
             return
         settings = await _get_settings()
-        qc_pairs, poster_r = await asyncio.gather(
+        qc_pairs, poster_r, bot = await asyncio.gather(
             get_unique_qualities_with_codec(series, lang, int(season)),
             _get_poster(series, settings),
+            cyber.get_me(),
         )
         poster, year, genre, rating = poster_r
         qs   = [qc[0] for qc in qc_pairs]
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
         rows, row = [], []
         for quality, codec in qc_pairs:
-            label = _quality_label(quality, codec)
-            row.append(InlineKeyboardButton(
-                label, callback_data=f"gqs|{uid}|{series}|{season}|{lang}|{quality}"
-            ))
+            label   = _quality_label(quality, codec)
+            payload = await encode_payload(series, season, lang, quality, uid)
+            link    = f"https://t.me/{bot.username}?start={payload}"
+            row.append(InlineKeyboardButton(f"⬇️  {label}", url=link))
             if len(row) == 2:
                 rows.append(row)
                 row = []
