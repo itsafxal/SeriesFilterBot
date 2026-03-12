@@ -1141,12 +1141,16 @@ def register_menu_handlers(cyber: Client):
     @cyber.on_callback_query(filters.regex(r"^filebot\|") & filters.user(ADMIN_USERS))
     async def _(c, q): await filebot_router(c, q)
 
-    @cyber.on_message(filters.text & filters.private & filters.user(ADMIN_USERS))
+    @cyber.on_message(filters.text & filters.private & filters.user(ADMIN_USERS), group=-1)
     async def _filebot_text(c, m):
-        # Only intercept if admin is in the filebot setup flow
+        # Runs BEFORE search handler (group -1 < group 0).
+        # Only intercepts when admin is mid-setup; otherwise lets message propagate.
+        from pyrogram import ContinuePropagation, StopPropagation
         uid = m.from_user.id if m.from_user else None
         if uid and uid in _filebot_state:
             await _handle_filebot_input(c, m)
+            raise StopPropagation   # handled — stop here
+        raise ContinuePropagation   # not in setup — let search handler run
 
     @cyber.on_callback_query(filters.regex(r"^index\|"))
     async def _(c, q): await index_action_router(c, q)
