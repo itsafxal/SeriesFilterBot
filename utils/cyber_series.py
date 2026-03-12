@@ -2,12 +2,12 @@
 cyber_series.py — SMART SUGGESTION ENGINE
 ==========================================
 
-STRICT RULE:
-  A title is suggested ONLY IF:
-    1. It exists in our SQL database
-    2. TMDB or OMDB also recognizes it (returns a result)
-
-  If EITHER condition fails → title is NOT suggested.
+RULE:
+  A title is suggested IF it exists in our SQL database.
+  TMDB/OMDB are queried ONLY to enrich suggestions with a year label.
+  If TMDB/OMDB don't know the title → it is STILL suggested (SQL is the
+  source of truth), but shown without a year: "Stranger Things" instead
+  of "Stranger Things (2016)".
 
 EXAMPLES:
   "lucifer" typed:
@@ -15,14 +15,19 @@ EXAMPLES:
     → TMDB finds it, year=2016 ✓
     → Suggest: "Lucifer (2016)" ✓
 
+  "stranger things" typed:
+    → SQL finds "Stranger Things" ✓
+    → TMDB/OMDB has no match (API issue / regional title)
+    → Suggest: "Stranger Things"  ← still shown, just no year
+
   "nf lucifer" typed:
     → SQL finds "NF Lucifer" ✓
-    → TMDB/OMDB has no match for "NF Lucifer" ✗
-    → NOT suggested ✗
+    → TMDB/OMDB has no match for "NF Lucifer"
+    → Suggest: "NF Lucifer"  ← SQL confirmed, shown without year
 
   "xyz show" typed:
     → SQL finds nothing ✗
-    → NOT suggested ✗ (regardless of TMDB)
+    → NOT suggested ✗ (SQL is the gate)
 
   Typo "luciferr" typed:
     → SQL LIKE fails
@@ -220,28 +225,28 @@ async def _validate_and_enrich(
 ) -> List[Tuple[str, Optional[str]]]:
     """
     For each DB candidate:
-      - Call TMDB/OMDB
-      - If found → keep it, attach year (may be None if API has no year)
-      - If NOT found → drop it
+      - Call TMDB/OMDB to get year (best-effort)
+      - ALWAYS keep the title (SQL is the source of truth)
+      - year will be None if TMDB/OMDB don't recognise the title
 
     All lookups are concurrent (limited by _API_SEM).
-    Returns [(title, year_or_None), ...]  — only validated titles.
+    Returns [(title, year_or_None), ...]  — all SQL-confirmed titles.
     """
     lookups = await asyncio.gather(
         *[_lookup_title(t) for t in candidates],
         return_exceptions=True,
     )
 
-    validated = []
+    enriched = []
     for title, result in zip(candidates, lookups):
         if isinstance(result, Exception):
-            # API error → be safe, don't drop (treat as unconfirmed)
+            # API error → still keep, just no year
+            enriched.append((title, None))
             continue
-        year, found = result
-        if found:                        # ← strict gate: TMDB/OMDB must confirm
-            validated.append((title, year))
+        year, _found = result          # _found no longer gates inclusion
+        enriched.append((title, year))
 
-    return validated
+    return enriched
 
 
 # ─────────────────────────────────────────────────────────────
@@ -254,11 +259,11 @@ async def suggest_series_with_year(
 ) -> List[Tuple[str, Optional[str]]]:
     """
     Returns up to `limit` (title, year) tuples where:
-      - title is in our SQL database
-      - title is confirmed by TMDB or OMDB
-      - year is from TMDB/OMDB ("2016"), or None if not in their data
+      - title is confirmed by our SQL database (source of truth)
+      - year is from TMDB/OMDB ("2016"), or None if APIs don't recognise it
 
-    If TMDB/OMDB doesn't know the title → it's excluded even if in DB.
+    SQL is the gate. TMDB/OMDB are year-enrichment only.
+    A title NOT found by TMDB/OMDB is still returned — just with year=None.
     """
     q = clean_query(query)
     if not q:
