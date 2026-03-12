@@ -177,7 +177,7 @@ async def cyber_menu_handler(cyber, query):
         )],
         [InlineKeyboardButton("📖  Help",  callback_data="help|menu"),
          InlineKeyboardButton("ℹ️  About", callback_data="about|menu")],
-        [InlineKeyboardButton("✖️  Close", callback_data="close|menu")],
+        [InlineKeyboardButton("💬  Support", url="https://t.me/TomxSupport")],
     ])
   
     try:
