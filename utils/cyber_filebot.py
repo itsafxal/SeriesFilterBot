@@ -394,11 +394,10 @@ async def _ensure_start_handler(main_cyber):
             # No payload — just greet
             try:
                 bot = await client.get_me()
+                name = bot.first_name
                 await message.reply_text(
-                    f"👋 <b>Hi!</b> I'm <b>{bot.first_name}</b>, the file delivery bot.
-
-"
-                    f"Use the main bot to search and request files.",
+                    f"👋 <b>Hi!</b> I am <b>{name}</b>, the file delivery bot.\n\n"
+                    "Use the main bot to search and request files.",
                     parse_mode=pyro_enums.ParseMode.HTML,
                 )
             except Exception:
@@ -471,13 +470,9 @@ async def _ensure_start_handler(main_cyber):
         if not decoded:
             await client.send_message(
                 uid,
-                "⏳ <b>Link Expired</b>
-"
-                "<b>━━━━━━━━━━━━━━━━━━━━━</b>
-
-"
-                "This download link has expired.
-"
+                "⏳ <b>Link Expired</b>\n"
+                "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+                "This download link has expired.\n"
                 "<i>Please search for the series again to get a fresh link.</i>",
                 parse_mode=pyro_enums.ParseMode.HTML,
             )
@@ -488,11 +483,8 @@ async def _ensure_start_handler(main_cyber):
         if int(owner) != uid:
             await client.send_message(
                 uid,
-                "⛔ <b>Access Denied</b>
-"
-                "<b>━━━━━━━━━━━━━━━━━━━━━</b>
-
-"
+                "⛔ <b>Access Denied</b>\n"
+                "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
                 "<i>This link belongs to another user.</i>",
                 parse_mode=pyro_enums.ParseMode.HTML,
             )
