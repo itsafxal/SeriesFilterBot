@@ -286,10 +286,11 @@ def register_command_handlers(cyber: Client):
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("total") & filters.user(ADMIN_USERS))
     async def total(_, m: Message):
-        users, files, series, per_db = await asyncio.gather(
+        users, files, series, groups, per_db = await asyncio.gather(
             get_total_users(),
             get_total_files(),
             get_total_series(),
+            get_total_groups(),
             get_total_files_per_db(),
         )
         db1 = per_db.get("db1", 0)
@@ -301,6 +302,7 @@ def register_command_handlers(cyber: Client):
             f"👥  Users    <code>{users:,}</code>\n"
             f"🎬  Series   <code>{series:,}</code>\n"
             f"📦  Files    <code>{files:,}</code>\n\n"
+            f"🔖  Group    <code>{groups:,}</code>\n\n"
             f"🗄  DB1      <code>{db1:,}</code> files\n"
             f"🗄  DB2      <code>{db2:,}</code> files",
             parse_mode=enums.ParseMode.HTML,
