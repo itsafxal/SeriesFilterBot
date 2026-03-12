@@ -63,31 +63,43 @@ async def load_filebot_config():
         logger.warning(f"[FILEBOT] load config error: {e}")
         d = {}
 
-    _filebot_token   = d.get("token")   or None
-    _filebot_channel = d.get("channel") or None
+    _filebot_token    = d.get("token")    or None
+    _filebot_channel  = d.get("channel")  or None
+    _filebot_username = d.get("username") or None
 
     if _filebot_token and _filebot_channel:
-        logger.info(f"[FILEBOT] Config loaded — channel={_filebot_channel}")
+        logger.info(f"[FILEBOT] Config loaded — channel={_filebot_channel} username=@{_filebot_username}")
     else:
         logger.info("[FILEBOT] No file bot configured — using main bot for delivery.")
 
 
 async def set_filebot_config(token: str, channel_id: int):
-    """Admin sets file bot token + deliver channel. Restarts the client."""
-    global _filebot_token, _filebot_channel
+    """Admin sets file bot token + deliver channel. Connects immediately and caches username."""
+    global _filebot_token, _filebot_channel, _filebot_username
+
+    await _stop_client()
 
     _filebot_token   = token.strip()
     _filebot_channel = int(channel_id)
 
+    # Connect now to get the username — needed for building start links
+    client = await get_filebot_client()
+    if client and _filebot_username:
+        logger.info(f"[FILEBOT] Connected as @{_filebot_username}")
+    else:
+        logger.warning("[FILEBOT] Could not connect to get username — link building may fall back to main bot")
+
     try:
         from DB.database import set_global_setting
-        await set_global_setting(DB_KEY, {"token": _filebot_token, "channel": _filebot_channel})
+        await set_global_setting(DB_KEY, {
+            "token":    _filebot_token,
+            "channel":  _filebot_channel,
+            "username": _filebot_username,   # persist so it loads instantly on restart
+        })
     except Exception as e:
         logger.error(f"[FILEBOT] save config error: {e}")
 
-    # Stop old client if running
-    await _stop_client()
-    logger.info(f"[FILEBOT] Config saved — channel={_filebot_channel}")
+    logger.info(f"[FILEBOT] Config saved — channel={_filebot_channel} username=@{_filebot_username}")
 
 
 async def del_filebot_config():
@@ -122,17 +134,25 @@ def is_filebot_configured() -> bool:
 async def get_filebot_username() -> str | None:
     """
     Returns the @username of the file bot (without @).
-    Connects the client if not already connected.
-    Returns None if no file bot configured.
+    Loaded from DB on startup — no connection needed for link building.
+    Falls back to connecting if not cached yet.
     """
     global _filebot_username
     if not is_filebot_configured():
         return None
     if _filebot_username:
         return _filebot_username
-    # Connect to get username
+    # Not cached yet — connect to fetch it
     client = await get_filebot_client()
-    if client:
+    if client and _filebot_username:
+        # Persist for future restarts
+        try:
+            from DB.database import get_global_setting, set_global_setting
+            d = await get_global_setting(DB_KEY) or {}
+            d["username"] = _filebot_username
+            await set_global_setting(DB_KEY, d)
+        except Exception:
+            pass
         return _filebot_username
     return None
 
