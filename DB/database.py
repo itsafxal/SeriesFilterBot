@@ -130,24 +130,44 @@ def _ensure_file_indexes(col):
     )
 
 
-_ensure_file_indexes(files_collection_1)
-_ensure_file_indexes(files_collection_2)
-state_collection.create_index([("_id", 1)])
-try:
-    _idx_names = [i["name"] for i in sticker_collection.list_indexes()]
-    if "brand_1_season_1" in _idx_names:
-        sticker_collection.drop_index("brand_1_season_1")
-        logger.info("Dropped legacy sticker index 'brand_1_season_1'")
-except Exception:
-    pass
-_safe_create_index(
-    sticker_collection,
-    [("season", 1), ("kind", 1)],
-    unique=True,
-    name="season_kind_unique",
-)
-groups_collection.create_index([("_id", 1)])
-logger.info("✅ MongoDB indexes ensured on all 3 clients.")
+# ── Deferred index creation — runs in a background thread after bot starts ──
+# Moving this out of module-level import eliminates ~1-3s of blocking TCP/TLS
+# round-trips that previously happened before the event loop even started.
+
+def _ensure_all_indexes_sync():
+    """
+    Run all MongoDB index creation in a background thread.
+    Safe to call multiple times — create_index is idempotent.
+    """
+    try:
+        _ensure_file_indexes(files_collection_1)
+        _ensure_file_indexes(files_collection_2)
+        state_collection.create_index([("_id", 1)])
+        try:
+            _idx_names = [i["name"] for i in sticker_collection.list_indexes()]
+            if "brand_1_season_1" in _idx_names:
+                sticker_collection.drop_index("brand_1_season_1")
+                logger.info("Dropped legacy sticker index 'brand_1_season_1'")
+        except Exception:
+            pass
+        _safe_create_index(
+            sticker_collection,
+            [("season", 1), ("kind", 1)],
+            unique=True,
+            name="season_kind_unique",
+        )
+        groups_collection.create_index([("_id", 1)])
+        logger.info("✅ MongoDB indexes ensured on all 3 clients (background).")
+    except Exception as e:
+        logger.error(f"[INDEX INIT] Background index creation failed: {e}")
+
+
+async def ensure_all_indexes():
+    """
+    Async wrapper — call once from run_bot_async() after cyber.start().
+    Does NOT block startup; runs in thread pool.
+    """
+    await asyncio.to_thread(_ensure_all_indexes_sync)
 
 # ─────────────────────────────────────────────────────────────
 # SQLite imports
