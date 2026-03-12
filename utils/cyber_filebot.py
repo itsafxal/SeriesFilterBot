@@ -54,7 +54,7 @@ DB_KEY = "FILEBOT_CONFIG"
 
 async def load_filebot_config():
     """Load file bot config from MongoDB. Call once on startup."""
-    global _filebot_token, _filebot_channel
+    global _filebot_token, _filebot_channel, _filebot_username
 
     try:
         from DB.database import get_global_setting
@@ -178,7 +178,7 @@ async def get_filebot_client() -> Client | None:
     Returns a connected file bot Client, or None if not configured.
     Lazily starts the client on first call.
     """
-    global _filebot_client
+    global _filebot_client, _filebot_username
 
     if not _filebot_token or not _filebot_channel:
         return None
