@@ -50,7 +50,7 @@ from DB.database import (
     get_poster_landscape,
 )
 
-from utils.cyber_series import suggest_series, suggest_series_with_year, check_owner, format_suggestion_label
+from utils.cyber_series import suggest_series, check_owner
 from utils.cyber_filter import encode_payload
 from utils.cyber_delete import delete_message_later
 
@@ -119,18 +119,26 @@ MAX_COOLDOWN_ENTRIES  = 5000
 
 
 def _is_on_cooldown(uid: int) -> bool:
+    """
+    CHECK ONLY — does NOT stamp the timestamp.
+    Cooldown is only applied AFTER a successful result is delivered,
+    not on no-result or maintenance responses.
+    """
     last = _SEARCH_COOLDOWN.get(uid, 0)
-    now  = time.time()
-    if now - last < SEARCH_COOLDOWN_SECS:
-        return True
-    # Evict oldest entry if at cap to prevent memory leak
+    return (time.time() - last) < SEARCH_COOLDOWN_SECS
+
+
+def _stamp_cooldown(uid: int):
+    """
+    Stamp this user cooldown. Called ONLY after a real result was sent.
+    Prevents the bug where a no-result response blocks the next query.
+    """
     if len(_SEARCH_COOLDOWN) >= MAX_COOLDOWN_ENTRIES:
         try:
             _SEARCH_COOLDOWN.pop(next(iter(_SEARCH_COOLDOWN)))
         except StopIteration:
             pass
-    _SEARCH_COOLDOWN[uid] = now
-    return False
+    _SEARCH_COOLDOWN[uid] = time.time()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -216,12 +224,6 @@ async def _get_poster(series: str, settings: dict):
 # ─────────────────────────────────────────────────────────────
 
 async def resolve_series_with_suggestions(text: str):
-    """
-    Returns (exact_match_or_None, [(title, year_or_None), ...])
-    When a single exact match is found → (series, [])
-    When multiple candidates    → (None, [(title, year), ...])
-    When nothing found          → (None, [])
-    """
     if not text:
         return None, []
 
@@ -238,11 +240,10 @@ async def resolve_series_with_suggestions(text: str):
         return None, []
 
     if not results:
-        # Fuzzy + year enrichment fallback
         try:
-            fuzzy = await suggest_series_with_year(query)
-            if isinstance(fuzzy, (list, tuple)) and fuzzy:
-                return None, list({t: y for t, y in fuzzy}.items())[:4]
+            fuzzy = await suggest_series(query)
+            if isinstance(fuzzy, (list, tuple)):
+                return None, list(dict.fromkeys(fuzzy))[:4]
         except Exception:
             pass
         return None, []
@@ -254,30 +255,9 @@ async def resolve_series_with_suggestions(text: str):
         result_words = unique[0].lower().split()
         if len(query_words) >= len(result_words):
             return unique[0], []
-        # Single candidate but query is shorter — enrich with year
-        try:
-            enriched = await suggest_series_with_year(query)
-            if enriched:
-                return None, enriched[:1]
-        except Exception:
-            pass
-        return None, [(unique[0], None)]
+        return None, unique
 
-    # Multiple SQL matches → enrich all with year concurrently
-    try:
-        enriched = await suggest_series_with_year(query, limit=4)
-        # Re-order to match SQL ordering (SQL is authoritative for which titles exist)
-        year_map = {t.lower(): y for t, y in enriched}
-        final = []
-        seen  = set()
-        for title in unique:
-            key = title.lower()
-            if key not in seen:
-                seen.add(key)
-                final.append((title, year_map.get(key)))
-        return None, final[:4]
-    except Exception:
-        return None, [(t, None) for t in unique]
+    return None, unique
 
 
 # ─────────────────────────────────────────────────────────────
@@ -441,6 +421,7 @@ def register_filters(cyber: Client):
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb,
             )
+            _stamp_cooldown(uid)   # ✅ cooldown only on real result
             if auto_del > 0 and msg:
                 delete_message_later(cyber, msg.chat.id, msg.id, auto_del)
             return
@@ -456,12 +437,10 @@ def register_filters(cyber: Client):
                 "",
                 "Tap a title to select it ↓",
             ]
-            buttons = []
-            for sug_title, sug_year in suggestions:
-                label = format_suggestion_label(sug_title, sug_year)
-                buttons.append(
-                    [InlineKeyboardButton(f"🎬  {label}", callback_data=f"sug|{sug_title}")]
-                )
+            buttons = [
+                [InlineKeyboardButton(f"🎬  {s}", callback_data=f"sug|{s}")]
+                for s in suggestions
+            ]
             buttons.append([InlineKeyboardButton("✖️  Close", callback_data="close_spell")])
             msg = await _safe_reply_photo(
                 m, SPELL_IMG,
@@ -469,12 +448,14 @@ def register_filters(cyber: Client):
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(buttons),
             )
+            _stamp_cooldown(uid)   # ✅ cooldown only on real result
             if auto_del > 0 and msg:
                 delete_message_later(cyber, msg.chat.id, msg.id, auto_del)
                 delete_message_later(cyber, m.chat.id, m.id, auto_del)
             return
 
         # ── NOTHING FOUND ─────────────────────────────────────
+        # ⚠️  NO _stamp_cooldown here — user can retry immediately after no result
         msg = await m.reply_text(
             "🔍 <b>No Results Found</b>\n"
             "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
