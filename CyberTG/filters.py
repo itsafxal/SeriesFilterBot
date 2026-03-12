@@ -563,11 +563,19 @@ def register_filters(cyber: Client):
         qs   = [qc[0] for qc in qc_pairs]
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
 
+        # Use file bot username if configured, otherwise main bot
+        try:
+            from utils.cyber_filebot import get_filebot_username
+            _fb_uname = await get_filebot_username()
+        except Exception:
+            _fb_uname = None
+        _link_username = _fb_uname or bot.username
+
         rows, row = [], []
         for quality, codec in qc_pairs:
             label   = _quality_label(quality, codec)
             payload = await encode_payload(series, season, lang, quality, uid)
-            link    = f"https://t.me/{bot.username}?start={payload}"
+            link    = f"https://t.me/{_link_username}?start={payload}"
             row.append(InlineKeyboardButton(f"⬇️  {label}", url=link))
             if len(row) == 2:
                 rows.append(row)
@@ -647,11 +655,18 @@ def register_filters(cyber: Client):
         poster, year, genre, rating = poster_r
         qs   = [qc[0] for qc in qc_pairs]
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
+        # Use file bot username if configured, otherwise main bot
+        try:
+            from utils.cyber_filebot import get_filebot_username
+            _fb_uname = await get_filebot_username()
+        except Exception:
+            _fb_uname = None
+        _link_username = _fb_uname or bot.username
         rows, row = [], []
         for quality, codec in qc_pairs:
             label   = _quality_label(quality, codec)
             payload = await encode_payload(series, season, lang, quality, uid)
-            link    = f"https://t.me/{bot.username}?start={payload}"
+            link    = f"https://t.me/{_link_username}?start={payload}"
             row.append(InlineKeyboardButton(f"⬇️  {label}", url=link))
             if len(row) == 2:
                 rows.append(row)
