@@ -1041,15 +1041,15 @@ async def _handle_filebot_input(bot, message):
     state = _filebot_state.get(uid)
 
     if not state:
-        return False   # not in setup flow
+        return
 
     if text == "/cancel":
         _filebot_state.pop(uid, None)
         await message.reply(
             "❌ File bot setup cancelled.",
-            parse_mode="html",
+            parse_mode=enums.ParseMode.HTML,
         )
-        return True
+        return
 
     step = state.get("step")
 
@@ -1061,9 +1061,9 @@ async def _handle_filebot_input(bot, message):
                 "❌ That doesn't look like a valid bot token.\n"
                 "Expected format: <code>123456789:ABCdefGHI...</code>\n\n"
                 "Try again or send /cancel.",
-                parse_mode="html",
+                parse_mode=enums.ParseMode.HTML,
             )
-            return True
+            return
         state["token"] = text
         state["step"]  = "channel"
         await message.reply(
@@ -1072,9 +1072,9 @@ async def _handle_filebot_input(bot, message):
             "This channel must have <b>both bots as admin</b>.\n"
             "<i>Example: <code>-1001234567890</code></i>\n\n"
             "Send /cancel to abort.",
-            parse_mode="html",
+            parse_mode=enums.ParseMode.HTML,
         )
-        return True
+        return
 
     if step == "channel":
         try:
@@ -1084,14 +1084,14 @@ async def _handle_filebot_input(bot, message):
                 "❌ Channel ID must be a number.\n"
                 "<i>Example: <code>-1001234567890</code></i>\n\n"
                 "Try again or send /cancel.",
-                parse_mode="html",
+                parse_mode=enums.ParseMode.HTML,
             )
-            return True
+            return
 
         token = state.get("token")
         _filebot_state.pop(uid, None)
 
-        wait = await message.reply("⏳ Connecting file bot...", parse_mode="html")
+        wait = await message.reply("⏳ Connecting file bot...", parse_mode=enums.ParseMode.HTML)
 
         from utils.cyber_filebot import set_filebot_config, get_filebot_client
         await set_filebot_config(token, channel_id)
@@ -1104,18 +1104,16 @@ async def _handle_filebot_input(bot, message):
                 f"🤖 Bot     : @{me.username}\n"
                 f"📡 Channel : <code>{channel_id}</code>\n\n"
                 f"<i>Files will now be sent via the file bot.</i>",
-                parse_mode="html",
+                parse_mode=enums.ParseMode.HTML,
             )
         else:
             await wait.edit_text(
                 "❌ <b>Could not connect file bot.</b>\n\n"
                 "Check that the token is correct and the bot is not already running elsewhere.\n"
                 "Config was saved — you can try again via File Bot settings.",
-                parse_mode="html",
+                parse_mode=enums.ParseMode.HTML,
             )
-        return True
-
-    return False
+        return
 
 
 _ALL_COMMANDS = [
@@ -1145,9 +1143,10 @@ def register_menu_handlers(cyber: Client):
 
     @cyber.on_message(filters.text & filters.private & filters.user(ADMIN_USERS))
     async def _filebot_text(c, m):
-        handled = await _handle_filebot_input(c, m)
-        # Return True stops the handler chain so other text handlers don't fire
-        return handled
+        # Only intercept if admin is in the filebot setup flow
+        uid = m.from_user.id if m.from_user else None
+        if uid and uid in _filebot_state:
+            await _handle_filebot_input(c, m)
 
     @cyber.on_callback_query(filters.regex(r"^index\|"))
     async def _(c, q): await index_action_router(c, q)
