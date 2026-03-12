@@ -29,6 +29,7 @@ import math
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.enums import ButtonStyle
 
 from config import (
     logger,
@@ -156,10 +157,26 @@ def register_command_handlers(cyber: Client):
         )
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔍  Browse Library", switch_inline_query_current_chat="")],
-            [InlineKeyboardButton("📖  Help",    callback_data="help|menu"),
-             InlineKeyboardButton("ℹ️  About",   callback_data="about|menu")],
-            [InlineKeyboardButton("💬  Support", url="https://t.me/TomxSupport")],
+            [InlineKeyboardButton(
+                "🔍  Browse Library",
+                switch_inline_query_current_chat="",
+                style=ButtonStyle.PRIMARY,
+            )],
+            [InlineKeyboardButton(
+                "📖  Help",
+                callback_data="help|menu",
+                style=ButtonStyle.SUCCESS,
+            ),
+             InlineKeyboardButton(
+                "ℹ️  About",
+                callback_data="about|menu",
+                style=ButtonStyle.PRIMARY,
+            )],
+            [InlineKeyboardButton(
+                "💬  Support",
+                url="https://t.me/TomxSupport",
+                style=ButtonStyle.DANGER,
+            )],
         ])
 
         await message.reply_photo(
