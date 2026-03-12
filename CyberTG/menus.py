@@ -19,7 +19,6 @@ from pyrogram.types import (
     InputMediaPhoto,
     Message,
 )
-from pyrogram.enums import ButtonStyle
 from pyrogram.errors import MessageNotModified
 
 from config import DEFAULT_POSTER, ADMIN_USERS
@@ -152,9 +151,9 @@ async def help_menu_handler(cyber, query):
         "<i>Tip: Be specific with series names for best results.</i>"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏠  Home",  callback_data="cyber|",     style=ButtonStyle.PRIMARY),
-         InlineKeyboardButton("⚙️  Admin", callback_data="admin|menu", style=ButtonStyle.DANGER)],
-        [InlineKeyboardButton("✖️  Close", callback_data="close|menu", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton("🏠  Home",  callback_data="cyber|"),
+         InlineKeyboardButton("⚙️  Admin", callback_data="admin|menu")],
+        [InlineKeyboardButton("✖️  Close", callback_data="close|menu")],
     ])
     await safe_edit(query.message, caption=text, reply_markup=keyboard)
     await query.answer()
@@ -173,11 +172,10 @@ async def cyber_menu_handler(cyber, query):
         [InlineKeyboardButton(
             "🔍  Browse Library",
             switch_inline_query_current_chat="",
-            style=ButtonStyle.PRIMARY,
         )],
-        [InlineKeyboardButton("📖  Help",  callback_data="help|menu",  style=ButtonStyle.SUCCESS),
-         InlineKeyboardButton("ℹ️  About", callback_data="about|menu", style=ButtonStyle.PRIMARY)],
-        [InlineKeyboardButton("✖️  Close", callback_data="close|menu", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton("📖  Help",  callback_data="help|menu"),
+         InlineKeyboardButton("ℹ️  About", callback_data="about|menu")],
+        [InlineKeyboardButton("✖️  Close", callback_data="close|menu")],
     ])
     try:
         await query.message.edit_media(
@@ -202,9 +200,9 @@ async def about_menu_handler(_, query):
         "<i>A fast, reliable series delivery bot.</i>"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏠  Home", callback_data="cyber|",    style=ButtonStyle.PRIMARY),
-         InlineKeyboardButton("📖  Help", callback_data="help|menu", style=ButtonStyle.SUCCESS)],
-        [InlineKeyboardButton("✖️  Close", callback_data="close|menu", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton("🏠  Home", callback_data="cyber|"),
+         InlineKeyboardButton("📖  Help", callback_data="help|menu")],
+        [InlineKeyboardButton("✖️  Close", callback_data="close|menu")],
     ])
     await safe_edit(query.message, caption=text, reply_markup=keyboard)
     await query.answer()
@@ -214,9 +212,9 @@ async def owner_menu_handler(_, query):
     if query.from_user.id not in ADMIN_USERS:
         return await query.answer("Not allowed.", show_alert=True)
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚙️  Global Settings", callback_data="gset|main", style=ButtonStyle.PRIMARY)],
-        [InlineKeyboardButton("🏠  Home",             callback_data="cyber|",   style=ButtonStyle.SUCCESS),
-         InlineKeyboardButton("✖️  Close",            callback_data="close|menu", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton("⚙️  Global Settings", callback_data="gset|main")],
+        [InlineKeyboardButton("🏠  Home",             callback_data="cyber|"),
+         InlineKeyboardButton("✖️  Close",            callback_data="close|menu")],
     ])
     await safe_edit(
         query.message,
