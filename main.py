@@ -149,9 +149,12 @@ async def run_bot_async(cyber: Client):
         logger.exception(f"[STARTUP] ❌ Failed to load FSub settings: {e}")
 
     try:
-        from utils.cyber_filebot import load_filebot_config
+        from utils.cyber_filebot import load_filebot_config, register_filebot_start_handler, is_filebot_configured
         await load_filebot_config()
         logger.info("[STARTUP] ✅ File bot config loaded.")
+        if is_filebot_configured():
+            register_filebot_start_handler(cyber)
+            logger.info("[STARTUP] ✅ File bot /start handler scheduled.")
     except Exception as e:
         logger.warning(f"[STARTUP] File bot config load failed (non-fatal): {e}")
 
