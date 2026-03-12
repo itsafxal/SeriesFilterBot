@@ -163,10 +163,12 @@ async def cyber_menu_handler(cyber, query):
     user = query.from_user
     bot  = await cyber.get_me()
     text = (
-        f"✦ <b>Welcome back, {user.first_name}</b>\n"
-        "──────────────────────\n\n"
-        f"<b>{bot.first_name}</b> — Premium series library\n\n"
-        "<blockquote>Type a series name to search instantly.</blockquote>"
+        f"✦ <b>Welcome, {user.first_name}</b>\n"
+        f"<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+        f"🎬 <b>{bot.first_name}</b> — Your premium series library,\n"
+        f"right inside Telegram.\n\n"
+        f"<blockquote>Simply type a series name to get started.\n"
+        f"Browse thousands of titles instantly.</blockquote>"
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(
@@ -177,6 +179,7 @@ async def cyber_menu_handler(cyber, query):
          InlineKeyboardButton("ℹ️  About", callback_data="about|menu")],
         [InlineKeyboardButton("✖️  Close", callback_data="close|menu")],
     ])
+  
     try:
         await query.message.edit_media(
             InputMediaPhoto(media=DEFAULT_POSTER, caption=text,
