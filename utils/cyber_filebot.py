@@ -39,9 +39,10 @@ from pyrogram.errors import FloodWait
 from config import API_ID, API_HASH, logger
 
 # ── Module-level state ────────────────────────────────────────
-_filebot_token:   str | None = None
-_filebot_channel: int | None = None
-_filebot_client:  Client | None = None
+_filebot_token:    str | None = None
+_filebot_channel:  int | None = None
+_filebot_client:   Client | None = None
+_filebot_username: str | None = None   # cached @username of the file bot
 _filebot_lock = asyncio.Lock()
 
 DB_KEY = "FILEBOT_CONFIG"
@@ -118,12 +119,30 @@ def is_filebot_configured() -> bool:
     return bool(_filebot_token and _filebot_channel)
 
 
+async def get_filebot_username() -> str | None:
+    """
+    Returns the @username of the file bot (without @).
+    Connects the client if not already connected.
+    Returns None if no file bot configured.
+    """
+    global _filebot_username
+    if not is_filebot_configured():
+        return None
+    if _filebot_username:
+        return _filebot_username
+    # Connect to get username
+    client = await get_filebot_client()
+    if client:
+        return _filebot_username
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════
 # CLIENT MANAGEMENT
 # ═══════════════════════════════════════════════════════════════
 
 async def _stop_client():
-    global _filebot_client
+    global _filebot_client, _filebot_username
     if _filebot_client:
         try:
             if _filebot_client.is_connected:
@@ -131,6 +150,7 @@ async def _stop_client():
         except Exception as e:
             logger.debug(f"[FILEBOT] stop client: {e}")
         _filebot_client = None
+        _filebot_username = None
 
 
 async def get_filebot_client() -> Client | None:
@@ -160,6 +180,7 @@ async def get_filebot_client() -> Client | None:
             await client.start()
             _filebot_client = client
             me = await client.get_me()
+            _filebot_username = me.username
             logger.info(f"[FILEBOT] ✅ File bot connected: @{me.username}")
             return _filebot_client
         except Exception as e:
@@ -317,3 +338,297 @@ async def deliver_via_filebot(
             logger.error(f"[FILEBOT] on_complete error: {e}")
 
     return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# FILE BOT /start HANDLER
+# ═══════════════════════════════════════════════════════════════
+
+def register_filebot_start_handler(main_cyber):
+    """
+    Registers a /start handler on the file bot client that:
+      1. Decodes the send_ payload
+      2. Checks FSub (using main bot for member checks)
+      3. Sends start sticker + files + end sticker via the FILE BOT
+      4. Auto-deletes if configured
+
+    Call this once after load_filebot_config() on startup,
+    and again after set_filebot_config() when admin updates config.
+
+    The handler is re-registered each time the client restarts.
+    We store it as a module-level flag so it isn't double-registered.
+    """
+    # Store reference so we can re-register after client restart
+    _m = __import__(__name__, fromlist=["_pending_start_handler"])
+    _m._main_cyber_ref = main_cyber
+    _m._start_handler_registered = False
+    asyncio.create_task(_ensure_start_handler(main_cyber))
+
+
+async def _ensure_start_handler(main_cyber):
+    """Connect client and attach the /start handler."""
+    global _filebot_username
+
+    client = await get_filebot_client()
+    if not client:
+        logger.warning("[FILEBOT] Cannot register start handler — client unavailable.")
+        return
+
+    # Pyrogram handlers are registered per-client instance.
+    # We use a closure so each new client gets its own handler.
+    from pyrogram import filters as pyro_filters
+    from pyrogram import enums as pyro_enums
+
+    @client.on_message(pyro_filters.command("start") & pyro_filters.private)
+    async def _filebot_start(_, message):
+        uid = message.from_user.id
+
+        # Add user to DB (same as main bot /start)
+        try:
+            from DB.database import add_user
+            await add_user(uid)
+        except Exception:
+            pass
+
+        if len(message.command) < 2 or not message.command[1].startswith("send_"):
+            # No payload — just greet
+            try:
+                bot = await client.get_me()
+                await message.reply_text(
+                    f"👋 <b>Hi!</b> I'm <b>{bot.first_name}</b>, the file delivery bot.
+
+"
+                    f"Use the main bot to search and request files.",
+                    parse_mode=pyro_enums.ParseMode.HTML,
+                )
+            except Exception:
+                pass
+            return
+
+        payload = message.command[1]
+
+        # Delete the /start message to keep DM clean
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        # ── FSub check via main bot ───────────────────────────
+        try:
+            from CyberTG.fsub import (
+                get_slot_statuses, all_slots_passed,
+                build_fsub_keyboard, fsub_text,
+                register_pending_fsub, clear_pending_fsub,
+                do_deliver_via_filebot,
+                _PENDING_FSUB,
+            )
+            statuses = await get_slot_statuses(main_cyber, uid)
+            passed   = all_slots_passed(statuses)
+
+            if not passed:
+                main_bot = await main_cyber.get_me()
+                # Build keyboard pointing to MAIN bot for fsub (join channel links)
+                kb  = build_fsub_keyboard(main_bot.username, payload, statuses)
+                txt = fsub_text(statuses)
+
+                existing = _PENDING_FSUB.get(uid)
+                if existing and existing["payload"] == payload:
+                    try:
+                        await existing["msg"].edit_text(
+                            txt, reply_markup=kb,
+                            parse_mode=pyro_enums.ParseMode.HTML,
+                        )
+                    except Exception:
+                        pass
+                else:
+                    gate_msg = await client.send_message(
+                        uid, txt, reply_markup=kb,
+                        parse_mode=pyro_enums.ParseMode.HTML,
+                    )
+                    register_pending_fsub(uid, gate_msg, payload)
+                return
+
+            # Clear any pending fsub gate
+            pending = _PENDING_FSUB.get(uid)
+            if pending:
+                try:
+                    await pending["msg"].delete()
+                except Exception:
+                    pass
+                clear_pending_fsub(uid)
+
+        except Exception as e:
+            logger.warning(f"[FILEBOT] FSub check error uid={uid}: {e}")
+
+        # ── Decode payload ────────────────────────────────────
+        try:
+            from utils.cyber_filter import decode_payload_async
+            decoded = await decode_payload_async(payload)
+        except Exception as e:
+            logger.error(f"[FILEBOT] decode_payload error: {e}")
+            decoded = None
+
+        if not decoded:
+            await client.send_message(
+                uid,
+                "⏳ <b>Link Expired</b>
+"
+                "<b>━━━━━━━━━━━━━━━━━━━━━</b>
+
+"
+                "This download link has expired.
+"
+                "<i>Please search for the series again to get a fresh link.</i>",
+                parse_mode=pyro_enums.ParseMode.HTML,
+            )
+            return
+
+        owner, series, season, lang, quality = decoded
+
+        if int(owner) != uid:
+            await client.send_message(
+                uid,
+                "⛔ <b>Access Denied</b>
+"
+                "<b>━━━━━━━━━━━━━━━━━━━━━</b>
+
+"
+                "<i>This link belongs to another user.</i>",
+                parse_mode=pyro_enums.ParseMode.HTML,
+            )
+            return
+
+        # ── Set session + deliver via FILE BOT directly ───────
+        try:
+            from CyberTG.files import set_session
+            set_session(uid, {
+                "series":   series,
+                "season":   int(season),
+                "language": lang,
+                "quality":  quality,
+            })
+            await _deliver_via_filebot_client(main_cyber, client, uid)
+        except Exception as e:
+            logger.error(f"[FILEBOT] delivery error uid={uid}: {e}")
+            await client.send_message(uid, "❌ Delivery failed. Please try again.")
+
+    logger.info("[FILEBOT] ✅ /start handler registered on file bot client.")
+
+
+async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int):
+    """
+    Full delivery via the file bot client directly.
+    Sends sticker + files + end sticker all through file_client (second bot).
+    Files are fetched from DB and sent directly using file_client — NO relay channel needed.
+    """
+    import re
+    from config import logger, STICKER_ENABLED, PROGRESS_MESSAGE_ENABLED
+    from DB.database import get_all_files_by_season_and_quality, get_global_setting
+    from CyberTG.files import (
+        get_session_async, clear_session, clean_series_name,
+        _normalize_for_query, _build_caption, DEFAULT_CAPTION,
+        _safe_send_single, _safe_send_group, _make_input_media,
+        _send_start_sticker, _send_end_sticker,
+        MEDIA_GROUP_SIZE,
+    )
+    from pyrogram import enums as pyro_enums
+
+    session = await get_session_async(user_id)
+    if not session:
+        logger.warning(f"[FILEBOT] _deliver_via_filebot_client: no session uid={user_id}")
+        return
+
+    raw_series = session["series"]
+    series     = clean_series_name(raw_series)
+    season     = int(session["season"])
+    language   = session["language"]
+    quality    = session["quality"]
+    query_name = _normalize_for_query(raw_series)
+
+    files = await get_all_files_by_season_and_quality(query_name, season, quality, language)
+
+    if not files:
+        await file_client.send_message(user_id, "❌ No files found.")
+        clear_session(user_id)
+        return
+
+    total = len(files)
+    clear_session(user_id)
+
+    auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
+    try:
+        auto_delay = int(auto_delay) if auto_delay else 0
+    except (TypeError, ValueError):
+        auto_delay = 0
+
+    custom_caption   = await get_global_setting("CUSTOM_FILE_CAPTION", None)
+    caption_template = custom_caption if custom_caption else DEFAULT_CAPTION
+
+    # Progress message (via file bot)
+    progress_msg = None
+    if PROGRESS_MESSAGE_ENABLED:
+        try:
+            progress_msg = await file_client.send_message(
+                user_id,
+                f"📦 <b>Preparing {total} files...</b>",
+                parse_mode=pyro_enums.ParseMode.HTML,
+            )
+        except Exception:
+            pass
+
+    # Start sticker (via file bot)
+    await _send_start_sticker(file_client, user_id, season, auto_delay)
+
+    # Build all items
+    all_items = []
+    for f in files:
+        cap = _build_caption(
+            caption_template, series, season,
+            f.get("episode", 0), language, quality,
+            f.get("file_name", ""),
+        )
+        raw_type  = (f.get("media_type") or "document").lower()
+        norm_type = "document" if raw_type in ("video", "document") else raw_type
+        all_items.append((f, cap, f.get("file_id"), norm_type))
+
+    groupable = [(f, cap, fid) for f, cap, fid, t in all_items if t == "document" and fid]
+    solo      = [(f, cap)      for f, cap, fid, t in all_items if t != "document" or not fid]
+
+    sent_count = 0
+
+    # Send groupable in batches of up to 10 via FILE BOT
+    for batch_start in range(0, len(groupable), MEDIA_GROUP_SIZE):
+        batch = groupable[batch_start : batch_start + MEDIA_GROUP_SIZE]
+        if len(batch) == 1:
+            f, cap, fid = batch[0]
+            ok = await _safe_send_single(file_client, user_id, f, cap, auto_delay)
+            if ok:
+                sent_count += 1
+        else:
+            media_list   = [_make_input_media(f, cap) for f, cap, fid in batch]
+            source_files = [f for f, cap, fid in batch]
+            caption_map  = {id(f): cap for f, cap, fid in batch}
+            sent = await _safe_send_group(
+                file_client, user_id, media_list, auto_delay,
+                source_files=source_files,
+                caption_map=caption_map,
+            )
+            sent_count += len(sent)
+
+    # Solo files
+    for f, cap in solo:
+        ok = await _safe_send_single(file_client, user_id, f, cap, auto_delay)
+        if ok:
+            sent_count += 1
+
+    # Cleanup
+    if progress_msg:
+        try:
+            await file_client.delete_messages(user_id, progress_msg.id)
+        except Exception:
+            pass
+
+    # End sticker (via file bot)
+    await _send_end_sticker(file_client, user_id, season, total, auto_delay)
+
+    logger.info(f"[FILEBOT] ✅ Direct delivery done uid={user_id} sent={sent_count}/{total}")
