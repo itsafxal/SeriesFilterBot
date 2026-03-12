@@ -14,6 +14,7 @@ from utils.cyber_delete import start_scheduler
 from DB.database import (
     initialize_sql_db, get_global_setting, set_global_setting,
     repair_normalized_names_in_mongo, add_group, remove_group,
+    ensure_all_indexes,
 )
 from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -121,12 +122,19 @@ async def run_bot_async(cyber: Client):
     await cyber.start()
     logger.info("[STARTUP] Bot client connected ✅")
 
-    try:
-        from DB.database import clear_sticker_cache
-        await clear_sticker_cache()
-        logger.info("[STARTUP] ✅ Sticker cache cleared (style reset).")
-    except Exception as e:
-        logger.warning(f"[STARTUP] Sticker cache clear failed (non-fatal): {e}")
+    # ── MongoDB indexes — run in background, don't block startup ──
+    asyncio.create_task(ensure_all_indexes())
+    logger.info("[STARTUP] ✅ MongoDB index check scheduled (background).")
+
+    # ── Sticker cache clear — fire-and-forget, non-blocking ──
+    async def _clear_stickers_bg():
+        try:
+            from DB.database import clear_sticker_cache
+            await clear_sticker_cache()
+            logger.info("[STARTUP] ✅ Sticker cache cleared (style reset).")
+        except Exception as e:
+            logger.warning(f"[STARTUP] Sticker cache clear failed (non-fatal): {e}")
+    asyncio.create_task(_clear_stickers_bg())
 
     try:
         start_scheduler()
@@ -139,6 +147,19 @@ async def run_bot_async(cyber: Client):
         logger.info("[STARTUP] ✅ FSub settings loaded.")
     except Exception as e:
         logger.exception(f"[STARTUP] ❌ Failed to load FSub settings: {e}")
+
+    # ── Mongo normalized_name repair — background, non-blocking ──
+    async def _mongo_repair_bg():
+        try:
+            total = await repair_normalized_names_in_mongo()
+            if total:
+                logger.info(f"[STARTUP] ✅ MongoDB repair done — {total} docs updated.")
+            else:
+                logger.info("[STARTUP] ✅ MongoDB repair done — nothing to update.")
+        except Exception as e:
+            logger.warning(f"[STARTUP] MongoDB repair failed (non-fatal): {e}")
+    asyncio.create_task(_mongo_repair_bg())
+    logger.info("[STARTUP] ✅ MongoDB repair scheduled (background).")
 
     try:
         asyncio.create_task(check_and_resume_index(cyber))
@@ -184,14 +205,11 @@ def main():
         logger.error(f"[INIT] ❌ Critical failure during SQL DB init: {e}")
         return
 
-    # Repair stale normalized_name values in MongoDB (safe no-op if already correct)
-    logger.info("[INIT] Repairing normalized_name in MongoDB (post-normalizer upgrade)...")
-    try:
-        import asyncio as _asyncio
-        _asyncio.get_event_loop().run_until_complete(repair_normalized_names_in_mongo())
-        logger.info("[INIT] ✅ MongoDB normalized_name repair complete.")
-    except Exception as e:
-        logger.error(f"[INIT] ⚠️ MongoDB repair failed (non-fatal): {e}")
+    # Mongo normalized_name repair — deferred to background after bot is online.
+    # This used to stream TWO full Mongo collections synchronously before the
+    # event loop started — could take 30–120s on large DBs. Now it runs as a
+    # background task after startup, so the bot is immediately responsive.
+    # (The repair is idempotent; safe to skip on any individual boot.)
 
     cyber = Client(
         "SeriesBot",
