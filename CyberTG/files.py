@@ -564,67 +564,10 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
     # Clear session early — files are already loaded
     clear_session(user_id)
 
-    # ── DUAL-BOT ROUTING ─────────────────────────────────────
-    # If a File Bot is configured, relay delivery through it.
-    # The file bot sends files from a deliver channel to the user.
-    # Falls back to direct delivery if file bot is unavailable.
-    try:
-        from utils.cyber_filebot import is_filebot_configured, deliver_via_filebot
-
-        if is_filebot_configured():
-            logger.info(f"[DELIVER] File bot configured — using relay delivery uid={user_id}")
-
-            # Progress message (shown during relay too)
-            progress_msg = None
-            if PROGRESS_MESSAGE_ENABLED:
-                try:
-                    progress_msg = await cyber.send_message(
-                        user_id,
-                        f"📦 <b>Preparing {total} files...</b>",
-                        parse_mode=enums.ParseMode.HTML,
-                    )
-                except Exception:
-                    pass
-
-            # Start sticker
-            await _send_start_sticker(cyber, user_id, season, auto_delay)
-
-            def _caption_builder(f):
-                return _build_caption(
-                    caption_template, series, season,
-                    f.get("episode", 0), language, quality,
-                    f.get("file_name", ""),
-                )
-
-            async def _after_filebot():
-                if progress_msg:
-                    try:
-                        await cyber.delete_messages(user_id, progress_msg.id)
-                    except Exception:
-                        pass
-                await _send_end_sticker(cyber, user_id, season, total, auto_delay)
-                logger.info(f"[DELIVER] ✅ relay done uid={user_id} total={total}")
-                if on_complete:
-                    try:
-                        await on_complete()
-                    except Exception as e:
-                        logger.error(f"[DELIVER] on_complete error uid={user_id}: {e}")
-
-            used_filebot = await deliver_via_filebot(
-                cyber, user_id, files,
-                caption_builder=_caption_builder,
-                auto_delay=auto_delay,
-                on_complete=_after_filebot,
-            )
-            if used_filebot:
-                return   # relay delivery handled everything
-            # If relay returned False, fall through to direct delivery below
-            logger.info(f"[DELIVER] File bot relay failed — falling back to direct uid={user_id}")
-
-    except Exception as e:
-        logger.warning(f"[DELIVER] File bot routing error (falling back): {e}")
-
     # ── DIRECT DELIVERY (main bot) ────────────────────────────
+    # Note: when File Bot is configured, delivery is handled entirely
+    # by the file bot's /start handler (cyber_filebot.py).
+    # deliver_files_direct is only called as a fallback (no file bot set).
 
     # Progress message
     progress_msg = None
