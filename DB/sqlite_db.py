@@ -220,17 +220,87 @@ _init_db()
 
 # ── Migration ─────────────────────────────────────────────────
 
+def _get_mongo_fingerprint(files_collection) -> str:
+    """
+    Fast fingerprint of MongoDB content: document count + newest _id hex.
+    Used to detect whether SQLite is already in sync — avoids full re-migration.
+    Takes ~1 ms (index scan) vs minutes for full migration.
+    """
+    try:
+        count = files_collection.count_documents({})
+        # newest doc _id (ObjectId sorts by insertion time)
+        newest = files_collection.find_one({}, {"_id": 1}, sort=[("_id", -1)])
+        newest_id = str(newest["_id"]) if newest else "none"
+        return f"{count}:{newest_id}"
+    except Exception:
+        return ""
+
+
+def _get_sqlite_fingerprint(conn) -> str:
+    """Read stored Mongo fingerprint from SQLite meta table."""
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS _meta
+            (key TEXT PRIMARY KEY, value TEXT)
+        """)
+        row = conn.execute(
+            "SELECT value FROM _meta WHERE key='mongo_fingerprint'"
+        ).fetchone()
+        return row[0] if row else ""
+    except Exception:
+        return ""
+
+
+def _save_sqlite_fingerprint(conn, fp: str):
+    """Store Mongo fingerprint in SQLite meta table after successful migration."""
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS _meta
+            (key TEXT PRIMARY KEY, value TEXT)
+        """)
+        conn.execute("""
+            INSERT OR REPLACE INTO _meta (key, value)
+            VALUES ('mongo_fingerprint', ?)
+        """, (fp,))
+        conn.commit()
+    except Exception:
+        pass
+
+
 def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func, logger):
     conn = _get_conn()
     create_sql_schema_func(conn)
     cursor = conn.cursor()
 
-    cursor.execute("DELETE FROM files")
-    conn.commit()
-    logger.info("ℹ️ Cleared SQLite table for fresh migration.")
+    # ── FAST PATH: skip migration if SQLite already matches MongoDB ──
+    # Compute a cheap fingerprint (doc count + newest _id) and compare
+    # to the fingerprint stored in SQLite from the last migration.
+    # If they match: SQLite is up-to-date — skip the full re-import entirely.
+    import os
+    db_exists  = os.path.exists(SQLITE_DB_PATH) and os.path.getsize(SQLITE_DB_PATH) > 0
+    mongo_fp   = _get_mongo_fingerprint(files_collection)
+    sqlite_fp  = _get_sqlite_fingerprint(conn) if db_exists else ""
+
+    if db_exists and mongo_fp and mongo_fp == sqlite_fp:
+        # Count existing rows as sanity check
+        row_count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+        if row_count > 0:
+            logger.info(
+                f"✅ [MIGRATE] SQLite is up-to-date (fingerprint match, {row_count} rows). "
+                f"Skipping full re-migration — boot time saved!"
+            )
+            return  # ← FAST EXIT: nothing to do
+
+    logger.info(
+        f"[MIGRATE] Fingerprint changed or first boot — running full migration..."
+    )
 
     doc_count = files_collection.count_documents({})
     logger.info(f"📦 Total Mongo documents found: {doc_count}")
+
+    cursor.execute("DELETE FROM files")
+    conn.commit()
+    logger.info("ℹ️ Cleared SQLite table for fresh migration.")
 
     mongo_docs = files_collection.find({}, {
         "channel_id": 1, "message_id": 1, "file_name": 1,
@@ -294,10 +364,30 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
         total += len(batch)
 
     logger.info(f"✅ Migration done: {total}/{doc_count} files.")
+    # Save fingerprint so next boot can skip migration if nothing changed
+    if mongo_fp:
+        _save_sqlite_fingerprint(conn, mongo_fp)
+        logger.info(f"[MIGRATE] Saved fingerprint for next boot: {mongo_fp}")
 
 
 def repair_normalized_names_in_sqlite_sync(logger):
+    """
+    OPTIMIZED: only runs if the _meta table shows it hasn't been done yet,
+    OR if there are actually rows that need repair. Skips on subsequent boots.
+    """
     conn   = _get_conn()
+    # Check one-time flag
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)")
+        done = conn.execute(
+            "SELECT value FROM _meta WHERE key='norm_repair_done'"
+        ).fetchone()
+        if done and done[0] == "1":
+            logger.info("[NORM REPAIR] Already done on previous boot — skipping.")
+            return
+    except Exception:
+        pass
+
     cursor = conn.cursor()
     cursor.execute("SELECT rowid, file_name, normalized_name FROM files")
     rows = cursor.fetchall()
@@ -311,6 +401,16 @@ def repair_normalized_names_in_sqlite_sync(logger):
         cursor.executemany("UPDATE files SET normalized_name = ? WHERE rowid = ?", updates)
         conn.commit()
         logger.info(f"🛠️ Repaired {len(updates)} normalized_name rows.")
+    else:
+        logger.info("[NORM REPAIR] No rows needed repair.")
+    # Mark as done so future boots skip this entirely
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('norm_repair_done', '1')"
+        )
+        conn.commit()
+    except Exception:
+        pass
 
 
 def repair_codec_from_filenames_sync(logger):
@@ -323,6 +423,18 @@ def repair_codec_from_filenames_sync(logger):
     e.g.  '[ss™] Man.Vs.Bee.S01E03.720p.x265.mkv'  →  codec = 'H.265'
     """
     conn   = _get_conn()
+    # One-time flag — skip entirely on subsequent boots unless new empty-codec rows exist
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)")
+        done = conn.execute(
+            "SELECT value FROM _meta WHERE key='codec_repair_done'"
+        ).fetchone()
+        if done and done[0] == "1":
+            logger.info("[CODEC REPAIR] Already done on previous boot — skipping.")
+            return
+    except Exception:
+        pass
+
     cursor = conn.cursor()
     cursor.execute(
         "SELECT rowid, file_name FROM files WHERE codec = '' OR codec IS NULL"
@@ -331,6 +443,13 @@ def repair_codec_from_filenames_sync(logger):
 
     if not rows:
         logger.info("[CODEC REPAIR] All rows already have codec — nothing to do.")
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO _meta (key, value) VALUES ('codec_repair_done', '1')"
+            )
+            conn.commit()
+        except Exception:
+            pass
         return
 
     updates = []
@@ -353,6 +472,14 @@ def repair_codec_from_filenames_sync(logger):
             f"[CODEC REPAIR] {len(rows)} rows have empty codec but no codec "
             f"detectable from filename (e.g. documents, audio)."
         )
+    # Mark done so future boots skip this scan entirely
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('codec_repair_done', '1')"
+        )
+        conn.commit()
+    except Exception:
+        pass
 
 
 # ── Queries ───────────────────────────────────────────────────
