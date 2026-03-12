@@ -1093,12 +1093,12 @@ async def _handle_filebot_input(bot, message):
 
         wait = await message.reply("⏳ Connecting file bot...", parse_mode=enums.ParseMode.HTML)
 
-        from utils.cyber_filebot import set_filebot_config, get_filebot_client, register_filebot_start_handler
+        from utils.cyber_filebot import set_filebot_config, get_filebot_username, register_filebot_start_handler
+        # set_filebot_config connects immediately and caches the username
         await set_filebot_config(token, channel_id)
-        client = await get_filebot_client()
+        fb_username = await get_filebot_username()
 
-        if client:
-            me = await client.get_me()
+        if fb_username:
             # Register /start handler on the newly connected file bot
             try:
                 register_filebot_start_handler(bot)
@@ -1107,7 +1107,7 @@ async def _handle_filebot_input(bot, message):
                 logging.getLogger("BOT").warning(f"[FILEBOT] start handler register error: {_e}")
             await wait.edit_text(
                 f"✅ <b>File Bot Connected!</b>\n──────────────────────\n\n"
-                f"🤖 Bot     : @{me.username}\n"
+                f"🤖 Bot     : @{fb_username}\n"
                 f"📡 Channel : <code>{channel_id}</code>\n\n"
                 f"<i>Files will now be sent via the file bot.</i>",
                 parse_mode=enums.ParseMode.HTML,
