@@ -206,7 +206,10 @@ def make_start_sticker(season: int, style_idx=None):
     Returns (BytesIO webp, chosen_style_idx).
     Pass style_idx to reuse a saved style; None = pick randomly.
     """
-    style_idx = 0  # always style 0
+    if style_idx is None:
+        style_idx = random.randrange(len(_START_STYLES))
+    else:
+        style_idx = int(style_idx) % len(_START_STYLES)
     img = _START_STYLES[style_idx](season)
     buf = io.BytesIO()
     img.save(buf, format="WEBP", lossless=True)
@@ -220,7 +223,10 @@ def make_end_sticker(season: int, total: int, style_idx=None):
     Returns (BytesIO webp, chosen_style_idx).
     Pass style_idx to reuse a saved style; None = pick randomly.
     """
-    style_idx = 0  # always style 0 — ◀ THE END ▶
+    if style_idx is None:
+        style_idx = random.randrange(len(_END_STYLES))
+    else:
+        style_idx = int(style_idx) % len(_END_STYLES)
     img = _END_STYLES[style_idx](season, total)
     buf = io.BytesIO()
     img.save(buf, format="WEBP", lossless=True)
