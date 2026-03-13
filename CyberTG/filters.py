@@ -414,11 +414,23 @@ def register_filters(cyber: Client):
         if not m.from_user:
             return
 
+        # ── Block the bot from searching its OWN messages ─────
+        # Pyrogram delivers the bot's own send_message() calls back as
+        # incoming updates (restart notice, FSub gate, delivery messages, etc).
+        # Without this check every bot-sent message triggers a search.
+        # _get_bot_id() is cached after first call — zero API cost.
+        try:
+            bot_id = await _get_bot_id(_)
+            if bot_id and m.from_user.id == bot_id:
+                return
+        except Exception:
+            pass
+
+        # Also skip messages from any bot (is_bot flag)
+        if getattr(m.from_user, "is_bot", False):
+            return
+
         # ── Ignore replies to bot messages ────────────────────
-        # Extra guard: if user replies to a bot message the text of their
-        # reply would still be a search query — let it through.
-        # But if the replied-to message IS from the bot, skip it.
-        # _get_bot_id() is cached — no extra API call after first use.
         if m.reply_to_message:
             try:
                 bot_id = await _get_bot_id(_)
