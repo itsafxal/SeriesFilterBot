@@ -409,43 +409,14 @@ async def _ensure_start_handler(main_cyber):
             pass
 
         if len(message.command) < 2 or not message.command[1].startswith("send_"):
-            # No payload — greet with style
+            # No payload — just greet
             try:
                 bot = await client.get_me()
                 name = bot.first_name
-
-                # Fetch main bot username for the redirect button
-                try:
-                    main_me = await main_cyber.get_me()
-                    main_username = main_me.username
-                except Exception:
-                    main_username = None
-
-                greeting_text = (
-                    f"👋 <b>Hi there!</b>\n\n"
-                    "This bot is used for delivering requested files.\n\n"
-                    "Please use the main bot to search for files. "
-                    "After requesting, the files will be sent here automatically.\n\n"
-                    "🛠 <b>Maintained by</b> @CyberTGz"
-                )
-
-                from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-                buttons = []
-                if main_username:
-                    buttons.append([
-                        InlineKeyboardButton(
-                            "🔍  Search Files — Main Bot",
-                            url=f"https://t.me/{main_username}"
-                        )
-                    ])
-                buttons.append([
-                    InlineKeyboardButton("👨\u200d💻  Support", url="https://t.me/CyberTGz")
-                ])
-
                 await message.reply_text(
-                    greeting_text,
+                    f"👋 <b>Hi!</b> I am <b>{name}</b>, the file delivery bot.\n\n"
+                    "Use the main bot to search and request files.",
                     parse_mode=pyro_enums.ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
                 )
             except Exception:
                 pass
@@ -565,47 +536,121 @@ async def _ensure_start_handler(main_cyber):
             if auto_delay > 0:
                 delete_message_later(client, uid, sent.id, auto_delay)
 
-    # ── ANY other text/message → reply with the same greeting ──
-    @client.on_message(pyro_filters.private & ~pyro_filters.command("start"))
-    async def _filebot_any_message(_, message):
-        try:
-            # Fetch main bot username for the redirect button
-            try:
-                main_me = await main_cyber.get_me()
-                main_username = main_me.username
-            except Exception:
-                main_username = None
-
-            greeting_text = (
-                "👋 <b>Hi there!</b>\n\n"
-                "This bot is used for delivering requested files.\n\n"
-                "Please use the main bot to search for files. "
-                "After requesting, the files will be sent here automatically.\n\n"
-                "🛠 <b>Maintained by</b> @CyberTGz"
-            )
-
-            from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-            buttons = []
-            if main_username:
-                buttons.append([
-                    InlineKeyboardButton(
-                        "🔍  Search Files — Main Bot",
-                        url=f"https://t.me/{main_username}"
-                    )
-                ])
-            buttons.append([
-                InlineKeyboardButton("👨\u200d💻  Support", url="https://t.me/CyberTGz")
-            ])
-
-            await message.reply_text(
-                greeting_text,
-                parse_mode=pyro_enums.ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
-            )
-        except Exception:
-            pass
-
     logger.info("[FILEBOT] ✅ /start handler registered on file bot client.")
+
+
+# ─────────────────────────────────────────────────────────────
+# FILEBOT-AWARE SEND HELPERS
+# Split send_client (file bot) from fallback_client (main bot).
+# BUG FIX: _safe_send_single and _safe_send_group from files.py use a
+# single `cyber` for both sending AND source-channel fallback.  In the
+# file-bot path the file bot cannot access source channels (CHANNEL_INVALID),
+# so we must pass main_cyber for _forward_fallback while using file_client
+# for the actual DM delivery.
+# ─────────────────────────────────────────────────────────────
+
+async def _safe_send_single_filebot(
+    send_client, fallback_client, user_id: int, f: dict, caption: str, auto_delay: int
+) -> bool:
+    """
+    Send one file to user via send_client.
+    On stale file_id, refresh using fallback_client (main bot has channel access).
+    """
+    from pyrogram.errors import FloodWait, BadRequest
+    from pyrogram import enums as _enums
+    from utils.cyber_delete import delete_message_later
+    from CyberTG.files import _forward_fallback
+
+    file_id    = f.get("file_id")
+    media_type = (f.get("media_type") or "document").lower()
+    file_name  = f.get("file_name", "unknown")
+
+    if not file_id:
+        # No file_id — use main bot to fetch from source channel, send via main bot
+        return await _forward_fallback(fallback_client, user_id, f, caption, auto_delay)
+
+    while True:
+        try:
+            if media_type == "audio":
+                sent = await send_client.send_audio(
+                    user_id, file_id,
+                    caption=caption, parse_mode=_enums.ParseMode.HTML,
+                )
+            elif media_type == "video":
+                sent = await send_client.send_video(
+                    user_id, file_id,
+                    caption=caption, parse_mode=_enums.ParseMode.HTML,
+                )
+            else:
+                sent = await send_client.send_document(
+                    user_id, file_id,
+                    caption=caption, parse_mode=_enums.ParseMode.HTML,
+                )
+            if sent and auto_delay > 0:
+                delete_message_later(send_client, user_id, sent.id, auto_delay)
+            return True
+        except FloodWait as fw:
+            wait = max(int(getattr(fw, "value", 10)), 5)
+            logger.warning(f"[FILEBOT] FloodWait {wait}s uid={user_id} — waiting")
+            await asyncio.sleep(wait + 1)
+        except BadRequest as e:
+            err = str(e)
+            if any(k in err for k in ("MEDIA_EMPTY", "FILE_ID_INVALID", "FILE_REFERENCE_EXPIRED")):
+                logger.warning(f"[FILEBOT] stale file_id for {file_name} — refreshing via main bot")
+                # BUG FIX: refresh via main bot (fallback_client), then re-send via file bot
+                from CyberTG.files import _refresh_file_id
+                fresh_id = await _refresh_file_id(fallback_client, f.get("channel_id"), f.get("message_id"))
+                if fresh_id:
+                    f_fresh = {**f, "file_id": fresh_id}
+                    return await _safe_send_single_filebot(send_client, fallback_client, user_id, f_fresh, caption, auto_delay)
+                # Cannot refresh — fall back to main-bot delivery
+                return await _forward_fallback(fallback_client, user_id, f, caption, auto_delay)
+            logger.error(f"[FILEBOT] BadRequest uid={user_id} file={file_name}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"[FILEBOT] send failed uid={user_id} file={file_name}: {e}")
+            return False
+
+
+async def _safe_send_group_filebot(
+    send_client, fallback_client, user_id: int, media_group: list,
+    auto_delay: int,
+    source_files: list | None = None,
+    caption_map: dict | None = None,
+) -> list:
+    """
+    Send a media_group via send_client.
+    On MEDIA_EMPTY or any failure, falls back to per-file send using
+    _safe_send_single_filebot so that stale file_ids are refreshed via main bot.
+    """
+    from pyrogram.errors import FloodWait
+    from utils.cyber_delete import delete_message_later
+
+    while True:
+        try:
+            sent_msgs = await send_client.send_media_group(user_id, media_group)
+            if auto_delay > 0 and sent_msgs:
+                for sm in sent_msgs:
+                    delete_message_later(send_client, user_id, sm.id, auto_delay)
+            return sent_msgs or []
+        except FloodWait as fw:
+            wait = max(int(getattr(fw, "value", 10)), 5)
+            logger.warning(f"[FILEBOT] FloodWait {wait}s uid={user_id} — waiting")
+            await asyncio.sleep(wait + 1)
+        except Exception as e:
+            logger.error(f"[FILEBOT] send_media_group failed uid={user_id}: {e} — falling back to per-file")
+            if source_files:
+                sent_fallback = []
+                for f in source_files:
+                    cap = (caption_map or {}).get(id(f), "") or (f.get("caption") or "").strip()
+                    if not cap:
+                        ep  = str(f.get("episode", 0)).zfill(2)
+                        cap = f"<b>Episode {ep}</b>"
+                    ok = await _safe_send_single_filebot(send_client, fallback_client, user_id, f, cap, auto_delay)
+                    if ok:
+                        sent_fallback.append(True)
+                return sent_fallback
+            return []
 
 
 async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_complete=None, auto_delay: int | None = None):
@@ -672,6 +717,8 @@ async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_
     await _send_start_sticker(file_client, user_id, season, auto_delay)
 
     # Build all items
+    # BUG FIX: keep video/audio as their own type — they cannot go in a
+    # document media_group and must be sent solo via send_video / send_audio.
     all_items = []
     for f in files:
         cap = _build_caption(
@@ -679,37 +726,40 @@ async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_
             f.get("episode", 0), language, quality,
             f.get("file_name", ""),
         )
-        raw_type  = (f.get("media_type") or "document").lower()
-        norm_type = "document" if raw_type in ("video", "document") else raw_type
-        all_items.append((f, cap, f.get("file_id"), norm_type))
+        raw_type = (f.get("media_type") or "document").lower()
+        all_items.append((f, cap, f.get("file_id"), raw_type))
 
+    # Only pure document file_ids can be batched into a media_group
     groupable = [(f, cap, fid) for f, cap, fid, t in all_items if t == "document" and fid]
+    # Everything else (video, audio, no file_id) sent one-by-one
     solo      = [(f, cap)      for f, cap, fid, t in all_items if t != "document" or not fid]
 
     sent_count = 0
 
-    # Send groupable in batches of up to 10 via FILE BOT
+    # Send groupable docs in batches of up to 10 via FILE BOT
     for batch_start in range(0, len(groupable), MEDIA_GROUP_SIZE):
         batch = groupable[batch_start : batch_start + MEDIA_GROUP_SIZE]
         if len(batch) == 1:
             f, cap, fid = batch[0]
-            ok = await _safe_send_single(file_client, user_id, f, cap, auto_delay)
+            # BUG FIX: file_client sends to user; main_cyber used for source-channel fallback
+            ok = await _safe_send_single_filebot(file_client, main_cyber, user_id, f, cap, auto_delay)
             if ok:
                 sent_count += 1
         else:
             media_list   = [_make_input_media(f, cap) for f, cap, fid in batch]
             source_files = [f for f, cap, fid in batch]
             caption_map  = {id(f): cap for f, cap, fid in batch}
-            sent = await _safe_send_group(
-                file_client, user_id, media_list, auto_delay,
+            # BUG FIX: pass main_cyber so per-file fallback can access source channels
+            sent = await _safe_send_group_filebot(
+                file_client, main_cyber, user_id, media_list, auto_delay,
                 source_files=source_files,
                 caption_map=caption_map,
             )
             sent_count += len(sent)
 
-    # Solo files
+    # Solo files (video, audio, missing file_id)
     for f, cap in solo:
-        ok = await _safe_send_single(file_client, user_id, f, cap, auto_delay)
+        ok = await _safe_send_single_filebot(file_client, main_cyber, user_id, f, cap, auto_delay)
         if ok:
             sent_count += 1
 
