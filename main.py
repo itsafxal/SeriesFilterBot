@@ -226,6 +226,11 @@ def main():
         api_id=API_ID,
         api_hash=API_HASH,
         bot_token=BOT_TOKEN,
+        # Discard all updates that accumulated while the bot was offline.
+        # Without this, every message sent during downtime (including ones
+        # the admin typed, group messages, etc.) replays at once on startup
+        # and floods the search handler with "No Results Found" responses.
+        skip_updates=True,
     )
 
     logger.info("[INIT] Registering handlers...")
