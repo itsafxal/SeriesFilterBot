@@ -13,6 +13,8 @@ import re
 import time
 import uuid
 import asyncio
+from collections import OrderedDict
+from config import logger
 
 # =========================================================
 # LINK PATTERNS
@@ -48,8 +50,18 @@ def extract_links(links, client=None):
 # SHORT TOKEN PAYLOAD SYSTEM
 # =========================================================
 
-PAYLOAD_STORE: dict = {}
-PAYLOAD_TTL   = 3600  # 1 hour
+PAYLOAD_STORE: OrderedDict = OrderedDict()
+PAYLOAD_TTL   = 3600   # 1 hour
+_PAYLOAD_MAX  = 5000   # max tokens in memory — ~50k users with 0.1 link/user
+
+
+def _store_set(token: str, data: dict):
+    """Insert/update token in LRU store, evicting oldest when full."""
+    if token in PAYLOAD_STORE:
+        PAYLOAD_STORE.move_to_end(token)
+    PAYLOAD_STORE[token] = data
+    while len(PAYLOAD_STORE) > _PAYLOAD_MAX:
+        PAYLOAD_STORE.popitem(last=False)
 
 
 def _cleanup_payloads():
@@ -81,7 +93,7 @@ async def encode_payload(series: str, season, lang: str, quality: str, uid) -> s
     }
 
     # 1. Save to memory (fast path for current session)
-    PAYLOAD_STORE[token] = data
+    _store_set(token, data)
 
     # 2. FIX: AWAIT MongoDB persist — not fire-and-forget
     await _persist_payload_to_mongo(int(uid), token, data)
@@ -109,9 +121,9 @@ async def _persist_payload_to_mongo(uid: int, token: str, data: dict):
             )
 
         await asyncio.to_thread(_sync)
-        print(f"[PAYLOAD] ✅ Token {token} persisted to MongoDB")
+        logger.debug(f"[PAYLOAD] ✅ Token {token} persisted to MongoDB")
     except Exception as e:
-        print(f"[PAYLOAD] ❌ Failed to persist token {token}: {e}")
+        logger.error(f"[PAYLOAD] ❌ Failed to persist token {token}: {e}")
 
 
 async def decode_payload_async(payload: str):
@@ -122,38 +134,38 @@ async def decode_payload_async(payload: str):
     _cleanup_payloads()
 
     token = payload.replace("send_", "", 1)
-    print(f"[PAYLOAD] Decoding token={token}")
+    logger.debug(f"[PAYLOAD] Decoding token={token}")
 
     # ── 1. Memory (fast path) ────────────────────────────────
     data = PAYLOAD_STORE.get(token)
     if data:
         if time.time() > data["expires"]:
             PAYLOAD_STORE.pop(token, None)
-            print(f"[PAYLOAD] Token {token} expired in memory")
+            logger.debug(f"[PAYLOAD] Token {token} expired in memory")
         else:
-            print(f"[PAYLOAD] ✅ Token {token} found in memory")
+            logger.debug(f"[PAYLOAD] ✅ Token {token} found in memory")
             return (data["uid"], data["series"], data["season"],
                     data["lang"], data["quality"])
 
     # ── 2. MongoDB (slow path — survives restarts) ───────────
-    print(f"[PAYLOAD] Checking MongoDB for token={token}...")
+    logger.debug(f"[PAYLOAD] Checking MongoDB for token={token}...")
     try:
         from DB.database import pending_collection  # correct collection
 
         doc = await asyncio.to_thread(lambda: pending_collection.find_one({"token": token}))
 
         if not doc:
-            print(f"[PAYLOAD] ❌ Token {token} not found anywhere")
+            logger.debug(f"[PAYLOAD] ❌ Token {token} not found anywhere")
             return None
 
         if time.time() > doc.get("expires", 0):
-            print(f"[PAYLOAD] ❌ Token {token} found in MongoDB but EXPIRED")
+            logger.debug(f"[PAYLOAD] ❌ Token {token} found in MongoDB but EXPIRED")
             return None
 
-        print(f"[PAYLOAD] ✅ Token {token} recovered from MongoDB")
+        logger.debug(f"[PAYLOAD] ✅ Token {token} recovered from MongoDB")
 
         # Warm memory cache
-        PAYLOAD_STORE[token] = {
+        _store_set(token, {
             "uid":     doc["user_id"],
             "series":  doc["series"],
             "season":  doc["season"],
@@ -161,13 +173,13 @@ async def decode_payload_async(payload: str):
             "quality": doc["quality"],
             "expires": doc["expires"],
             "token":   token,
-        }
+        })
 
         return (doc["user_id"], doc["series"], doc["season"],
                 doc["lang"], doc["quality"])
 
     except Exception as e:
-        print(f"[PAYLOAD] ❌ MongoDB fallback error: {e}")
+        logger.error(f"[PAYLOAD] ❌ MongoDB fallback error: {e}")
         return None
 
 
