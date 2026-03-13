@@ -36,6 +36,7 @@ from config import (
     DEFAULT_POSTER,
     SPELL_IMG,
     SEASONS_PER_PAGE,
+    ADMIN_USERS,
 )
 from DB.database import (
     search_series,
@@ -414,8 +415,7 @@ def register_filters(cyber: Client):
 
         settings = await _get_settings()
 
-        from config import ADMIN_USERS as _ADMINS
-        if uid not in _ADMINS and settings["maintenance"]:
+        if uid not in ADMIN_USERS and settings["maintenance"]:
             await m.reply_text(
                 "🔧 <b>Bot is under maintenance.</b>\nPlease try again later.",
                 parse_mode=enums.ParseMode.HTML,
@@ -491,7 +491,7 @@ def register_filters(cyber: Client):
     @cyber.on_callback_query(filters.regex("^sug\\|"))
     async def sug(_, q):
         settings = await _get_settings()
-        if q.from_user.id not in __import__("config").ADMIN_USERS and settings["maintenance"]:
+        if q.from_user.id not in ADMIN_USERS and settings["maintenance"]:
             return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
         series = q.data.split("|", 1)[1]
         auto_del = settings["auto_delete_delay"]
@@ -521,7 +521,7 @@ def register_filters(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^spg\\|"))
     async def spg(_, q):
-        _, uid, series, page = q.data.split("|")
+        _, uid, series, page = q.data.split("|", 3)
         if not await check_owner(q, uid):
             return
         seasons = list((await get_series_summary(series))["seasons"])
@@ -536,9 +536,9 @@ def register_filters(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q):
-        _, uid, series, season = q.data.split("|")
+        _, uid, series, season = q.data.split("|", 3)
         settings = await _get_settings()
-        if q.from_user.id not in __import__("config").ADMIN_USERS and settings["maintenance"]:
+        if q.from_user.id not in ADMIN_USERS and settings["maintenance"]:
             return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
         if not await check_owner(q, uid):
             return
@@ -564,7 +564,7 @@ def register_filters(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q):
-        _, uid, series, season, lang = q.data.split("|")
+        _, uid, series, season, lang = q.data.split("|", 4)
         if not await check_owner(q, uid):
             return
         settings = await _get_settings()
@@ -613,7 +613,7 @@ def register_filters(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^bk_season\\|"))
     async def bk_season(_, q):
-        _, uid, series = q.data.split("|")
+        _, uid, series = q.data.split("|", 2)
         if not await check_owner(q, uid):
             return
         settings = await _get_settings()
@@ -635,7 +635,7 @@ def register_filters(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^bk_lang\\|"))
     async def bk_lang(_, q):
-        _, uid, series, season = q.data.split("|")
+        _, uid, series, season = q.data.split("|", 3)
         if not await check_owner(q, uid):
             return
         settings = await _get_settings()
