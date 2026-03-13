@@ -33,10 +33,11 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
-from pyrogram import Client
+from pyrogram import Client, enums as pyro_enums
 from pyrogram.errors import FloodWait
+from pyrogram import filters as pyro_filters
 
-from config import API_ID, API_HASH, logger
+from config import API_ID, API_HASH, logger, STICKER_ENABLED, PROGRESS_MESSAGE_ENABLED
 
 # ── Module-level state ────────────────────────────────────────
 _filebot_token:    str | None = None
@@ -226,7 +227,6 @@ async def _forward_to_channel(main_cyber: Client, channel_id: int,
     Main bot sends a file to the deliver channel.
     Returns the message_id in the channel, or None on failure.
     """
-    from pyrogram import enums
     for attempt in range(3):
         try:
             if media_type == "audio":
@@ -396,8 +396,6 @@ async def _ensure_start_handler(main_cyber):
 
     # Pyrogram handlers are registered per-client instance.
     # We use a closure so each new client gets its own handler.
-    from pyrogram import filters as pyro_filters
-    from pyrogram import enums as pyro_enums
 
     @client.on_message(pyro_filters.command("start") & pyro_filters.private)
     async def _filebot_start(_, message):
@@ -547,8 +545,6 @@ async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_
     Sends sticker + files + end sticker all through file_client (second bot).
     Files are fetched from DB and sent directly using file_client — NO relay channel needed.
     """
-    import re
-    from config import logger, STICKER_ENABLED, PROGRESS_MESSAGE_ENABLED
     from DB.database import get_all_files_by_season_and_quality, get_global_setting
     from CyberTG.files import (
         get_session_async, clear_session, clean_series_name,
@@ -557,7 +553,6 @@ async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_
         _send_start_sticker, _send_end_sticker,
         MEDIA_GROUP_SIZE,
     )
-    from pyrogram import enums as pyro_enums
 
     session = await get_session_async(user_id)
     if not session:
