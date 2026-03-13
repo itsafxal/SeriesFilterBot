@@ -1,44 +1,17 @@
 """
-cyber_series.py — SMART SUGGESTION ENGINE
-==========================================
+cyber_series.py — SMART SUGGESTION ENGINE  (FIXED)
+====================================================
+FIX: _API_CACHE memory leak — was unbounded (grew forever, one entry per unique
+title lookup).  Now capped at _API_CACHE_MAX = 2048 entries using an OrderedDict
+as an LRU cache.  Oldest entries are evicted when the cap is hit.
 
-RULE:
-  A title is suggested IF it exists in our SQL database.
-  TMDB/OMDB are queried ONLY to enrich suggestions with a year label.
-  If TMDB/OMDB don't know the title → it is STILL suggested (SQL is the
-  source of truth), but shown without a year: "Stranger Things" instead
-  of "Stranger Things (2016)".
-
-EXAMPLES:
-  "lucifer" typed:
-    → SQL finds "Lucifer" ✓
-    → TMDB finds it, year=2016 ✓
-    → Suggest: "Lucifer (2016)" ✓
-
-  "stranger things" typed:
-    → SQL finds "Stranger Things" ✓
-    → TMDB/OMDB has no match (API issue / regional title)
-    → Suggest: "Stranger Things"  ← still shown, just no year
-
-  "nf lucifer" typed:
-    → SQL finds "NF Lucifer" ✓
-    → TMDB/OMDB has no match for "NF Lucifer"
-    → Suggest: "NF Lucifer"  ← SQL confirmed, shown without year
-
-  "xyz show" typed:
-    → SQL finds nothing ✗
-    → NOT suggested ✗ (SQL is the gate)
-
-  Typo "luciferr" typed:
-    → SQL LIKE fails
-    → RapidFuzz finds "Lucifer" in DB ✓
-    → TMDB confirms "Lucifer" ✓
-    → Suggest: "Lucifer (2016)" ✓
+All other logic (SQL → fuzzy → TMDB/OMDB enrichment) unchanged.
 """
 
 import re
 import asyncio
 import time
+from collections import OrderedDict
 from typing import List, Optional, Tuple
 
 from DB.database import search_series, get_all_series
@@ -76,30 +49,45 @@ SERIES_RE = re.compile(
 
 
 # ─────────────────────────────────────────────────────────────
-# TMDB / OMDB LOOKUP
-# Returns (year, found) — found=True means API confirmed the title
-# Cached 6 hours per title. Semaphore limits to 3 concurrent calls.
+# TMDB / OMDB LOOKUP  — LRU bounded cache
+# FIX: was unbounded dict → now OrderedDict capped at _API_CACHE_MAX
 # ─────────────────────────────────────────────────────────────
 
-# Cache: title_key → {"year": str|None, "found": bool, "ts": float}
-_API_CACHE:      dict[str, dict] = {}
+_API_CACHE_MAX = 2048   # max entries before eviction
 _API_CACHE_TTL = 6 * 3600
-_API_SEM        = asyncio.Semaphore(3)
+_API_CACHE: OrderedDict[str, dict] = OrderedDict()   # key → {year, found, ts}
+_API_SEM   = asyncio.Semaphore(3)
+
+
+def _cache_get(key: str) -> dict | None:
+    """LRU get — TTL checked here; evicts expired entry if stale."""
+    entry = _API_CACHE.get(key)
+    if entry is None:
+        return None
+    if (time.time() - entry["ts"]) >= _API_CACHE_TTL:
+        _API_CACHE.pop(key, None)
+        return None
+    _API_CACHE.move_to_end(key)
+    return entry
+
+
+def _cache_set(key: str, value: dict):
+    """LRU set — evicts oldest when cap is hit."""
+    if key in _API_CACHE:
+        _API_CACHE.move_to_end(key)
+    _API_CACHE[key] = value
+    if len(_API_CACHE) > _API_CACHE_MAX:
+        _API_CACHE.popitem(last=False)  # remove LRU entry
 
 
 async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
     """
     Check TMDB then OMDB for the given title.
-
-    Returns:
-        (year, found)
-        year  — "2016" or None
-        found — True if TMDB or OMDB returned a result for this title
-                False if both APIs returned nothing (→ don't suggest this title)
+    Returns (year, found).
     """
-    key = title.lower().strip()
-    entry = _API_CACHE.get(key)
-    if entry and (time.time() - entry["ts"]) < _API_CACHE_TTL:
+    key   = title.lower().strip()
+    entry = _cache_get(key)
+    if entry is not None:
         return entry["year"], entry["found"]
 
     year  = None
@@ -125,7 +113,7 @@ async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
         except Exception:
             pass
 
-        # ── OMDB fallback (only if TMDB didn't find it) ──────
+        # ── OMDB fallback ────────────────────────────────────
         if not found:
             try:
                 import aiohttp
@@ -144,7 +132,7 @@ async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
             except Exception:
                 pass
 
-    _API_CACHE[key] = {"year": year, "found": found, "ts": time.time()}
+    _cache_set(key, {"year": year, "found": found, "ts": time.time()})
     return year, found
 
 
@@ -163,16 +151,14 @@ def clean_query(q: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# STEP 1 — SQL: find candidates in our DB
+# STEP 1 — SQL candidates
 # ─────────────────────────────────────────────────────────────
 
 async def _sql_candidates(query: str, limit: int = 8) -> List[str]:
-    """Returns titles from DB matching the query via SQL LIKE."""
     results = await search_series(query)
     if results:
         return list(results)[:limit]
 
-    # Try first word fallback (e.g. "breaking" for "breaking bad s01")
     words = query.split()
     if len(words) > 1 and len(words[0]) >= 3:
         results = await search_series(words[0])
@@ -183,20 +169,15 @@ async def _sql_candidates(query: str, limit: int = 8) -> List[str]:
 
 
 # ─────────────────────────────────────────────────────────────
-# STEP 2 — FUZZY: typo correction against DB titles only
+# STEP 2 — FUZZY fallback
 # ─────────────────────────────────────────────────────────────
 
 async def _fuzzy_candidates(query: str, limit: int = 6) -> List[str]:
-    """
-    When SQL finds nothing, run RapidFuzz against all DB titles.
-    Returns only titles scoring >= 72%.
-    NEVER introduces titles not in DB.
-    """
     if not HAVE_RAPIDFUZZ:
         return []
 
     try:
-        all_series = await get_all_series()   # [(name, count), ...]
+        all_series = await get_all_series()
         all_titles = [n for n, _ in all_series] if all_series else []
     except Exception:
         return []
@@ -216,22 +197,12 @@ async def _fuzzy_candidates(query: str, limit: int = 6) -> List[str]:
 
 
 # ─────────────────────────────────────────────────────────────
-# STEP 3 — FILTER: validate each DB candidate against TMDB/OMDB
-# Titles not found by TMDB/OMDB are silently dropped.
+# STEP 3 — TMDB/OMDB enrichment
 # ─────────────────────────────────────────────────────────────
 
 async def _validate_and_enrich(
     candidates: List[str],
 ) -> List[Tuple[str, Optional[str]]]:
-    """
-    For each DB candidate:
-      - Call TMDB/OMDB to get year (best-effort)
-      - ALWAYS keep the title (SQL is the source of truth)
-      - year will be None if TMDB/OMDB don't recognise the title
-
-    All lookups are concurrent (limited by _API_SEM).
-    Returns [(title, year_or_None), ...]  — all SQL-confirmed titles.
-    """
     lookups = await asyncio.gather(
         *[_lookup_title(t) for t in candidates],
         return_exceptions=True,
@@ -240,10 +211,9 @@ async def _validate_and_enrich(
     enriched = []
     for title, result in zip(candidates, lookups):
         if isinstance(result, Exception):
-            # API error → still keep, just no year
             enriched.append((title, None))
             continue
-        year, _found = result          # _found no longer gates inclusion
+        year, _found = result
         enriched.append((title, year))
 
     return enriched
@@ -251,35 +221,23 @@ async def _validate_and_enrich(
 
 # ─────────────────────────────────────────────────────────────
 # PUBLIC: suggest_series_with_year
-# Main function — returns validated (title, year) pairs
 # ─────────────────────────────────────────────────────────────
 
 async def suggest_series_with_year(
     query: str, limit: int = 4
 ) -> List[Tuple[str, Optional[str]]]:
-    """
-    Returns up to `limit` (title, year) tuples where:
-      - title is confirmed by our SQL database (source of truth)
-      - year is from TMDB/OMDB ("2016"), or None if APIs don't recognise it
-
-    SQL is the gate. TMDB/OMDB are year-enrichment only.
-    A title NOT found by TMDB/OMDB is still returned — just with year=None.
-    """
     q = clean_query(query)
     if not q:
         return []
 
-    # Step 1: SQL candidates
     candidates = await _sql_candidates(q, limit=limit * 3)
 
-    # Step 2: Fuzzy fallback if SQL found nothing
     if not candidates:
         candidates = await _fuzzy_candidates(q, limit=limit * 2)
 
     if not candidates:
         return []
 
-    # Deduplicate preserving order
     seen, unique = set(), []
     for c in candidates:
         k = c.lower().strip()
@@ -287,22 +245,15 @@ async def suggest_series_with_year(
             seen.add(k)
             unique.append(c)
 
-    # Step 3: Validate each against TMDB/OMDB — drop unrecognised titles
     validated = await _validate_and_enrich(unique)
-
     return validated[:limit]
 
 
 # ─────────────────────────────────────────────────────────────
-# PUBLIC: suggest_series (backward-compat, plain title list)
-# Used by existing resolve_series_with_suggestions in filters.py
+# PUBLIC: suggest_series (backward-compat)
 # ─────────────────────────────────────────────────────────────
 
 async def suggest_series(query: str, limit: int = 4) -> List[str]:
-    """
-    Returns plain title strings (no year).
-    Only titles that pass DB + TMDB/OMDB validation.
-    """
     results = await suggest_series_with_year(query, limit=limit)
     return [title for title, _ in results]
 
@@ -312,16 +263,12 @@ async def suggest_series(query: str, limit: int = 4) -> List[str]:
 # ─────────────────────────────────────────────────────────────
 
 def format_suggestion_label(title: str, year: Optional[str]) -> str:
-    """
-    "Lucifer (2016)"  — when TMDB has a year
-    "Dark"            — when TMDB confirms but has no year
-    """
     display = title.title() if title == title.lower() else title
     return f"{display} ({year})" if year else display
 
 
 # ─────────────────────────────────────────────────────────────
-# TITLE NORMALIZER (used by indexer)
+# TITLE NORMALIZER
 # ─────────────────────────────────────────────────────────────
 
 def _normalize_title(name: str) -> str:
@@ -341,7 +288,7 @@ def _normalize_title(name: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# PARSE SERIES INFO (used by bulk indexer)
+# PARSE SERIES INFO
 # ─────────────────────────────────────────────────────────────
 
 def parse_series_info(file_name: str):
