@@ -25,6 +25,7 @@ Bugs fixed:
 import io
 import asyncio
 import math
+import aiohttp
 
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait
@@ -67,6 +68,21 @@ from .fsub import (
 
 # ── Pagination ─────────────────────────────────────────────────
 LIST_PAGE_SIZE = 20
+
+# ── FIX: cache bot identity — avoids get_me() on every /start ──
+_BOT_USERNAME:   str | None = None
+_BOT_FIRST_NAME: str | None = None
+
+
+async def _get_bot_identity(cyber: Client) -> tuple[str, str]:
+    """Returns (username, first_name), fetching once and caching forever."""
+    global _BOT_USERNAME, _BOT_FIRST_NAME
+    if _BOT_USERNAME and _BOT_FIRST_NAME:
+        return _BOT_USERNAME, _BOT_FIRST_NAME
+    me = await cyber.get_me()
+    _BOT_USERNAME   = me.username   or ""
+    _BOT_FIRST_NAME = me.first_name or ""
+    return _BOT_USERNAME, _BOT_FIRST_NAME
 
 
 def _fmt_bytes(b: int) -> str:
@@ -111,8 +127,8 @@ def register_command_handlers(cyber: Client):
                 passed   = all_slots_passed(statuses)
 
                 if not passed:
-                    bot      = await cyber.get_me()
-                    kb       = build_fsub_keyboard(bot.username, payload, statuses)
+                    bot_username, _ = await _get_bot_identity(cyber)
+                    kb       = build_fsub_keyboard(bot_username, payload, statuses)
                     txt      = fsub_text(statuses)
                     existing = _PENDING_FSUB.get(uid)
 
@@ -143,13 +159,13 @@ def register_command_handlers(cyber: Client):
                 await do_deliver(cyber, uid, payload, source="start")
                 return
 
-        bot       = await cyber.get_me()
+        _, bot_first_name = await _get_bot_identity(cyber)
         user_name = message.from_user.first_name
 
         START_TEXT = (
             f"✦ <b>Welcome, {user_name}</b>\n"
             f"<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-            f"🎬 <b>{bot.first_name}</b> — Your premium series library,\n"
+            f"🎬 <b>{bot_first_name}</b> — Your premium series library,\n"
             f"right inside Telegram.\n\n"
             f"<blockquote>Simply type a series name to get started.\n"
             f"Browse thousands of titles instantly.</blockquote>"
@@ -550,7 +566,6 @@ def register_command_handlers(cyber: Client):
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("missing") & filters.user(ADMIN_USERS))
     async def missing_cmd(_, message: Message):
-        import aiohttp
         from DB.database import get_all_series as _get_all_series, sql_db_lock
         from DB.sqlite_db import _get_conn
         from config import TMDB_API_KEY
@@ -656,6 +671,7 @@ def register_command_handlers(cyber: Client):
                 return _tmdb_cache[name]
             result = {}
             try:
+                # FIX: reuse one ClientSession for both HTTP calls — halves TCP overhead
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
                         "https://api.themoviedb.org/3/search/tv",
@@ -664,15 +680,14 @@ def register_command_handlers(cyber: Client):
                     ) as r:
                         search_data = await r.json()
 
-                hits = search_data.get("results", [])
-                if not hits:
-                    _tmdb_cache[name] = result
-                    return result
+                    hits = search_data.get("results", [])
+                    if not hits:
+                        _tmdb_cache[name] = result
+                        return result
 
-                show_id   = hits[0]["id"]
-                tmdb_name = hits[0].get("name", name)
+                    show_id   = hits[0]["id"]
+                    tmdb_name = hits[0].get("name", name)
 
-                async with aiohttp.ClientSession() as session:
                     async with session.get(
                         f"https://api.themoviedb.org/3/tv/{show_id}",
                         params={"api_key": TMDB_API_KEY()},
