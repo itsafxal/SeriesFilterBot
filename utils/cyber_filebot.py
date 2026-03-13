@@ -426,11 +426,19 @@ async def _ensure_start_handler(main_cyber):
 
         payload = message.command[1]
 
-        # Delete the /start message to keep DM clean
+        # ── Load auto-delete delay FIRST so it applies to ALL messages ──
+        from utils.cyber_delete import delete_message_later
+        from DB.database import get_global_setting as _gset
         try:
-            await message.delete()
+            _raw_delay = await _gset("FILE_AUTODEL_DELAY", 0)
+            auto_delay = int(_raw_delay) if _raw_delay else 0
         except Exception:
-            pass
+            auto_delay = 0
+
+        # Schedule /start command message for auto-delete (same delay as files)
+        # Do NOT delete immediately — let the scheduler handle it cleanly
+        if auto_delay > 0:
+            delete_message_later(client, uid, message.id, auto_delay)
 
         # ── FSub check via main bot ───────────────────────────
         try:
@@ -488,7 +496,7 @@ async def _ensure_start_handler(main_cyber):
             decoded = None
 
         if not decoded:
-            await client.send_message(
+            sent = await client.send_message(
                 uid,
                 "⏳ <b>Link Expired</b>\n"
                 "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
@@ -496,18 +504,22 @@ async def _ensure_start_handler(main_cyber):
                 "<i>Please search for the series again to get a fresh link.</i>",
                 parse_mode=pyro_enums.ParseMode.HTML,
             )
+            if auto_delay > 0:
+                delete_message_later(client, uid, sent.id, auto_delay)
             return
 
         owner, series, season, lang, quality = decoded
 
         if int(owner) != uid:
-            await client.send_message(
+            sent = await client.send_message(
                 uid,
                 "⛔ <b>Access Denied</b>\n"
                 "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
                 "<i>This link belongs to another user.</i>",
                 parse_mode=pyro_enums.ParseMode.HTML,
             )
+            if auto_delay > 0:
+                delete_message_later(client, uid, sent.id, auto_delay)
             return
 
         # ── Set session + deliver via FILE BOT directly ───────
@@ -519,15 +531,17 @@ async def _ensure_start_handler(main_cyber):
                 "language": lang,
                 "quality":  quality,
             })
-            await _deliver_via_filebot_client(main_cyber, client, uid)
+            await _deliver_via_filebot_client(main_cyber, client, uid, auto_delay=auto_delay)
         except Exception as e:
             logger.error(f"[FILEBOT] delivery error uid={uid}: {e}")
-            await client.send_message(uid, "❌ Delivery failed. Please try again.")
+            sent = await client.send_message(uid, "❌ Delivery failed. Please try again.")
+            if auto_delay > 0:
+                delete_message_later(client, uid, sent.id, auto_delay)
 
     logger.info("[FILEBOT] ✅ /start handler registered on file bot client.")
 
 
-async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_complete=None):
+async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_complete=None, auto_delay: int | None = None):
     """
     Full delivery via the file bot client directly.
     Sends sticker + files + end sticker all through file_client (second bot).
@@ -567,11 +581,13 @@ async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_
     total = len(files)
     clear_session(user_id)
 
-    auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
-    try:
-        auto_delay = int(auto_delay) if auto_delay else 0
-    except (TypeError, ValueError):
-        auto_delay = 0
+    # Use caller-supplied auto_delay if provided (avoids redundant DB fetch)
+    if auto_delay is None:
+        auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
+        try:
+            auto_delay = int(auto_delay) if auto_delay else 0
+        except (TypeError, ValueError):
+            auto_delay = 0
 
     custom_caption   = await get_global_setting("CUSTOM_FILE_CAPTION", None)
     caption_template = custom_caption if custom_caption else DEFAULT_CAPTION
