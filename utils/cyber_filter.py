@@ -103,7 +103,12 @@ async def encode_payload(series: str, season, lang: str, quality: str, uid) -> s
 
 async def _persist_payload_to_mongo(uid: int, token: str, data: dict):
     try:
-        from DB.database import pending_collection  # correct collection: config_db["pending_delivery"]
+        # Import at call-time to avoid circular imports at module load,
+        # but use a consistent absolute path that works from any package depth.
+        try:
+            from DB.database import pending_collection
+        except ImportError:
+            from database import pending_collection  # fallback for flat layouts
 
         def _sync():
             pending_collection.update_one(
@@ -150,7 +155,10 @@ async def decode_payload_async(payload: str):
     # ── 2. MongoDB (slow path — survives restarts) ───────────
     logger.debug(f"[PAYLOAD] Checking MongoDB for token={token}...")
     try:
-        from DB.database import pending_collection  # correct collection
+        try:
+            from DB.database import pending_collection
+        except ImportError:
+            from database import pending_collection  # fallback for flat layouts
 
         doc = await asyncio.to_thread(lambda: pending_collection.find_one({"token": token}))
 
