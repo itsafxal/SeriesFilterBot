@@ -396,18 +396,29 @@ async def _get_bot_id(cyber) -> int | None:
 def register_filters(cyber: Client):
 
     # ── SEARCH HANDLER ────────────────────────────────────────
+    # ~filters.outgoing — bot's own sent messages are NOT delivered here.
+    #   Without this the restart notification, FSub gate, delivery messages
+    #   etc. all trigger the handler and spam "No Results Found".
+    # filters.user() with a broad check keeps channels/anonymous admins out.
 
-    @cyber.on_message(filters.text & (filters.private | filters.group))
+    @cyber.on_message(
+        filters.text
+        & filters.incoming
+        & (filters.private | filters.group)
+    )
     async def search_handler(_, m):
         if not m.text or m.text.startswith("/"):
             return
 
+        # Drop messages with no human sender (channel posts, anonymous group admins)
+        if not m.from_user:
+            return
+
         # ── Ignore replies to bot messages ────────────────────
-        # When an admin replies to the bot's own message (e.g. restart
-        # notification, resume prompt, delivery notice), the reply text
-        # would otherwise be treated as a search query and spam
-        # "No Results Found" multiple times. Skip silently.
-        # _get_bot_id() is cached after the first call — no API hit.
+        # Extra guard: if user replies to a bot message the text of their
+        # reply would still be a search query — let it through.
+        # But if the replied-to message IS from the bot, skip it.
+        # _get_bot_id() is cached — no extra API call after first use.
         if m.reply_to_message:
             try:
                 bot_id = await _get_bot_id(_)
