@@ -659,6 +659,11 @@ async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_
     # End sticker (via file bot)
     await _send_end_sticker(file_client, user_id, season, total, auto_delay)
 
+    # ── Auto-delete notice + Share button (sent via file bot) ─
+    if auto_delay > 0:
+        from CyberTG.files import _send_autodel_notice
+        await _send_autodel_notice(file_client, user_id, auto_delay)
+
     logger.info(f"[FILEBOT] ✅ Direct delivery done uid={user_id} sent={sent_count}/{total}")
 
     if on_complete:
