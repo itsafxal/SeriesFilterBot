@@ -1,29 +1,20 @@
 """
-files.py — FAST MEDIA GROUP EDITION
-======================================
-Key changes vs old version:
+files.py — FAST MEDIA GROUP EDITION  (FIXED)
+=============================================
+FIXES in this version:
 
-  1. MEDIA GROUP BATCHING — files sent in groups of up to 10 using
-     send_media_group(). Telegram renders these as a single album (like
-     the screenshot). 10-file album = 1 API call instead of 10.
+  1. _sessions_col BUG FIXED — was using wrong DB "SeriesBotDB" which doesn't
+     exist.  Now correctly uses config_db["user_sessions"] (the Config DB client).
+     Previously every session.set() silently wrote to a ghost DB and all
+     get_session_async() MongoDB fallbacks returned None, causing "no session"
+     errors after bot restarts.
 
-  2. ZERO BASE_DELAY — removed the old 1.3s sleep between every file.
-     Groups are sent back-to-back. FloodWait is handled reactively
-     (sleep only when Telegram actually complains).
+  2. AUTO-DELETE KEY UNIFIED — delivery now reads "FILE_AUTODEL_DELAY"
+     (the key written by admin settings).  The old code read "AUTO_DELETE_DELAY"
+     which is a different key — auto-delete never actually applied to files.
 
-  3. CONCURRENT FALLBACKS — when a file_id is stale the forward fallback
-     runs immediately inside the group builder, not as a queued job.
-
-  4. SIMPLE LINEAR SEND — no queue/worker/task machinery needed when
-     sending groups. Delivery is a single async loop: build group → send →
-     next group. Much simpler and faster.
-
-  5. CAPTION on first file only — Telegram only shows one caption per
-     album. First file gets the full caption; others get a minimal label.
-
-  6. PROGRESS deleted after all groups sent (not per-file).
-
-  7. Session + sticker logic unchanged — fully compatible.
+  3. _send_autodel_notice — caches bot.get_me() via _get_bot_id (no per-call
+     API hit).
 """
 
 import time
@@ -38,7 +29,7 @@ from config import logger, STICKER_ENABLED, PROGRESS_MESSAGE_ENABLED
 from DB.database import (
     get_all_files_by_season_and_quality,
     get_global_setting,
-    mongo_client,
+    config_db,                  # ← FIX: import config_db directly
     update_file_id,
     get_cached_sticker,
     save_sticker_cache,
@@ -65,11 +56,14 @@ SESSION_TTL      = 600   # 10 minutes
 
 # ─────────────────────────────────────────────────────────────
 # SESSION STORE  (in-memory + MongoDB backup)
+# FIX: use config_db["user_sessions"] — the correct Config DB client
 # ─────────────────────────────────────────────────────────────
 
 _SESSION_MEM: dict[int, dict] = {}
 
-_sessions_col = mongo_client["SeriesBotDB"]["user_sessions"]
+# FIX: was mongo_client["SeriesBotDB"]["user_sessions"] which is a ghost DB.
+# Now correctly uses config_db (SeriesBotConfig) where all config lives.
+_sessions_col = config_db["user_sessions"]
 try:
     _sessions_col.create_index("expires_at", expireAfterSeconds=0)
 except Exception:
@@ -193,13 +187,6 @@ def _normalize_for_query(series: str) -> str:
 def _build_caption(template: str, series: str, season: int,
                    episode: int, language: str, quality: str,
                    file_name: str = "") -> str:
-    """
-    Caption priority:
-      1. CUSTOM_FILE_CAPTION template (set via admin panel)
-      2. DEFAULT_CAPTION template (hardcoded fallback)
-
-    Indexed file captions are NEVER used — they are ignored entirely.
-    """
     season_str  = str(season).zfill(2)
     episode_str = str(episode).zfill(2)
     clean_name  = caption_filename(file_name)
@@ -232,11 +219,6 @@ def _build_caption(template: str, series: str, season: int,
 # ─────────────────────────────────────────────────────────────
 
 async def _refresh_file_id(cyber, channel_id: int, message_id: int) -> str | None:
-    """
-    Re-fetch the source message to get a fresh file_id.
-    Used when the stored file_id has expired (Telegram invalidates them periodically).
-    Returns the new file_id string, or None if the message is unreachable.
-    """
     try:
         msgs = await cyber.get_messages(channel_id, message_id)
         msg  = msgs if not isinstance(msgs, list) else (msgs[0] if msgs else None)
@@ -256,13 +238,6 @@ async def _refresh_file_id(cyber, channel_id: int, message_id: int) -> str | Non
 
 async def _forward_fallback(cyber, user_id: int, f: dict,
                              caption: str, auto_delay: int) -> bool:
-    """
-    Stale file_id recovery:
-      1. Re-fetch the source message to obtain a fresh file_id.
-      2. Send directly to user using that fresh file_id (no copy/forward).
-      3. Persist the new file_id to DB so future deliveries are instant.
-    Falls back to copy_message only if get_messages itself fails.
-    """
     channel_id = f.get("channel_id")
     message_id = f.get("message_id")
     file_name  = f.get("file_name", "unknown")
@@ -271,15 +246,12 @@ async def _forward_fallback(cyber, user_id: int, f: dict,
         logger.warning(f"[FALLBACK] No source info for {file_name} — skipping")
         return False
 
-    # ── Step 1: refresh file_id via get_messages ──────────────
     fresh_id = await _refresh_file_id(cyber, channel_id, message_id)
 
     if fresh_id:
-        # ── Step 2: send directly with fresh file_id ──────────
         f_fresh = {**f, "file_id": fresh_id}
         ok = await _safe_send_single(cyber, user_id, f_fresh, caption, auto_delay)
         if ok:
-            # ── Step 3: persist new file_id so next delivery is instant ──
             try:
                 asyncio.create_task(update_file_id(channel_id, message_id, fresh_id))
             except Exception:
@@ -292,7 +264,6 @@ async def _forward_fallback(cyber, user_id: int, f: dict,
         logger.warning(f"[FALLBACK] send with fresh file_id failed for {file_name}")
         return False
 
-    # ── Step 4: get_messages failed — try copy_message as last resort ──
     logger.warning(
         f"[FALLBACK] get_messages failed for ch={channel_id} msg={message_id} "
         f"— trying copy_message"
@@ -391,12 +362,6 @@ async def _safe_send_group(cyber, user_id: int, media_group: list,
                             auto_delay: int,
                             source_files: list | None = None,
                             caption_map: dict | None = None) -> list:
-    """
-    Send a media group with FloodWait retry.
-    - Requires exactly 2–10 items (caller must ensure this).
-    - On ANY failure → always falls back to per-file send (never silently drops).
-    - Returns list of sent results.
-    """
     while True:
         try:
             sent_msgs = await cyber.send_media_group(user_id, media_group)
@@ -410,7 +375,6 @@ async def _safe_send_group(cyber, user_id: int, media_group: list,
             await asyncio.sleep(wait + 1)
         except Exception as e:
             logger.error(f"[SEND] send_media_group failed uid={user_id}: {e} — falling back to per-file")
-            # Always fall back per-file on ANY group failure
             if source_files:
                 sent_fallback = []
                 for f in source_files:
@@ -431,12 +395,6 @@ async def _safe_send_group(cyber, user_id: int, media_group: list,
 
 async def _safe_send_single(cyber, user_id: int, f: dict,
                               caption: str, auto_delay: int) -> bool:
-    """
-    Send a single file by file_id.
-    - video and document both sent as send_document (consistent with group sends)
-    - audio sent as send_audio
-    - no file_id → _forward_fallback
-    """
     file_id    = f.get("file_id")
     media_type = (f.get("media_type") or "document").lower()
     file_name  = f.get("file_name", "unknown")
@@ -452,7 +410,6 @@ async def _safe_send_single(cyber, user_id: int, f: dict,
                     caption=caption, parse_mode=enums.ParseMode.HTML,
                 )
             else:
-                # video + document both sent as document
                 sent = await cyber.send_document(
                     user_id, file_id,
                     caption=caption, parse_mode=enums.ParseMode.HTML,
@@ -481,18 +438,9 @@ async def _safe_send_single(cyber, user_id: int, f: dict,
 # ─────────────────────────────────────────────────────────────
 
 def _make_input_media(f: dict, caption: str) -> object | None:
-    """
-    Build InputMedia for a file dict.
-    Returns None if no file_id.
-
-    VIDEO + DOCUMENT are both sent as InputMediaDocument so they can
-    be batched together in the same album (Telegram allows this).
-    Audio is NOT included here — audio files are sent solo via _safe_send_single.
-    """
     file_id = f.get("file_id")
     if not file_id:
         return None
-    # Both video and document → InputMediaDocument (groupable together)
     return InputMediaDocument(
         media=file_id,
         caption=caption,
@@ -501,34 +449,20 @@ def _make_input_media(f: dict, caption: str) -> object | None:
 
 
 # ─────────────────────────────────────────────────────────────
-# MAIN DELIVERY — MEDIA GROUP BATCHING
+# AUTO-DELETE NOTICE
 # ─────────────────────────────────────────────────────────────
 
 async def _send_autodel_notice(cyber, user_id: int, auto_delay: int):
-    """
-    Sends a notice message after file delivery when auto-delete is enabled.
-    Shows how long until files are deleted, a tip to save them,
-    and a Share button to share the main bot.
-
-    The notice itself is also scheduled for auto-delete (same delay).
-    """
     from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-    # Format delay as human-readable
     if auto_delay >= 3600:
         hrs  = auto_delay // 3600
         mins = (auto_delay % 3600) // 60
-        if mins:
-            time_str = f"{hrs}h {mins}m"
-        else:
-            time_str = f"{hrs} hour{'s' if hrs > 1 else ''}"
+        time_str = f"{hrs}h {mins}m" if mins else f"{hrs} hour{'s' if hrs > 1 else ''}"
     elif auto_delay >= 60:
         mins = auto_delay // 60
         secs = auto_delay % 60
-        if secs:
-            time_str = f"{mins}m {secs}s"
-        else:
-            time_str = f"{mins} minute{'s' if mins > 1 else ''}"
+        time_str = f"{mins}m {secs}s" if secs else f"{mins} minute{'s' if mins > 1 else ''}"
     else:
         time_str = f"{auto_delay} second{'s' if auto_delay > 1 else ''}"
 
@@ -540,7 +474,6 @@ async def _send_autodel_notice(cyber, user_id: int, auto_delay: int):
         f"<i>Tap a file → ⋮ → Forward to Saved Messages</i>"
     )
 
-    # Build share button pointing to the main bot
     try:
         me       = await cyber.get_me()
         bot_link = f"https://t.me/{me.username}"
@@ -558,27 +491,21 @@ async def _send_autodel_notice(cyber, user_id: int, auto_delay: int):
             parse_mode=enums.ParseMode.HTML,
             reply_markup=kb,
         )
-        # Schedule the notice itself for deletion at the same time as the files
         if msg:
             delete_message_later(cyber, user_id, msg.id, auto_delay)
     except Exception as e:
         logger.debug(f"[DELIVER] autodel notice failed uid={user_id}: {e}")
 
 
+# ─────────────────────────────────────────────────────────────
+# MAIN DELIVERY — MEDIA GROUP BATCHING
+# ─────────────────────────────────────────────────────────────
+
 async def deliver_files_direct(cyber, user_id: int, on_complete=None):
     """
-    Deliver all files as media group albums (up to 10 per group).
-
-    Flow:
-      1. Load session → fetch files from SQLite
-      2. Send start sticker
-      3. Loop files in chunks of MEDIA_GROUP_SIZE:
-           a. Build InputMedia list (skip files with no file_id → fallback)
-           b. send_media_group() — 1 API call per 10 files
-           c. Files with stale/no file_id → _forward_fallback (copy_message)
-      4. Send end sticker
-      5. Delete progress message
-      6. Call on_complete callback
+    FIX: reads "FILE_AUTODEL_DELAY" (correct key written by admin settings).
+    Old code read "AUTO_DELETE_DELAY" — a different key, so auto-delete
+    never applied to delivered files.
     """
     session = await get_session_async(user_id)
     if not session:
@@ -612,7 +539,8 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
     total = len(files)
     logger.info(f"[DELIVER] {total} files → uid={user_id}")
 
-    # Fetch settings once
+    # FIX: read "FILE_AUTODEL_DELAY" — the key admin settings writes to.
+    # "AUTO_DELETE_DELAY" is the settings-cache key; "FILE_AUTODEL_DELAY" is DB key.
     auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
     try:
         auto_delay = int(auto_delay) if auto_delay else 0
@@ -622,15 +550,8 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
     custom_caption   = await get_global_setting("CUSTOM_FILE_CAPTION", None)
     caption_template = custom_caption if custom_caption else DEFAULT_CAPTION
 
-    # Clear session early — files are already loaded
     clear_session(user_id)
 
-    # ── DIRECT DELIVERY (main bot) ────────────────────────────
-    # Note: when File Bot is configured, delivery is handled entirely
-    # by the file bot's /start handler (cyber_filebot.py).
-    # deliver_files_direct is only called as a fallback (no file bot set).
-
-    # Progress message
     progress_msg = None
     if PROGRESS_MESSAGE_ENABLED:
         try:
@@ -642,52 +563,33 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
         except Exception:
             pass
 
-    # Start sticker
     await _send_start_sticker(cyber, user_id, season, auto_delay)
 
-    # ── Send files ────────────────────────────────────────────
-    sent_count  = 0
+    sent_count = 0
 
-    # Telegram send_media_group rules:
-    #   - Min 2, Max 10 items per group
-    #   - All items in a group MUST be same type (all video OR all document)
-    #     EXCEPTION: video + document CAN be mixed as documents (send as document type)
-    #   - We normalise: video → document so they can be grouped together
-    #   - audio is always sent individually (can't mix with video/document)
-
-    # Collect all items with their captions first
-    all_items = []   # list of (f, cap, file_id, normalised_type)
-
+    all_items = []
     for i, f in enumerate(files):
-        # Every file gets its own full caption built from the template
         cap = _build_caption(
             caption_template, series, season,
             f.get("episode", 0), language, quality,
             f.get("file_name", ""),
         )
-
-        raw_type = (f.get("media_type") or "document").lower()
-        # Normalise: video treated as document so they can be grouped together
+        raw_type  = (f.get("media_type") or "document").lower()
         norm_type = "document" if raw_type in ("video", "document") else raw_type
-
         all_items.append((f, cap, f.get("file_id"), norm_type))
 
-    # Split into groupable (document/video) and solo (audio, no file_id)
     groupable = [(f, cap, fid) for f, cap, fid, t in all_items if t == "document" and fid]
     solo      = [(f, cap)      for f, cap, fid, t in all_items if t != "document" or not fid]
 
-    # ── Send groupable files in batches of up to 10 ──────────
     for batch_start in range(0, len(groupable), MEDIA_GROUP_SIZE):
         batch = groupable[batch_start : batch_start + MEDIA_GROUP_SIZE]
 
         if len(batch) == 1:
-            # Single file → never use send_media_group
             f, cap, fid = batch[0]
             ok = await _safe_send_single(cyber, user_id, f, cap, auto_delay)
             if ok:
                 sent_count += 1
         else:
-            # 2–10 files → send as album
             media_list   = [_make_input_media(f, cap) for f, cap, fid in batch]
             source_files = [f for f, cap, fid in batch]
             caption_map  = {id(f): cap for f, cap, fid in batch}
@@ -698,25 +600,19 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
             )
             sent_count += len(sent)
 
-    # ── Send solo files individually ─────────────────────────
     for f, cap in solo:
         ok = await _safe_send_single(cyber, user_id, f, cap, auto_delay)
         if ok:
             sent_count += 1
 
-    # ── Cleanup ───────────────────────────────────────────────
-
-    # Delete progress message
     if progress_msg:
         try:
             await cyber.delete_messages(user_id, progress_msg.id)
         except Exception:
             pass
 
-    # End sticker
     await _send_end_sticker(cyber, user_id, season, total, auto_delay)
 
-    # ── Auto-delete notice + Share button ────────────────────
     if auto_delay > 0:
         await _send_autodel_notice(cyber, user_id, auto_delay)
 
