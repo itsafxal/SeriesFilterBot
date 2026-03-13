@@ -1,25 +1,23 @@
 """
-filters.py — OPTIMIZED EDITION
+filters.py — FIXED & OPTIMIZED
 ================================
-Performance fixes for faster UI search results:
+FIXES in this version:
 
-  1. SETTINGS CACHE — poster_enabled, poster_landscape, auto_delete_delay
-     are fetched from MongoDB once and cached for 30s (TTL cache).
-     Previously every single button tap triggered a MongoDB round-trip.
-     Now back-nav, season→lang→quality flow all use the in-process cache.
+  1. AUTO-DELETE KEY BUG FIXED — _get_settings() now reads "FILE_AUTODEL_DELAY"
+     (the key written by admin) instead of "AUTO_DELETE_DELAY" (a different key).
+     Before this fix, auto-delete was silently disabled for all search results.
 
-  2. _SEARCH_COOLDOWN memory leak fixed — dict grew unbounded (one entry
-     per unique user, never evicted). Now capped at 5000 entries with LRU-
-     style eviction: oldest entry removed when cap is hit.
+  2. cyber.get_me() CACHED in gls and bk_qual — was called fresh on every quality
+     button press (one Telegram API round-trip per tap).  Now uses the module-level
+     _get_bot_id() cache, which resolves in ~0 ms after the first call.
 
-  3. encode_payload awaited correctly — it's async (guarantees token in DB).
+  3. bk_qual DEAD CODE REMOVED — the handler existed but was never triggered because
+     no callback ever generates "bk_qual|..." data.  The quality step uses URL buttons
+     (not callback buttons) so there is no "back from quality" navigation needed.
+     Removing it eliminates the confusing dead code and the spurious get_me() call.
 
-  4. safe_edit handles FloodWait + MessageNotModified.
-
-  5. _safe_reply_photo / _safe_edit_media fall back gracefully on bad URLs.
-
-  6. resolve_series_with_suggestions: dedup via dict.fromkeys is O(n),
-     already optimal — kept as-is.
+  4. Settings TTL cache unchanged — poster_enabled, poster_landscape, auto_delete_delay,
+     filter_enabled, maintenance are still fetched once per 30s and cached in process.
 """
 
 import math
@@ -56,8 +54,8 @@ from utils.cyber_delete import delete_message_later
 
 
 # ─────────────────────────────────────────────────────────────
-# SETTINGS TTL CACHE — avoids MongoDB round-trip per button press
-# Values refreshed at most once every SETTINGS_TTL seconds.
+# SETTINGS TTL CACHE
+# FIX: key changed from "AUTO_DELETE_DELAY" → "FILE_AUTODEL_DELAY"
 # ─────────────────────────────────────────────────────────────
 
 SETTINGS_TTL = 30  # seconds
@@ -67,20 +65,15 @@ _settings_ts:    float = 0.0
 
 
 async def _get_settings() -> dict:
-    """
-    Return cached settings dict, refreshing from DB if stale.
-    Keys: poster_enabled, poster_landscape, auto_delete_delay, filter_enabled, maintenance
-    """
     global _settings_cache, _settings_ts
     now = time.monotonic()
     if now - _settings_ts < SETTINGS_TTL and _settings_cache:
         return _settings_cache
 
-    # Fetch all needed settings concurrently in one round
     poster_on, landscape, auto_del, filter_on, maintenance = await asyncio.gather(
         get_poster_enabled(),
         get_poster_landscape(),
-        get_global_setting("AUTO_DELETE_DELAY", 0),
+        get_global_setting("FILE_AUTODEL_DELAY", 0),   # FIX: was "AUTO_DELETE_DELAY"
         get_filter_enabled(),
         get_global_setting("MAINTENANCE_MODE", False),
     )
@@ -102,15 +95,12 @@ async def _get_settings() -> dict:
 
 
 def _invalidate_settings_cache():
-    """Call after any setting is changed so next request re-fetches."""
     global _settings_ts
     _settings_ts = 0.0
 
 
 # ─────────────────────────────────────────────────────────────
-# PER-USER SEARCH COOLDOWN
-# FIX: cap at MAX_COOLDOWN_ENTRIES to prevent unbounded memory growth.
-# When cap is hit the oldest entry (first key) is removed.
+# PER-USER SEARCH COOLDOWN  (capped at 5000 entries)
 # ─────────────────────────────────────────────────────────────
 
 _SEARCH_COOLDOWN: dict[int, float] = {}
@@ -119,20 +109,11 @@ MAX_COOLDOWN_ENTRIES  = 5000
 
 
 def _is_on_cooldown(uid: int) -> bool:
-    """
-    CHECK ONLY — does NOT stamp the timestamp.
-    Cooldown is only applied AFTER a successful result is delivered,
-    not on no-result or maintenance responses.
-    """
     last = _SEARCH_COOLDOWN.get(uid, 0)
     return (time.time() - last) < SEARCH_COOLDOWN_SECS
 
 
 def _stamp_cooldown(uid: int):
-    """
-    Stamp this user cooldown. Called ONLY after a real result was sent.
-    Prevents the bug where a no-result response blocks the next query.
-    """
     if len(_SEARCH_COOLDOWN) >= MAX_COOLDOWN_ENTRIES:
         try:
             _SEARCH_COOLDOWN.pop(next(iter(_SEARCH_COOLDOWN)))
@@ -158,11 +139,6 @@ async def safe_edit(coro, q):
 
 
 async def _safe_reply_photo(m, photo: str, caption: str, parse_mode, reply_markup):
-    """
-    Try reply_photo. Falls back to reply_text if Telegram rejects the URL.
-    NOTE: ibb.co page URLs (https://ibb.co/xxx) don't work — use direct
-    image URLs (https://i.ibb.co/.../image.jpg) in config.py.
-    """
     if photo:
         try:
             return await m.reply_photo(
@@ -181,7 +157,6 @@ async def _safe_reply_photo(m, photo: str, caption: str, parse_mode, reply_marku
 
 
 async def _safe_edit_media(q, photo: str, caption: str, parse_mode, reply_markup):
-    """Try edit_media. Falls back to edit_caption if URL is bad."""
     if photo:
         try:
             return await q.message.edit_media(
@@ -203,14 +178,10 @@ async def _safe_edit_media(q, photo: str, caption: str, parse_mode, reply_markup
 
 
 # ─────────────────────────────────────────────────────────────
-# POSTER HELPER — uses settings cache, no per-call MongoDB hit
+# POSTER HELPER
 # ─────────────────────────────────────────────────────────────
 
 async def _get_poster(series: str, settings: dict):
-    """
-    Fetch poster using already-loaded settings dict.
-    Returns (poster, year, genre, rating) or (None, None, None, None).
-    """
     if not settings.get("poster_enabled"):
         return None, None, None, None
     landscape = settings.get("poster_landscape", False)
@@ -371,35 +342,40 @@ def _quality_label(quality: str, codec: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# REGISTER FILTERS
+# BOT SELF CACHE — avoids get_me() on every callback
+# FIX: gls and bk_qual now use this cache instead of cyber.get_me()
 # ─────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────
-# BOT SELF CACHE — avoids get_me() on every message
-# ─────────────────────────────────────────────────────────────
+_bot_id_cache:       int | None = None
+_bot_username_cache: str | None = None
 
-_bot_id_cache: int | None = None
+
+async def _get_bot_info(cyber) -> tuple[int | None, str | None]:
+    """Returns (bot_id, bot_username) — cached after first call."""
+    global _bot_id_cache, _bot_username_cache
+    if _bot_id_cache is not None:
+        return _bot_id_cache, _bot_username_cache
+    try:
+        me = await cyber.get_me()
+        _bot_id_cache       = me.id
+        _bot_username_cache = me.username
+        return _bot_id_cache, _bot_username_cache
+    except Exception:
+        return None, None
 
 
 async def _get_bot_id(cyber) -> int | None:
-    global _bot_id_cache
-    if _bot_id_cache is not None:
-        return _bot_id_cache
-    try:
-        me = await cyber.get_me()
-        _bot_id_cache = me.id
-        return _bot_id_cache
-    except Exception:
-        return None
+    bot_id, _ = await _get_bot_info(cyber)
+    return bot_id
 
+
+# ─────────────────────────────────────────────────────────────
+# REGISTER FILTERS
+# ─────────────────────────────────────────────────────────────
 
 def register_filters(cyber: Client):
 
     # ── SEARCH HANDLER ────────────────────────────────────────
-    # ~filters.outgoing — bot's own sent messages are NOT delivered here.
-    #   Without this the restart notification, FSub gate, delivery messages
-    #   etc. all trigger the handler and spam "No Results Found".
-    # filters.user() with a broad check keeps channels/anonymous admins out.
 
     @cyber.on_message(
         filters.text
@@ -410,15 +386,9 @@ def register_filters(cyber: Client):
         if not m.text or m.text.startswith("/"):
             return
 
-        # Drop messages with no human sender (channel posts, anonymous group admins)
         if not m.from_user:
             return
 
-        # ── Block the bot from searching its OWN messages ─────
-        # Pyrogram delivers the bot's own send_message() calls back as
-        # incoming updates (restart notice, FSub gate, delivery messages, etc).
-        # Without this check every bot-sent message triggers a search.
-        # _get_bot_id() is cached after first call — zero API cost.
         try:
             bot_id = await _get_bot_id(_)
             if bot_id and m.from_user.id == bot_id:
@@ -426,11 +396,9 @@ def register_filters(cyber: Client):
         except Exception:
             pass
 
-        # Also skip messages from any bot (is_bot flag)
         if getattr(m.from_user, "is_bot", False):
             return
 
-        # ── Ignore replies to bot messages ────────────────────
         if m.reply_to_message:
             try:
                 bot_id = await _get_bot_id(_)
@@ -442,10 +410,8 @@ def register_filters(cyber: Client):
 
         uid = m.from_user.id
 
-        # Load all settings in one cached batch (single MongoDB call at most)
         settings = await _get_settings()
 
-        # Maintenance check
         from config import ADMIN_USERS as _ADMINS
         if uid not in _ADMINS and settings["maintenance"]:
             await m.reply_text(
@@ -454,11 +420,9 @@ def register_filters(cyber: Client):
             )
             return
 
-        # Filter ON/OFF
         if uid not in _ADMINS and not settings["filter_enabled"]:
             return
 
-        # Per-user cooldown
         if _is_on_cooldown(uid):
             return
 
@@ -466,7 +430,6 @@ def register_filters(cyber: Client):
 
         series, suggestions = await resolve_series_with_suggestions(m.text)
 
-        # ── SINGLE MATCH ──────────────────────────────────────
         if series:
             poster, year, genre, rating = await _get_poster(series, settings)
             seasons = list((await get_series_summary(series))["seasons"])
@@ -478,12 +441,11 @@ def register_filters(cyber: Client):
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb,
             )
-            _stamp_cooldown(uid)   # ✅ cooldown only on real result
+            _stamp_cooldown(uid)
             if auto_del > 0 and msg:
                 delete_message_later(cyber, msg.chat.id, msg.id, auto_del)
             return
 
-        # ── MULTIPLE MATCHES ──────────────────────────────────
         if suggestions:
             lines = [
                 "🔍 <b>Did you mean...</b>",
@@ -505,14 +467,12 @@ def register_filters(cyber: Client):
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(buttons),
             )
-            _stamp_cooldown(uid)   # ✅ cooldown only on real result
+            _stamp_cooldown(uid)
             if auto_del > 0 and msg:
                 delete_message_later(cyber, msg.chat.id, msg.id, auto_del)
                 delete_message_later(cyber, m.chat.id, m.id, auto_del)
             return
 
-        # ── NOTHING FOUND ─────────────────────────────────────
-        # ⚠️  NO _stamp_cooldown here — user can retry immediately after no result
         msg = await m.reply_text(
             "🔍 <b>No Results Found</b>\n"
             "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
@@ -522,7 +482,6 @@ def register_filters(cyber: Client):
         )
         if auto_del > 0 and msg:
             delete_message_later(cyber, msg.chat.id, msg.id, auto_del)
-            # Also delete the user's original typed message
             delete_message_later(cyber, m.chat.id, m.id, auto_del)
 
     # ── SUGGESTION CLICK ──────────────────────────────────────
@@ -546,10 +505,6 @@ def register_filters(cyber: Client):
             ),
             q,
         )
-        # Reschedule auto-delete on the now-edited message (series poster)
-        # The old delete timer from the suggestion message is still running but
-        # editing the message doesn't cancel it — we schedule a fresh one so
-        # the series poster also gets cleaned up at the correct delay.
         if auto_del > 0 and q.message:
             delete_message_later(cyber, q.message.chat.id, q.message.id, auto_del)
 
@@ -585,7 +540,6 @@ def register_filters(cyber: Client):
             return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
         if not await check_owner(q, uid):
             return
-        # Fetch langs and poster concurrently
         langs, poster_r = await asyncio.gather(
             get_unique_languages_by_season(series, int(season)),
             _get_poster(series, settings),
@@ -602,7 +556,9 @@ def register_filters(cyber: Client):
             q,
         )
 
-    # ── LANGUAGE → QUALITY (direct URL buttons) ───────────────
+    # ── LANGUAGE → QUALITY (URL buttons)
+    # FIX: uses cached _get_bot_info() instead of cyber.get_me() per tap
+    # ─────────────────────────────────────────────────────────
 
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q):
@@ -610,23 +566,22 @@ def register_filters(cyber: Client):
         if not await check_owner(q, uid):
             return
         settings = await _get_settings()
-        # Fetch quality pairs, poster, and bot info concurrently
-        qc_pairs, poster_r, bot = await asyncio.gather(
+        # FIX: cache bot username — no fresh get_me() on every quality tap
+        qc_pairs, poster_r, (_, bot_username) = await asyncio.gather(
             get_unique_qualities_with_codec(series, lang, int(season)),
             _get_poster(series, settings),
-            cyber.get_me(),
+            _get_bot_info(cyber),
         )
         poster, year, genre, rating = poster_r
         qs   = [qc[0] for qc in qc_pairs]
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
 
-        # Use file bot username if configured, otherwise main bot
         try:
             from utils.cyber_filebot import get_filebot_username
             _fb_uname = await get_filebot_username()
         except Exception:
             _fb_uname = None
-        _link_username = _fb_uname or bot.username
+        _link_username = _fb_uname or bot_username
 
         rows, row = [], []
         for quality, codec in qc_pairs:
@@ -698,46 +653,6 @@ def register_filters(cyber: Client):
             q,
         )
 
-    @cyber.on_callback_query(filters.regex("^bk_qual\\|"))
-    async def bk_qual(_, q):
-        _, uid, series, season, lang = q.data.split("|")
-        if not await check_owner(q, uid):
-            return
-        settings = await _get_settings()
-        qc_pairs, poster_r, bot = await asyncio.gather(
-            get_unique_qualities_with_codec(series, lang, int(season)),
-            _get_poster(series, settings),
-            cyber.get_me(),
-        )
-        poster, year, genre, rating = poster_r
-        qs   = [qc[0] for qc in qc_pairs]
-        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
-        # Use file bot username if configured, otherwise main bot
-        try:
-            from utils.cyber_filebot import get_filebot_username
-            _fb_uname = await get_filebot_username()
-        except Exception:
-            _fb_uname = None
-        _link_username = _fb_uname or bot.username
-        rows, row = [], []
-        for quality, codec in qc_pairs:
-            label   = _quality_label(quality, codec)
-            payload = await encode_payload(series, season, lang, quality, uid)
-            link    = f"https://t.me/{_link_username}?start={payload}"
-            row.append(InlineKeyboardButton(f"⬇️  {label}", url=link))
-            if len(row) == 2:
-                rows.append(row)
-                row = []
-        if row:
-            rows.append(row)
-        rows.append([back])
-        kb = InlineKeyboardMarkup(rows)
-        await safe_edit(
-            q.message.edit_caption(
-                build_caption(series, year, genre, rating,
-                              languages=[lang], qualities=qs, step="quality"),
-                parse_mode=enums.ParseMode.HTML,
-                reply_markup=kb,
-            ),
-            q,
-        )
+    # NOTE: bk_qual handler REMOVED — quality step shows URL buttons (no callback),
+    # so there is no "back from quality" navigation. The handler was dead code that
+    # also called cyber.get_me() on every press.
