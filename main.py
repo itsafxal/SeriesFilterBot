@@ -251,7 +251,7 @@ def main():
     async def _track_groups(_, update: ChatMemberUpdated):
         try:
             chat = update.chat
-            if not chat or chat.type not in ("group", "supergroup"):
+            if not chat or chat.type not in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
                 return
 
             bot_id = _BOT_ID
@@ -267,13 +267,17 @@ def main():
             old_member = update.old_chat_member
 
             # Bot was added to a group
-            if (new_member and new_member.user.id == bot_id and
-                    new_member.status in ("member", "administrator")):
+            if (new_member and new_member.user and new_member.user.id == bot_id and
+                    new_member.status in (enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR)):
                 await add_group(chat.id)
             # Bot was removed from a group
-            elif (old_member and old_member.user.id == bot_id and
-                  old_member.status in ("member", "administrator") and
-                  (new_member is None or new_member.status in ("left", "kicked", "banned"))):
+            elif (old_member and old_member.user and old_member.user.id == bot_id and
+                  old_member.status in (enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR) and
+                  (new_member is None or new_member.status in (
+                      enums.ChatMemberStatus.LEFT,
+                      enums.ChatMemberStatus.BANNED,
+                      enums.ChatMemberStatus.RESTRICTED,
+                  ))):
                 await remove_group(chat.id)
         except Exception as e:
             logger.debug(f"[GROUP] tracking error: {e}")
