@@ -1,6 +1,7 @@
 import asyncio
 import gc
 import time
+from collections import OrderedDict
 from typing import Optional
 
 from pyrogram import Client, filters, enums
@@ -24,30 +25,21 @@ from utils.cyber_filter import extract_links
 # ---------------------------------------------------------------
 # TUNING — Bot-only, medium-fast flood-free indexing
 # ---------------------------------------------------------------
-# Telegram bot limit for channels.GetMessages: ~30 req/min hard cap.
-# Sweet spot: 50 IDs/call at 3s cooldown = 20 calls/min = ~1,000 IDs/min.
-# 10k-message channel indexes in ~10 min with zero flood waits.
-#
-# Token bucket adds a rolling 60s hard ceiling as a safety net —
-# prevents MTProto-layer floods even if asyncio sleep drifts.
+FETCH_BATCH        = 50
+CONCURRENT_FETCHES = 1
+SAVE_BATCH_SIZE    = 500
+CHECKPOINT_EVERY   = 20
+PROGRESS_EVERY     = 15
 
-FETCH_BATCH        = 50    # IDs per get_messages() call
-CONCURRENT_FETCHES = 1     # strictly 1 — parallel = instant FloodWait
-SAVE_BATCH_SIZE    = 500   # parsed docs buffer before DB flush
-CHECKPOINT_EVERY   = 20    # checkpoint every N rounds
-PROGRESS_EVERY     = 15    # seconds between Telegram message edits
-
-# Adaptive cooldown — 3s base, backs off on FloodWait, recovers gradually
-_COOLDOWN_BASE      = 3.0  # 3s = 20 calls/min — medium-fast, safe
-_COOLDOWN_MAX       = 45.0 # absolute ceiling after repeated hits
-_COOLDOWN_STEP_UP   = 4.0  # +4s per FloodWait (firm back-off)
-_COOLDOWN_STEP_DOWN = 0.15 # -0.15s per clean round (gradual recovery)
+_COOLDOWN_BASE      = 3.0
+_COOLDOWN_MAX       = 45.0
+_COOLDOWN_STEP_UP   = 4.0
+_COOLDOWN_STEP_DOWN = 0.15
 _round_cooldown     = _COOLDOWN_BASE
 
-# Token bucket — rolling hard ceiling: max 20 calls per 60s
-_BUCKET_CALLS  = 20    # max calls in rolling window
-_BUCKET_WINDOW = 60.0  # window size in seconds
-_bucket_log    = []    # timestamps of recent calls
+_BUCKET_CALLS  = 20
+_BUCKET_WINDOW = 60.0
+_bucket_log    = []
 
 INDEX_SKIP_KEY   = "INDEX_SKIP_ID"
 INDEX_STATUS_KEY = "CURRENT_INDEX_TASK"
@@ -55,6 +47,24 @@ INDEX_STATUS_KEY = "CURRENT_INDEX_TASK"
 media_filter = filters.document | filters.video | filters.audio
 index_task: Optional[asyncio.Task] = None
 lock = asyncio.Lock()
+
+# ── FIX: _last_text capped at 1000 entries (was unbounded) ─────
+# Uses OrderedDict so oldest entry is evicted when full.
+_LAST_TEXT_MAX = 1000
+_last_text: OrderedDict[int, str] = OrderedDict()
+
+
+def _set_last_text(msg_id: int, text: str):
+    if msg_id in _last_text:
+        _last_text.move_to_end(msg_id)
+    _last_text[msg_id] = text
+    while len(_last_text) > _LAST_TEXT_MAX:
+        _last_text.popitem(last=False)
+
+
+def _clear_last_text():
+    """Called after index task completes — frees memory immediately."""
+    _last_text.clear()
 
 
 # ---------------------------------------------------------------
@@ -78,20 +88,17 @@ async def safe_send(bot: Client, uid: int, text: str, **kw) -> Optional[Message]
             return None
 
 
-_last_text: dict[int, str] = {}
-
-
 async def safe_edit(msg: Message, text: str, **kw):
     if msg is None or _last_text.get(msg.id) == text:
         return
     try:
         await msg.edit_text(text, **kw)
-        _last_text[msg.id] = text
+        _set_last_text(msg.id, text)
     except FloodWait as f:
         await _fw_sleep(f)
         try:
             await msg.edit_text(text, **kw)
-            _last_text[msg.id] = text
+            _set_last_text(msg.id, text)
         except Exception:
             pass
     except Exception as e:
@@ -145,28 +152,20 @@ def _progress(*, cid, start_id, last_id, checked, saved, skipped, dup,
 
 
 # ---------------------------------------------------------------
-# FETCH  (concurrent)
+# FETCH
 # ---------------------------------------------------------------
 
 async def _bucket_wait():
-    """
-    Token bucket — enforces hard ceiling of _BUCKET_CALLS per _BUCKET_WINDOW.
-    Blocks (sleeps) if the window is full, then records the call timestamp.
-    This prevents Pyrogram's internal MTProto layer from hitting
-    channels.GetMessages flood waits silently.
-    """
     global _bucket_log
     while True:
         now    = time.monotonic()
         cutoff = now - _BUCKET_WINDOW
-        # Evict old entries outside the rolling window
         _bucket_log = [t for t in _bucket_log if t > cutoff]
         if len(_bucket_log) < _BUCKET_CALLS:
             _bucket_log.append(now)
             return
-        # Window is full — sleep until the oldest entry expires
-        oldest   = _bucket_log[0]
-        sleep_for = (_BUCKET_WINDOW - (now - oldest)) + 0.5  # +0.5s safety margin
+        oldest    = _bucket_log[0]
+        sleep_for = (_BUCKET_WINDOW - (now - oldest)) + 0.5
         logger.info(f"[BUCKET] Rate limit window full — waiting {sleep_for:.1f}s")
         await asyncio.sleep(max(sleep_for, 1.0))
 
@@ -175,24 +174,20 @@ async def _fetch_one(bot: Client, chat_id: int, id_window: list, fw_count: list)
     global _round_cooldown
     while True:
         try:
-            # Hard rate limit check BEFORE the API call
             await _bucket_wait()
             msgs = await bot.get_messages(chat_id, id_window)
-            # Successful call — slowly recover cooldown toward base
             _round_cooldown = max(_COOLDOWN_BASE, _round_cooldown - _COOLDOWN_STEP_DOWN)
             return msgs if isinstance(msgs, list) else [msgs]
         except FloodWait as fw:
             fw_count[0] += 1
             wait = max(int(getattr(fw, "value", 15)), 15)
-            # Aggressive back-off on FloodWait
             _round_cooldown = min(_COOLDOWN_MAX, _round_cooldown + _COOLDOWN_STEP_UP)
-            # Also drain the bucket so next calls start fresh after waiting
             _bucket_log.clear()
             logger.warning(
                 f"[BOT] FloodWait {wait}s — sleeping {wait + 10}s "
                 f"| cooldown now={_round_cooldown:.1f}s | bucket cleared"
             )
-            await asyncio.sleep(wait + 10)  # wait full required time + 10s buffer
+            await asyncio.sleep(wait + 10)
         except ChannelPrivate:
             logger.error(f"[BOT] Channel {chat_id} is private/inaccessible")
             return []
@@ -245,8 +240,8 @@ async def index_files_task(
     chat_id: int, start_id: int, last_id: int, target: str = "both",
 ):
     global index_task, _round_cooldown
-    _round_cooldown = _COOLDOWN_BASE   # reset to base speed for each fresh index
-    _bucket_log.clear()                # reset rate-limit bucket
+    _round_cooldown = _COOLDOWN_BASE
+    _bucket_log.clear()
 
     chat_key     = f"index_{chat_id}"
     target_label = {"db1": "DB1", "db2": "DB2", "both": "DB1+DB2"}.get(target, target)
@@ -326,7 +321,6 @@ async def index_files_task(
                 msgs = await _fetch_round(bot, chat_id, [window], fw_count)
                 calls += 1
 
-                # Adaptive cooldown — flood-free bot speed
                 await asyncio.sleep(_round_cooldown)
 
                 for msg in msgs:
@@ -406,6 +400,8 @@ async def index_files_task(
             logger.info(f"[INDEX] cancelled at id={cur_id[0]} saved={saved}")
 
         finally:
+            # FIX: clear _last_text on task completion to free memory
+            _clear_last_text()
             await set_global_setting(INDEX_STATUS_KEY, "IDLE")
             set_caption_lang_cache(None)
             set_clean_keywords_cache(None)
