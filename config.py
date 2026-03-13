@@ -3,14 +3,14 @@ import random as _random
 from logging.handlers import RotatingFileHandler
 
 # BOT SETTINGS
-API_ID    = 28643132
-API_HASH  = "510c3009ea589830a89e045bf8aae656"
-BOT_TOKEN = "8333630020:AAE4ZBaAjzU_Qs5CyxHpkLs6vwn1jJxoXco"
+API_ID = 28643132
+API_HASH = "510c3009ea589830a89e045bf8aae656"
+BOT_TOKEN = "8231385133:AAF3eGcM5wev6tt8JJ0LisknyxxoutkUk_s"
 
 # MONGO DB
-MONGO_URI_CONFIG = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
-MONGO_URI_DB1    = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
-MONGO_URI_DB2    = "mongodb+srv://UB:UB@cluster0.bkxgfh4.mongodb.net/?appName=Cluster0"
+MONGO_URI_CONFIG = "mongodb+srv://ss:ss@seriesfilterbot.p88od4y.mongodb.net/?appName=SeriesFilterBOT"
+MONGO_URI_DB1    = "mongodb+srv://SB1:SB1@cluster0.foxpowr.mongodb.net/?appName=Cluster0"
+MONGO_URI_DB2    = "mongodb+srv://SB2:SB2@cluster0.04scp0s.mongodb.net/?appName=Cluster0"
 
 # ADMIN ID
 ADMIN_USERS = [5794562450]
