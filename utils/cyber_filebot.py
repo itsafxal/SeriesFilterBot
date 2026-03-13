@@ -409,14 +409,43 @@ async def _ensure_start_handler(main_cyber):
             pass
 
         if len(message.command) < 2 or not message.command[1].startswith("send_"):
-            # No payload — just greet
+            # No payload — greet with style
             try:
                 bot = await client.get_me()
                 name = bot.first_name
+
+                # Fetch main bot username for the redirect button
+                try:
+                    main_me = await main_cyber.get_me()
+                    main_username = main_me.username
+                except Exception:
+                    main_username = None
+
+                greeting_text = (
+                    f"👋 <b>Hi there!</b>\n\n"
+                    "This bot is used for delivering requested files.\n\n"
+                    "Please use the main bot to search for files. "
+                    "After requesting, the files will be sent here automatically.\n\n"
+                    "🛠 <b>Maintained by</b> @CyberTGz"
+                )
+
+                from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                buttons = []
+                if main_username:
+                    buttons.append([
+                        InlineKeyboardButton(
+                            "🔍  Search Files — Main Bot",
+                            url=f"https://t.me/{main_username}"
+                        )
+                    ])
+                buttons.append([
+                    InlineKeyboardButton("👨\u200d💻  Support", url="https://t.me/CyberTGz")
+                ])
+
                 await message.reply_text(
-                    f"👋 <b>Hi!</b> I am <b>{name}</b>, the file delivery bot.\n\n"
-                    "Use the main bot to search and request files.",
+                    greeting_text,
                     parse_mode=pyro_enums.ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
                 )
             except Exception:
                 pass
@@ -535,6 +564,46 @@ async def _ensure_start_handler(main_cyber):
             sent = await client.send_message(uid, "❌ Delivery failed. Please try again.")
             if auto_delay > 0:
                 delete_message_later(client, uid, sent.id, auto_delay)
+
+    # ── ANY other text/message → reply with the same greeting ──
+    @client.on_message(pyro_filters.private & ~pyro_filters.command("start"))
+    async def _filebot_any_message(_, message):
+        try:
+            # Fetch main bot username for the redirect button
+            try:
+                main_me = await main_cyber.get_me()
+                main_username = main_me.username
+            except Exception:
+                main_username = None
+
+            greeting_text = (
+                "👋 <b>Hi there!</b>\n\n"
+                "This bot is used for delivering requested files.\n\n"
+                "Please use the main bot to search for files. "
+                "After requesting, the files will be sent here automatically.\n\n"
+                "🛠 <b>Maintained by</b> @CyberTGz"
+            )
+
+            from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            buttons = []
+            if main_username:
+                buttons.append([
+                    InlineKeyboardButton(
+                        "🔍  Search Files — Main Bot",
+                        url=f"https://t.me/{main_username}"
+                    )
+                ])
+            buttons.append([
+                InlineKeyboardButton("👨\u200d💻  Support", url="https://t.me/CyberTGz")
+            ])
+
+            await message.reply_text(
+                greeting_text,
+                parse_mode=pyro_enums.ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
+            )
+        except Exception:
+            pass
 
     logger.info("[FILEBOT] ✅ /start handler registered on file bot client.")
 
