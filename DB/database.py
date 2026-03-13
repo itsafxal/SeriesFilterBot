@@ -868,6 +868,27 @@ async def get_total_files_per_db() -> dict:
     return await asyncio.to_thread(_sync)
 
 
+async def get_files_count_per_channel() -> dict[int, int]:
+    """
+    Returns {channel_id: file_count} for all channels in SQLite.
+    Used by the admin Index Channels list view.
+    """
+    from DB.sqlite_db import _get_conn
+    import asyncio as _asyncio
+
+    def _sync():
+        try:
+            conn   = _get_conn()
+            cursor = conn.execute(
+                "SELECT channel_id, COUNT(*) FROM files GROUP BY channel_id"
+            )
+            return {int(row[0]): int(row[1]) for row in cursor.fetchall()}
+        except Exception:
+            return {}
+
+    return await _asyncio.to_thread(_sync)
+
+
 # ─────────────────────────────────────────────────────────────
 # USER MANAGEMENT  (Config DB)
 # ─────────────────────────────────────────────────────────────
