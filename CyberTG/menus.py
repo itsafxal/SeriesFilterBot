@@ -36,6 +36,7 @@ from DB.database import (
     set_poster_landscape,
     get_caption_clean_keywords,
     set_caption_clean_keywords,
+    get_files_count_per_channel,
 )
 
 from .fsub import (
@@ -450,15 +451,54 @@ async def index_action_router(_, query):
         )
 
     elif action == "list":
-        channels = await get_index_channels()
-        text = ("No index channels set." if not channels else
-                "<b>Index Channels:</b>\n\n" +
-                "\n".join(f"<code>{c}</code>" for c in channels))
-        await safe_edit(
-            query.message, caption=text,
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("Back", callback_data="index|index")]]),
-        )
+        await query.answer("⏳ Fetching channel info...")
+        channels    = await get_index_channels()
+        file_counts = await get_files_count_per_channel()
+
+        if not channels:
+            await safe_edit(
+                query.message,
+                caption="No index channels set.",
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("Back", callback_data="index|index")]]),
+            )
+        else:
+            lines = ["<b>📡 Index Channels</b>\n"]
+
+            for cid in channels:
+                # Fetch channel name from Telegram
+                try:
+                    chat = await _.get_chat(cid)
+                    name = chat.title or str(cid)
+                except Exception:
+                    name = "Unknown"
+
+                # Try to export or create a permanent invite link
+                try:
+                    invite = await _.export_chat_invite_link(cid)
+                except Exception:
+                    try:
+                        obj    = await _.create_chat_invite_link(cid)
+                        invite = obj.invite_link
+                    except Exception:
+                        invite = None
+
+                saved    = file_counts.get(cid, 0)
+                link_part = f"<a href=\'{invite}\'>Invite Link</a>" if invite else "No link"
+
+                lines.append(
+                    f"🔹 <b>{name}</b>\n"
+                    f"   ID    : <code>{cid}</code>\n"
+                    f"   Link  : {link_part}\n"
+                    f"   Saved : <code>{saved:,} files</code>\n"
+                )
+
+            await safe_edit(
+                query.message,
+                caption="\n".join(lines),
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("Back", callback_data="index|index")]]),
+            )
 
     elif action == "add":
         await safe_edit(
@@ -488,7 +528,10 @@ async def index_action_router(_, query):
             "back": "index|index",
         }
 
-    await query.answer()
+    # Note: "list" action answers early with a loading message above;
+    # "add" and "del" need the answer call here.
+    if action in ("add", "del"):
+        await query.answer()
 
 
 async def caption_action_router(_, query):
