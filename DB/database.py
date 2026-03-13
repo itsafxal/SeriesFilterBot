@@ -1,34 +1,24 @@
 """
-database.py — MULTI-DB EDITION
-================================
-Architecture:
-  • CONFIG_DB   (MONGO_URI_CONFIG)  → bot_state, global settings, users, pending_delivery, sessions
-  • FILE_DB_1   (MONGO_URI_DB1)     → files collection #1
-  • FILE_DB_2   (MONGO_URI_DB2)     → files collection #2
-  • SQLite       → local read-optimised index (migrated from BOTH file DBs on every boot)
+database.py — MULTI-DB EDITION  (FIXED)
+=========================================
+FIXES in this version:
 
-On boot:
-  - migrate_data_from_mongo_to_sql_sync() is called with MERGED documents from DB1 + DB2
-  - Duplicates (channel_id + message_id) are handled by UNIQUE constraint (INSERT OR IGNORE)
+  1. _async_cache MEMORY LEAK FIXED — was an unbounded dict that grew forever
+     (one entry per unique query, never evicted).  Now uses a bounded LRU dict
+     capped at _ASYNC_CACHE_MAX entries.  Least-recently-used entries are
+     evicted when the cap is hit.  Still invalidated on writes (correct behavior).
 
-On live index:
-  - save_file_to_db(file_doc, target="both"|"db1"|"db2")
-  - Writes to the selected MongoDB file DBs + always writes to SQLite
-
-CODEC FIX (this version):
-  - initialize_sql_db() now calls repair_codec_from_filenames_sync() after migration
-    to backfill codec for every row that was indexed before codec detection existed.
-  - save_file_to_db() passes through the codec field correctly.
-  - repair_normalized_names_in_mongo() left unchanged (codec repair is SQLite-only).
+  2. All other logic unchanged — no functional regressions.
 """
 
 import asyncio
+from collections import OrderedDict
 
-# Alternating batch counter for "both" target — odd→DB1, even→DB2
-# FIX: protected by a threading.Lock to prevent race conditions in concurrent async tasks
+# Alternating batch counter for "both" target
 import threading as _threading
 _batch_counter: int = 0
 _batch_counter_lock = _threading.Lock()
+
 from pymongo import MongoClient, TEXT
 from config import (
     MONGO_URI_CONFIG,
@@ -41,44 +31,66 @@ from config import (
 # THREE MONGO CLIENTS
 # ─────────────────────────────────────────────────────────────
 
-# 1. Config DB — settings, state, users, sessions, fsub
 config_client = MongoClient(MONGO_URI_CONFIG)
 config_db      = config_client["SeriesBotConfig"]
 
 state_collection    = config_db["bot_state"]
 users_collection    = config_db["users"]
 pending_collection  = config_db["pending_delivery"]
-sticker_collection  = config_db["season_stickers"]   # cached season stickers
-groups_collection   = config_db["groups"]               # groups the bot is in
+sticker_collection  = config_db["season_stickers"]
+groups_collection   = config_db["groups"]
 
-# 2. File DB 1
 file_client_1      = MongoClient(MONGO_URI_DB1)
 file_db_1          = file_client_1["SeriesBotFiles1"]
 files_collection_1 = file_db_1["files"]
 
-# 3. File DB 2
 file_client_2      = MongoClient(MONGO_URI_DB2)
 file_db_2          = file_client_2["SeriesBotFiles2"]
 files_collection_2 = file_db_2["files"]
 
-# Legacy alias — kept so fsub.py / files.py that import mongo_client still work
+# Legacy alias
 mongo_client = config_client
 
 # ─────────────────────────────────────────────────────────────
-# INDEXES — FILE DBs
+# ASYNC CACHE — LRU, bounded at _ASYNC_CACHE_MAX entries
+# FIX: was an unbounded dict — grew forever on high-traffic bots.
+# Now evicts the oldest entry when the cap is hit.
+# ─────────────────────────────────────────────────────────────
+
+_ASYNC_CACHE_MAX  = 4096   # max cached query results kept in memory
+_async_cache: OrderedDict = OrderedDict()
+
+
+def _cache_get(key):
+    """LRU get — moves hit to end (most-recently-used)."""
+    if key not in _async_cache:
+        return _MISSING
+    _async_cache.move_to_end(key)
+    return _async_cache[key]
+
+
+_MISSING = object()   # sentinel
+
+
+def _cache_set(key, value):
+    """LRU set — evicts oldest entry when cap is hit."""
+    if key in _async_cache:
+        _async_cache.move_to_end(key)
+    _async_cache[key] = value
+    if len(_async_cache) > _ASYNC_CACHE_MAX:
+        _async_cache.popitem(last=False)  # evict LRU
+
+
+def _invalidate_async_cache():
+    """Clear entire cache on writes. Called by clear_all_caches() in sqlite_db."""
+    _async_cache.clear()
+
+
+# ─────────────────────────────────────────────────────────────
+# INDEXES
 # ─────────────────────────────────────────────────────────────
 
 def _safe_create_index(col, keys, **kwargs):
-    """
-    Create a MongoDB index, gracefully handling conflicts.
-
-    Error code 86 (IndexKeySpecsConflict) means an index with the same name
-    already exists but with different options (e.g. unique/sparse flags set
-    from a previous bot version). The existing index is functionally correct,
-    so we log INFO instead of ERROR and move on — no action needed.
-
-    All other errors are logged at ERROR level as before.
-    """
     index_name = kwargs.get("name") or str(keys)
     try:
         col.create_index(keys, **kwargs)
@@ -87,8 +99,6 @@ def _safe_create_index(col, keys, **kwargs):
             e.details.get("code") if hasattr(e, "details") else None
         )
         if code == 86:
-            # Index already exists (possibly with different unique/sparse options).
-            # The existing index is correct — this is a harmless no-op.
             logger.info(
                 f"ℹ️  Index '{index_name}' already exists on {col.full_name} "
                 f"(skipping — existing index is compatible)."
@@ -130,15 +140,7 @@ def _ensure_file_indexes(col):
     )
 
 
-# ── Deferred index creation — runs in a background thread after bot starts ──
-# Moving this out of module-level import eliminates ~1-3s of blocking TCP/TLS
-# round-trips that previously happened before the event loop even started.
-
 def _ensure_all_indexes_sync():
-    """
-    Run all MongoDB index creation in a background thread.
-    Safe to call multiple times — create_index is idempotent.
-    """
     try:
         _ensure_file_indexes(files_collection_1)
         _ensure_file_indexes(files_collection_2)
@@ -163,23 +165,12 @@ def _ensure_all_indexes_sync():
 
 
 async def ensure_all_indexes():
-    """
-    Async wrapper — call once from run_bot_async() after cyber.start().
-    Does NOT block startup; runs in thread pool.
-    """
     await asyncio.to_thread(_ensure_all_indexes_sync)
+
 
 # ─────────────────────────────────────────────────────────────
 # SQLite imports
 # ─────────────────────────────────────────────────────────────
-
-# ── Async query cache — wraps lru_cache results to skip lock on hot paths ──
-# Entries are invalidated by clear_all_caches() which calls this function.
-_async_cache: dict = {}
-
-def _invalidate_async_cache():
-    """Clear async-layer cache. Called by clear_all_caches() in sqlite_db."""
-    _async_cache.clear()
 
 from .sqlite_db import (
     SQLITE_DB_PATH,
@@ -187,7 +178,7 @@ from .sqlite_db import (
     create_sql_schema,
     migrate_data_from_mongo_to_sql_sync,
     repair_normalized_names_in_sqlite_sync,
-    repair_codec_from_filenames_sync,          # ← codec backfill
+    repair_codec_from_filenames_sync,
     get_series_summary_sync,
     search_series_sync,
     get_unique_languages_by_name_sync,
@@ -206,24 +197,17 @@ from .sqlite_db import (
     get_all_series_sync,
     _normalized_series_from_filename,
     save_file_to_sql_sync,
-    save_file_docs_batch_sync,                 # ← NEW: batch save
+    save_file_docs_batch_sync,
     clear_all_caches,
     episode_exists_sync,
 )
 
 
 # ─────────────────────────────────────────────────────────────
-# SQL INIT  —  migrate from BOTH Mongo file DBs
+# SQL INIT
 # ─────────────────────────────────────────────────────────────
 
 def initialize_sql_db():
-    """
-    Synchronously initialises the SQL database.
-    Migrates from BOTH Mongo file collections, then runs two repair passes:
-      1. normalized_name repair  — fixes series titles from old normalizer
-      2. codec repair            — backfills codec for pre-codec-detection rows
-    FIX: removed duplicate dead _MergedCursor class; uses inline _Merged only.
-    """
     logger.info("[INIT] Starting migration from BOTH MongoDB file DBs → SQLite...")
 
     class _Merged:
@@ -243,13 +227,11 @@ def initialize_sql_db():
     merged = _Merged()
     migrate_data_from_mongo_to_sql_sync(merged, create_sql_schema, logger)
 
-    # Repair 1: normalized series names
     try:
         repair_normalized_names_in_sqlite_sync(logger)
     except Exception as e:
         logger.error(f"repair_normalized_names_in_sqlite failed: {e}")
 
-    # Repair 2: codec backfill — fixes rows where codec = '' from old index runs
     try:
         repair_codec_from_filenames_sync(logger)
     except Exception as e:
@@ -259,7 +241,7 @@ def initialize_sql_db():
 
 
 # ─────────────────────────────────────────────────────────────
-# GLOBAL SETTINGS  (stored in Config DB)
+# GLOBAL SETTINGS
 # ─────────────────────────────────────────────────────────────
 
 GLOBAL_DOC_ID = "GLOBAL_CONFIG"
@@ -297,7 +279,7 @@ async def get_global_setting(key: str, default_value=None):
 
 
 # ─────────────────────────────────────────────────────────────
-# BOT STATE  (Config DB)
+# BOT STATE
 # ─────────────────────────────────────────────────────────────
 
 async def save_bot_state(chat_id, last_msg_id):
@@ -327,7 +309,6 @@ async def get_bot_state(chat_id):
 
 
 async def delete_all_index_states():
-    """FIX: delete docs instead of nulling — avoids ghost documents in state_collection."""
     def _sync():
         try:
             state_collection.delete_many({"_id": {"$regex": "^index_"}})
@@ -360,26 +341,28 @@ async def set_index_channels(channel_list: list):
 
 
 # ─────────────────────────────────────────────────────────────
-# SERIES QUERIES  (SQLite)
+# SERIES QUERIES  (SQLite, with bounded LRU cache)
 # ─────────────────────────────────────────────────────────────
 
 async def get_series_summary(series_name: str):
     key = ("summary", series_name)
-    if key in _async_cache:
-        return _async_cache[key]
+    hit = _cache_get(key)
+    if hit is not _MISSING:
+        return hit
     async with sql_db_lock:
         result = await asyncio.to_thread(get_series_summary_sync, series_name)
-    _async_cache[key] = result
+    _cache_set(key, result)
     return result
 
 
 async def search_series(query: str):
     key = ("search", query)
-    if key in _async_cache:
-        return _async_cache[key]
+    hit = _cache_get(key)
+    if hit is not _MISSING:
+        return hit
     async with sql_db_lock:
         result = await asyncio.to_thread(search_series_sync, query)
-    _async_cache[key] = result
+    _cache_set(key, result)
     return result
 
 
@@ -411,11 +394,12 @@ async def get_all_files_by_season_and_quality(
 
 async def get_unique_languages_by_season(series_name: str, season: int):
     key = ("langs_season", series_name, season)
-    if key in _async_cache:
-        return _async_cache[key]
+    hit = _cache_get(key)
+    if hit is not _MISSING:
+        return hit
     async with sql_db_lock:
         result = await asyncio.to_thread(get_unique_languages_by_season_sync, series_name, season)
-    _async_cache[key] = result
+    _cache_set(key, result)
     return result
 
 
@@ -431,15 +415,15 @@ async def get_unique_qualities_by_lang_season(
 async def get_unique_qualities_with_codec(
     series_name: str, language: str, season: int
 ):
-    """Returns list of (quality, codec) tuples for building quality buttons."""
     key = ("qc", series_name, language, season)
-    if key in _async_cache:
-        return _async_cache[key]
+    hit = _cache_get(key)
+    if hit is not _MISSING:
+        return hit
     async with sql_db_lock:
         result = await asyncio.to_thread(
             get_unique_qualities_with_codec_sync, series_name, language, season
         )
-    _async_cache[key] = result
+    _cache_set(key, result)
     return result
 
 
@@ -464,24 +448,8 @@ async def episode_exists(
 # ─────────────────────────────────────────────────────────────
 
 def _mongo_upsert(col, file_doc: dict):
-    """
-    Upsert one file_doc into a pymongo collection.
-    Keyed on content identity (normalized_name + season + episode + quality + language).
-
-    CODEC FIX: $set and $setOnInsert must never touch the same field —
-    MongoDB raises error code 40 (path conflict) if they do.
-
-    Strategy:
-      - If new codec is non-empty  → include it in $set (overwrites blank, keeps good)
-      - If new codec is empty      → omit codec from $set entirely so existing value
-                                     is preserved on updates; new inserts get '' by
-                                     default from the schema.
-    No $setOnInsert used — it caused the conflict.
-    """
     try:
         codec = (file_doc.get("codec") or "").strip()
-
-        # Build $set — all fields always, codec only when non-empty
         set_fields = {k: v for k, v in file_doc.items() if k not in ("codec", "_id")}
         if codec:
             set_fields["codec"] = codec
@@ -504,11 +472,6 @@ def _mongo_upsert(col, file_doc: dict):
 
 
 async def save_file_to_db(file_doc: dict, target: str = "both"):
-    """
-    Inserts/updates a single file document.
-    target: "db1" | "db2" | "both" | "mongo"
-    "both" and "mongo" = randomly pick one of DB1 or DB2 (no dual-write).
-    """
     def _sync():
         global _batch_counter
         if target in ("both", "mongo"):
@@ -536,17 +499,6 @@ async def save_file_to_db(file_doc: dict, target: str = "both"):
 
 
 async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
-    """
-    Bulk-save a list of already-parsed file_doc dicts.
-    Used by the batch indexer — one call saves up to 200 docs.
-
-    Mongo:  one bulk_write per DB (single round-trip)
-    SQLite: one executemany transaction (single round-trip)
-    target: "db1" | "db2" | "both" | "mongo"
-    "mongo" = randomly pick one of DB1 or DB2 (no dual-write).
-
-    Returns the number of docs saved/updated.
-    """
     if not docs:
         return 0
 
@@ -574,7 +526,6 @@ async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
             return ops
 
         if target in ("both", "mongo"):
-            # Alternate batches: odd counter → DB1, even counter → DB2
             global _batch_counter
             with _batch_counter_lock:
                 _batch_counter += 1
@@ -600,7 +551,6 @@ async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
             except Exception as e:
                 logger.error(f"[BATCH] Mongo bulk_write DB2 error: {e}")
 
-        # ── SQLite executemany ────────────────────────────────
         saved = save_file_docs_batch_sync(docs, logger)
         if saved:
             clear_all_caches()
@@ -625,12 +575,6 @@ async def delete_all_files():
 
 
 async def update_file_id(channel_id: int, message_id: int, new_file_id: str):
-    """
-    Update stale file_id in both MongoDB collections and SQLite.
-    Called after a successful copy_message() forward fallback — the forwarded
-    message contains a fresh, valid file_id which we persist so future sends
-    use send_cached_media() directly without needing the fallback again.
-    """
     def _sync():
         filt   = {"channel_id": channel_id, "message_id": message_id}
         update = {"$set": {"file_id": new_file_id}}
@@ -641,7 +585,6 @@ async def update_file_id(channel_id: int, message_id: int, new_file_id: str):
                 updated += r.modified_count
             except Exception as e:
                 logger.error(f"update_file_id mongo error ({col.full_name}): {e}")
-        # SQLite update
         update_file_id_sync(channel_id, message_id, new_file_id)
         if updated:
             clear_all_caches()
@@ -649,8 +592,6 @@ async def update_file_id(channel_id: int, message_id: int, new_file_id: str):
         logger.info(f"[FILE_ID_REFRESH] ch={channel_id} msg={message_id} updated={updated}")
 
     await asyncio.to_thread(_sync)
-
-
 
 
 # ─────────────────────────────────────────────────────────────
@@ -683,7 +624,6 @@ async def get_total_groups() -> int:
 # ─────────────────────────────────────────────────────────────
 
 async def get_db_size_info() -> dict:
-    """Return storage sizes for config, db1, db2, and SQLite in bytes."""
     def _sync():
         info = {}
         for label, client, dbname in [
@@ -696,7 +636,6 @@ async def get_db_size_info() -> dict:
                 info[label] = stats.get("dataSize", 0) + stats.get("indexSize", 0)
             except Exception:
                 info[label] = 0
-        # SQLite
         try:
             import os
             from DB.sqlite_db import SQLITE_DB_PATH as _SQL_PATH
@@ -751,22 +690,19 @@ async def set_caption_clean_keywords(keywords: list):
 
 
 # ─────────────────────────────────────────────────────────────
-# USERBOT STRING SESSION  (used by indexer for faster fetching)
+# USERBOT STRING SESSION
 # ─────────────────────────────────────────────────────────────
 
 async def get_userbot_string() -> str | None:
-    """Return the saved Pyrogram string session, or None if not set."""
     val = await get_global_setting("USERBOT_STRING", None)
     return val if val else None
 
 
 async def set_userbot_string(string: str):
-    """Save a Pyrogram string session to the config DB."""
     await set_global_setting("USERBOT_STRING", string.strip())
 
 
 async def delete_userbot_string():
-    """Remove the saved string session (disables userbot indexing)."""
     await set_global_setting("USERBOT_STRING", None)
 
 
@@ -775,7 +711,6 @@ async def delete_userbot_string():
 # ─────────────────────────────────────────────────────────────
 
 async def get_cached_sticker(season: int, kind: str = "start") -> str | None:
-    """Return cached Telegram file_id for this season+kind, or None."""
     def _sync():
         doc = sticker_collection.find_one({"season": season, "kind": kind})
         return doc.get("file_id") if doc else None
@@ -783,7 +718,6 @@ async def get_cached_sticker(season: int, kind: str = "start") -> str | None:
 
 
 async def save_sticker_cache(season: int, file_id: str, kind: str = "start"):
-    """Upsert the file_id for this season+kind."""
     def _sync():
         sticker_collection.update_one(
             {"season": season, "kind": kind},
@@ -794,7 +728,6 @@ async def save_sticker_cache(season: int, file_id: str, kind: str = "start"):
 
 
 async def clear_sticker_cache():
-    """Delete all cached stickers."""
     def _sync():
         r = sticker_collection.delete_many({})
         logger.info(f"[STICKER_CACHE] cleared {r.deleted_count} entries")
@@ -802,7 +735,6 @@ async def clear_sticker_cache():
 
 
 async def get_sticker_style(season: int, kind: str) -> int | None:
-    """Return the saved style_idx for this season+kind, or None."""
     def _sync():
         doc = sticker_collection.find_one({"season": season, "kind": kind})
         return doc.get("style_idx") if doc else None
@@ -810,7 +742,6 @@ async def get_sticker_style(season: int, kind: str) -> int | None:
 
 
 async def save_sticker_style(season: int, kind: str, style_idx: int):
-    """Persist the chosen style_idx for this season+kind."""
     def _sync():
         sticker_collection.update_one(
             {"season": season, "kind": kind},
@@ -818,7 +749,6 @@ async def save_sticker_style(season: int, kind: str, style_idx: int):
             upsert=True,
         )
     await asyncio.to_thread(_sync)
-
 
 
 async def delete_one_file(channel_id: int, msg_id: int):
@@ -852,8 +782,6 @@ async def get_all_series() -> list:
 
 
 async def get_total_files_per_db() -> dict:
-    """FIX: use estimated_document_count (O(1) index scan) instead of
-    count_documents({}) (full collection scan) — much faster on large DBs."""
     def _sync():
         try:
             c1 = files_collection_1.estimated_document_count()
@@ -869,10 +797,6 @@ async def get_total_files_per_db() -> dict:
 
 
 async def get_files_count_per_channel() -> dict[int, int]:
-    """
-    Returns {channel_id: file_count} for all channels in SQLite.
-    Used by the admin Index Channels list view.
-    """
     from DB.sqlite_db import _get_conn
     import asyncio as _asyncio
 
@@ -890,7 +814,7 @@ async def get_files_count_per_channel() -> dict[int, int]:
 
 
 # ─────────────────────────────────────────────────────────────
-# USER MANAGEMENT  (Config DB)
+# USER MANAGEMENT
 # ─────────────────────────────────────────────────────────────
 
 async def add_user(user_id: int):
@@ -928,7 +852,7 @@ async def get_total_users() -> int:
 
 
 # ─────────────────────────────────────────────────────────────
-# PENDING DELIVERY  (Config DB)
+# PENDING DELIVERY
 # ─────────────────────────────────────────────────────────────
 
 async def save_pending_delivery(user_id: int, data: dict):
@@ -965,28 +889,11 @@ async def clear_pending_delivery(user_id: int):
 
 
 # ─────────────────────────────────────────────────────────────
-# NORMALIZED NAME REPAIR  (MongoDB — run once after normalizer upgrade)
+# NORMALIZED NAME REPAIR  (MongoDB)
 # ─────────────────────────────────────────────────────────────
 
 async def repair_normalized_names_in_mongo():
-    """
-    Re-compute normalized_name for every document in both Mongo
-    file DBs and write back only rows that changed.
-    Safe to run multiple times.
-
-    FIX: bulk_write with ordered=False raises BulkWriteError when the new
-    normalized_name causes a duplicate key conflict on content_identity_unique.
-    This is expected — two old docs can map to the same new normalized name.
-    We catch error code 11000 and count those as skipped (not errors).
-    The conflicting duplicate documents are deleted to keep DB clean.
-    """
     def _repair_col(col):
-        """
-        FIX: true streaming cursor — never loads full collection into RAM.
-        Processes docs in CHUNK-sized bulk_write batches.
-        batch_size only controls network chunk size, not memory — list() would
-        still OOM on large collections, so we iterate the cursor directly.
-        """
         from pymongo import UpdateOne
         from pymongo.errors import BulkWriteError
         CHUNK = 5000
