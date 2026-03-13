@@ -1,7 +1,6 @@
 # main.py — MULTI-DB EDITION + YES/NO RESUME PROMPT
-# Changes:
-#   - check_and_resume_index now sends admin a Yes/No prompt instead of auto-resuming
-#   - Resume callbacks (resume_yes | resume_no) are handled in index.py handlers
+# FIX: cyber.get_me() called on EVERY chat_member_updated event (hundreds/day).
+#      Now cached once at startup in _BOT_ID — zero API calls in the handler.
 
 import asyncio
 from pyrogram import Client, enums
@@ -18,6 +17,9 @@ from DB.database import (
 )
 from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# ── Cached bot identity (avoids get_me() on every event) ─────────
+_BOT_ID: int | None = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -42,7 +44,6 @@ async def check_and_resume_index(cyber: Client):
     try:
         parts = status.split("|")
 
-        # Support both old 4-part format and new 5-part format (with target)
         if len(parts) == 4:
             _, chat_id_str, start_msg_id_str, last_msg_id_str = parts
             target = "both"
@@ -64,14 +65,12 @@ async def check_and_resume_index(cyber: Client):
         admin_id = ADMIN_USERS[0] if ADMIN_USERS else None
 
         if not admin_id:
-            # No admin to ask — auto-resume silently as fallback
             logger.warning("[STARTUP] No admin configured — auto-resuming index.")
             asyncio.create_task(
                 index_files_task(cyber, None, chat_id, start_msg_id, last_msg_id, target=target)
             )
             return
 
-        # ── Send Yes/No prompt ─────────────────────────────────
         kb = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
@@ -100,7 +99,6 @@ async def check_and_resume_index(cyber: Client):
             logger.info(f"[STARTUP] Resume prompt sent to admin {admin_id}.")
         except Exception as e:
             logger.error(f"[STARTUP] Could not send resume prompt to admin: {e}")
-            # Fall back to auto-resume if we can't reach admin
             asyncio.create_task(
                 index_files_task(cyber, None, chat_id, start_msg_id, last_msg_id, target=target)
             )
@@ -118,15 +116,25 @@ async def check_and_resume_index(cyber: Client):
 # ─────────────────────────────────────────────────────────────
 
 async def run_bot_async(cyber: Client):
+    global _BOT_ID
+
     logger.info("[STARTUP] Connecting bot client...")
     await cyber.start()
     logger.info("[STARTUP] Bot client connected ✅")
 
-    # ── MongoDB indexes — run in background, don't block startup ──
+    # ── FIX: cache bot ID once so the group-tracking handler never calls get_me() ──
+    try:
+        me = await cyber.get_me()
+        _BOT_ID = me.id
+        logger.info(f"[STARTUP] ✅ Bot identity cached: @{me.username} (id={_BOT_ID})")
+    except Exception as e:
+        logger.error(f"[STARTUP] Could not fetch bot identity: {e}")
+
+    # MongoDB indexes — background, non-blocking
     asyncio.create_task(ensure_all_indexes())
     logger.info("[STARTUP] ✅ MongoDB index check scheduled (background).")
 
-    # ── Sticker cache clear — fire-and-forget, non-blocking ──
+    # Sticker cache clear — fire-and-forget
     async def _clear_stickers_bg():
         try:
             from DB.database import clear_sticker_cache
@@ -158,7 +166,7 @@ async def run_bot_async(cyber: Client):
     except Exception as e:
         logger.warning(f"[STARTUP] File bot config load failed (non-fatal): {e}")
 
-    # ── Mongo normalized_name repair — background, non-blocking ──
+    # Mongo normalized_name repair — background, non-blocking
     async def _mongo_repair_bg():
         try:
             total = await repair_normalized_names_in_mongo()
@@ -216,21 +224,12 @@ def main():
         logger.error(f"[INIT] ❌ Critical failure during SQL DB init: {e}")
         return
 
-    # Mongo normalized_name repair — deferred to background after bot is online.
-    # This used to stream TWO full Mongo collections synchronously before the
-    # event loop started — could take 30–120s on large DBs. Now it runs as a
-    # background task after startup, so the bot is immediately responsive.
-    # (The repair is idempotent; safe to skip on any individual boot.)
-
     cyber = Client(
         "SeriesBot",
         api_id=API_ID,
         api_hash=API_HASH,
         bot_token=BOT_TOKEN,
         # Discard all updates that accumulated while the bot was offline.
-        # Without this, every message sent during downtime (including ones
-        # the admin typed, group messages, etc.) replays at once on startup
-        # and floods the search handler with "No Results Found" responses.
         skip_updates=True,
     )
 
@@ -241,7 +240,10 @@ def main():
     register_fsub_handlers(cyber)
     register_index_handlers(cyber)
 
-    # ── Group tracking — keeps /stats group count accurate ──────
+    # ── Group tracking — keeps /stats group count accurate ──────────
+    # FIX: uses cached _BOT_ID instead of calling get_me() on every event.
+    # get_me() was making an API call for every user joining/leaving any group
+    # the bot is in — this can be hundreds of calls per day needlessly.
     from pyrogram import filters as _filters
     from pyrogram.types import ChatMemberUpdated
 
@@ -251,15 +253,25 @@ def main():
             chat = update.chat
             if not chat or chat.type not in ("group", "supergroup"):
                 return
-            me = await cyber.get_me()
+
+            bot_id = _BOT_ID
+            if bot_id is None:
+                # Fallback: try to get ID if startup fetch failed
+                try:
+                    me = await cyber.get_me()
+                    bot_id = me.id
+                except Exception:
+                    return
+
             new_member = update.new_chat_member
             old_member = update.old_chat_member
+
             # Bot was added to a group
-            if (new_member and new_member.user.id == me.id and
+            if (new_member and new_member.user.id == bot_id and
                     new_member.status in ("member", "administrator")):
                 await add_group(chat.id)
             # Bot was removed from a group
-            elif (old_member and old_member.user.id == me.id and
+            elif (old_member and old_member.user.id == bot_id and
                   old_member.status in ("member", "administrator") and
                   (new_member is None or new_member.status in ("left", "kicked", "banned"))):
                 await remove_group(chat.id)
