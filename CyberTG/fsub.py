@@ -466,14 +466,22 @@ def fsub_text(statuses: list[dict] | None = None) -> str:
 # PENDING FSUB REGISTRY
 # ═══════════════════════════════════════════════════════════════
 
-def register_pending_fsub(uid: int, msg: Message, payload: str):
+def register_pending_fsub(uid: int, msg: Message, payload: str, via_filebot: bool = False):
+    """
+    Register a pending FSub gate message for a user.
+
+    via_filebot=True  → gate msg was sent by the file bot client;
+                        auto-delivery after join uses _deliver_via_filebot_client.
+    via_filebot=False → gate msg was sent by the main bot;
+                        auto-delivery uses do_deliver (main bot path).
+    """
     old = _PENDING_FSUB.get(uid)
     if old:
         try:
             asyncio.create_task(old["msg"].delete())
         except Exception:
             pass
-    _PENDING_FSUB[uid] = {"msg": msg, "payload": payload}
+    _PENDING_FSUB[uid] = {"msg": msg, "payload": payload, "via_filebot": via_filebot}
 
 
 def clear_pending_fsub(uid: int):
@@ -546,6 +554,94 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
 
 
 # ═══════════════════════════════════════════════════════════════
+# FILE-BOT DELIVERY HELPER (called from _try_auto_deliver
+# and exported for cyber_filebot.py)
+# ═══════════════════════════════════════════════════════════════
+
+async def do_deliver_via_filebot(main_cyber, uid: int, payload: str, source: str = "unknown") -> bool:
+    """
+    Deliver files through the file bot client after FSub passes.
+
+    Flow:
+      1. Decode payload → series/season/lang/quality
+      2. Acquire delivery lock (prevents duplicate sends)
+      3. Set session for uid
+      4. Call _deliver_via_filebot_client (defined in cyber_filebot)
+         which sends sticker + files + end sticker through the file bot
+
+    Falls back to main-bot do_deliver if file bot is not configured.
+    """
+    if not acquire_delivery_lock(uid):
+        print(f"[FSUB] do_deliver_via_filebot uid={uid} source={source} → LOCKED")
+        return False
+
+    print(f"[FSUB] do_deliver_via_filebot uid={uid} source={source} → lock acquired")
+
+    try:
+        from utils.cyber_filter import decode_payload_async
+        decoded = await decode_payload_async(payload)
+
+        if not decoded:
+            release_delivery_lock(uid)
+            from pyrogram import enums as _enums
+            await main_cyber.send_message(
+                uid,
+                "⏳ <b>Link Expired</b>\n"
+                "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+                "This download link has expired.\n"
+                "<i>Please search for the series again to get a fresh link.</i>",
+                parse_mode="html",
+            )
+            return False
+
+        owner, series, season, lang, quality = decoded
+
+        if int(owner) != uid:
+            release_delivery_lock(uid)
+            await main_cyber.send_message(
+                uid,
+                "⛔ <b>Access Denied</b>\n"
+                "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+                "<i>This link belongs to another user.</i>",
+                parse_mode="html",
+            )
+            return False
+
+        # Try file bot path first
+        try:
+            from utils.cyber_filebot import get_filebot_client, is_filebot_configured, _deliver_via_filebot_client
+            if is_filebot_configured():
+                file_client = await get_filebot_client()
+                if file_client:
+                    from CyberTG.files import set_session
+                    set_session(uid, {
+                        "series":   series,
+                        "season":   int(season),
+                        "language": lang,
+                        "quality":  quality,
+                    })
+
+                    async def _after():
+                        release_delivery_lock(uid)
+                        print(f"[FSUB] filebot delivery done uid={uid} — lock released")
+
+                    await _deliver_via_filebot_client(main_cyber, file_client, uid, on_complete=_after)
+                    return True
+        except Exception as e:
+            print(f"[FSUB] filebot path failed uid={uid}: {e} — falling back to main bot")
+
+        # Fallback: use main bot delivery
+        print(f"[FSUB] do_deliver_via_filebot falling back to main-bot delivery uid={uid}")
+        release_delivery_lock(uid)   # do_deliver will re-acquire
+        return await do_deliver(main_cyber, uid, payload, source=f"{source}_fallback")
+
+    except Exception as e:
+        print(f"[FSUB] do_deliver_via_filebot error uid={uid}: {e}")
+        release_delivery_lock(uid)
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════
 # AUTO-DELIVER AFTER JOIN/REQUEST
 # ═══════════════════════════════════════════════════════════════
 
@@ -554,8 +650,9 @@ async def _try_auto_deliver(cyber, uid: int):
     if not pending:
         return
 
-    msg     = pending["msg"]
-    payload = pending["payload"]
+    msg          = pending["msg"]
+    payload      = pending["payload"]
+    via_filebot  = pending.get("via_filebot", False)
 
     statuses = await get_slot_statuses(cyber, uid)
     done     = all_slots_passed(statuses)
@@ -567,7 +664,11 @@ async def _try_auto_deliver(cyber, uid: int):
             pass
         clear_pending_fsub(uid)
 
-        await do_deliver(cyber, uid, payload, source="auto_deliver")
+        if via_filebot:
+            # Deliver through file bot path
+            await do_deliver_via_filebot(cyber, uid, payload, source="auto_deliver")
+        else:
+            await do_deliver(cyber, uid, payload, source="auto_deliver")
 
     else:
         try:
