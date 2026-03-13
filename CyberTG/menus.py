@@ -52,6 +52,20 @@ logger = logging.getLogger(__name__)
 
 # ── Shared state ──────────────────────────────────────────────
 admin_temp  = {}   # { user_id: { state, message, back } }
+
+# ── FIX: cache bot identity — avoids get_me() on every menu open ──
+_BOT_USERNAME:   str | None = None
+_BOT_FIRST_NAME: str | None = None
+
+
+async def _get_bot_identity(cyber) -> tuple[str, str]:
+    global _BOT_USERNAME, _BOT_FIRST_NAME
+    if _BOT_USERNAME and _BOT_FIRST_NAME:
+        return _BOT_USERNAME, _BOT_FIRST_NAME
+    me = await cyber.get_me()
+    _BOT_USERNAME   = me.username   or ""
+    _BOT_FIRST_NAME = me.first_name or ""
+    return _BOT_USERNAME, _BOT_FIRST_NAME
 _fsub_state = {}   # { user_id: { step, slot, secondary, mode, msg } }
 
 # ── Caption format reference shown to admin ───────────────────
@@ -162,11 +176,11 @@ async def help_menu_handler(cyber, query):
 
 async def cyber_menu_handler(cyber, query):
     user = query.from_user
-    bot  = await cyber.get_me()
+    _, bot_first_name = await _get_bot_identity(cyber)
     text = (
         f"✦ <b>Welcome, {user.first_name}</b>\n"
         f"<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-        f"🎬 <b>{bot.first_name}</b> — Your premium series library,\n"
+        f"🎬 <b>{bot_first_name}</b> — Your premium series library,\n"
         f"right inside Telegram.\n\n"
         f"<blockquote>Simply type a series name to get started.\n"
         f"Browse thousands of titles instantly.</blockquote>"
