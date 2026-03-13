@@ -186,6 +186,7 @@ async def run_bot_async(cyber: Client):
                 "Multi-DB mode active (Config DB + File DB1 + File DB2).\n"
                 "FSub settings loaded.",
                 parse_mode=enums.ParseMode.MARKDOWN,
+                disable_notification=True,
             )
             logger.info(f"[STARTUP] ✅ Restart notification sent to admin {admin_id}.")
         except Exception as e:
