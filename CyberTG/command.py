@@ -546,13 +546,38 @@ def register_command_handlers(cyber: Client):
             )
 
     # ──────────────────────────────────────────────────────────
-    # /missing — scan for missing episodes/seasons
-    # FIX: removed redundant "import asyncio as _asyncio" alias
+    # /missing — full per-series, per-language, per-quality report
     # ──────────────────────────────────────────────────────────
     @cyber.on_message(filters.command("missing") & filters.user(ADMIN_USERS))
     async def missing_cmd(_, message: Message):
+        import aiohttp
         from DB.database import get_all_series as _get_all_series, sql_db_lock
         from DB.sqlite_db import _get_conn
+        from config import TMDB_API_KEY
+
+        # ── Language flags & display order ────────────────────
+        LANG_FLAG = {
+            "Hindi":     "🇮🇳 Hindi",
+            "Tamil":     "🇮🇳 Tamil",
+            "Telugu":    "🇮🇳 Telugu",
+            "Malayalam": "🇮🇳 Malayalam",
+            "Kannada":   "🇮🇳 Kannada",
+            "Bengali":   "🇮🇳 Bengali",
+            "English":   "🇺🇸 English",
+            "Korean":    "🇰🇷 Korean",
+            "Japanese":  "🇯🇵 Japanese",
+            "Chinese":   "🇨🇳 Chinese",
+            "Spanish":   "🇪🇸 Spanish",
+            "French":    "🇫🇷 French",
+            "German":    "🇩🇪 German",
+            "Arabic":    "🇸🇦 Arabic",
+            "Turkish":   "🇹🇷 Turkish",
+            "Italian":   "🇮🇹 Italian",
+            "Portuguese":"🇧🇷 Portuguese",
+            "Russian":   "🇷🇺 Russian",
+            "Thai":      "🇹🇭 Thai",
+        }
+        LANG_ORDER = list(LANG_FLAG.keys())
 
         wait_msg = await message.reply(
             "🔍 <b>Scanning for missing content...</b>",
@@ -561,128 +586,346 @@ def register_command_handlers(cyber: Client):
 
         series_list = await _get_all_series()
         if not series_list:
-            return await wait_msg.edit_text("❌ No series in database.")
+            await wait_msg.delete()
+            return await message.reply("❌ No series in database.")
 
-        def _get_series_data():
+        # ── Single SQL fetch — all data in one pass ───────────
+        def _get_all_db_data():
+            """
+            Returns dict:
+              {
+                normalized_name: {
+                  "overall":  {season: {episode: True}},
+                  "by_lang":  {lang:  {season: {episode: True}}},
+                  "by_qual":  {qual:  {season: {episode: True}}},
+                  "by_lang_qual": {lang: {qual: {season: {episode: True}}}},
+                }
+              }
+            Fetches ALL columns in one query — no N+1 queries.
+            """
             conn   = _get_conn()
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT normalized_name, season, episode
-                FROM files ORDER BY normalized_name, season, episode
+                SELECT normalized_name, season, episode, language, quality
+                FROM files
+                WHERE season > 0 AND episode > 0
+                ORDER BY normalized_name, season, episode
             """)
-            data = {}
+
+            data: dict = {}
             for row in cursor.fetchall():
-                name, s, e = row[0], row[1], row[2]
-                data.setdefault(name, {}).setdefault(s, [])
-                if e not in data[name][s]:
-                    data[name][s].append(e)
+                name    = row[0]
+                season  = row[1]
+                episode = row[2]
+                lang    = row[3] or "Unknown"
+                qual    = row[4] or "Unknown"
+
+                if name not in data:
+                    data[name] = {
+                        "overall":      {},
+                        "by_lang":      {},
+                        "by_qual":      {},
+                        "by_lang_qual": {},
+                    }
+
+                d = data[name]
+
+                # overall
+                d["overall"].setdefault(season, set()).add(episode)
+
+                # by language
+                d["by_lang"].setdefault(lang, {}).setdefault(season, set()).add(episode)
+
+                # by quality
+                d["by_qual"].setdefault(qual, {}).setdefault(season, set()).add(episode)
+
+                # by lang+quality combined
+                d["by_lang_qual"].setdefault(lang, {}).setdefault(qual, {}).setdefault(season, set()).add(episode)
+
             return data
 
         async with sql_db_lock:
-            db_data = await asyncio.to_thread(_get_series_data)
+            db_data = await asyncio.to_thread(_get_all_db_data)
 
+        # ── TMDB fetch with caching ───────────────────────────
         _tmdb_cache: dict = {}
 
         async def _get_tmdb_info(name: str) -> dict:
+            """Returns {season_num: episode_count, ..., "_total_seasons": N, "_name": str}"""
             if name in _tmdb_cache:
                 return _tmdb_cache[name]
             result = {}
             try:
-                import aiohttp
-                from config import TMDB_API_KEY
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
                         "https://api.themoviedb.org/3/search/tv",
                         params={"api_key": TMDB_API_KEY(), "query": name},
-                        timeout=aiohttp.ClientTimeout(total=5),
+                        timeout=aiohttp.ClientTimeout(total=6),
                     ) as r:
-                        data = await r.json()
-                results = data.get("results", [])
-                if results:
-                    show_id  = results[0]["id"]
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(
-                            f"https://api.themoviedb.org/3/tv/{show_id}",
-                            params={"api_key": TMDB_API_KEY()},
-                            timeout=aiohttp.ClientTimeout(total=5),
-                        ) as r:
-                            show_data = await r.json()
-                    for s_info in show_data.get("seasons", []):
-                        snum  = s_info.get("season_number", 0)
-                        count = s_info.get("episode_count", 0)
-                        if snum > 0 and count > 0:
-                            result[snum] = count
+                        search_data = await r.json()
+
+                hits = search_data.get("results", [])
+                if not hits:
+                    _tmdb_cache[name] = result
+                    return result
+
+                show_id   = hits[0]["id"]
+                tmdb_name = hits[0].get("name", name)
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"https://api.themoviedb.org/3/tv/{show_id}",
+                        params={"api_key": TMDB_API_KEY()},
+                        timeout=aiohttp.ClientTimeout(total=6),
+                    ) as r:
+                        show_data = await r.json()
+
+                real_seasons = 0
+                for s_info in show_data.get("seasons", []):
+                    snum  = s_info.get("season_number", 0)
+                    count = s_info.get("episode_count", 0)
+                    if snum > 0 and count > 0:
+                        result[snum] = count
+                        real_seasons += 1
+
+                result["_total_seasons"] = real_seasons
+                result["_name"]          = tmdb_name
+
             except Exception:
                 pass
             _tmdb_cache[name] = result
             return result
 
-        def _ranges(nums):
-            nums = sorted(nums)
+        # ── Helpers ───────────────────────────────────────────
+
+        def _fmt_episodes(ep_set: set) -> str:
+            """Format a set of episode numbers as compact ranges: E01, E03-E05, E08"""
+            nums = sorted(ep_set)
             if not nums:
-                return ""
-            ranges, start, end = [], nums[0], nums[0]
+                return "—"
+            parts, start, end = [], nums[0], nums[0]
             for n in nums[1:]:
                 if n == end + 1:
                     end = n
                 else:
-                    ranges.append(
-                        f"EP{start:02d}" if start == end
-                        else f"EP{start:02d}-EP{end:02d}"
-                    )
+                    parts.append(f"E{start:02d}" if start == end else f"E{start:02d}-E{end:02d}")
                     start = end = n
-            ranges.append(
-                f"EP{start:02d}" if start == end
-                else f"EP{start:02d}-EP{end:02d}"
-            )
-            return ", ".join(ranges)
+            parts.append(f"E{start:02d}" if start == end else f"E{start:02d}-E{end:02d}")
+            return ", ".join(parts)
 
-        missing_report = []
+        def _missing_eps_for_season(have: set, expected_count: int | None) -> set:
+            """Return set of missing episode numbers for a season."""
+            if not have:
+                return set()
+            if expected_count:
+                return set(range(1, expected_count + 1)) - have
+            # fallback: gaps within the range we have
+            return set(range(1, max(have) + 1)) - have
+
+        def _build_series_block(
+            series_name: str,
+            series_data: dict,
+            tmdb_info: dict,
+        ) -> list[str]:
+            """
+            Build the full text block for one series.
+            Returns list of lines.
+            """
+            overall     = series_data["overall"]      # {season: set(episodes)}
+            by_lang     = series_data["by_lang"]      # {lang: {season: set}}
+            by_lang_qual= series_data["by_lang_qual"] # {lang: {qual: {season: set}}}
+
+            all_seasons_in_db = sorted(s for s in overall if s > 0)
+            if not all_seasons_in_db:
+                return []
+
+            tmdb_total = tmdb_info.get("_total_seasons", 0)
+            tmdb_name  = tmdb_info.get("_name", series_name.title())
+
+            # ── Overall missing seasons (vs TMDB) ─────────────
+            if tmdb_total:
+                all_expected_seasons = set(range(1, tmdb_total + 1))
+            else:
+                # fallback: contiguous range from min to max we have
+                all_expected_seasons = set(range(min(all_seasons_in_db), max(all_seasons_in_db) + 1))
+
+            have_seasons    = set(all_seasons_in_db)
+            missing_seasons = sorted(all_expected_seasons - have_seasons)
+
+            # ── Overall missing episodes (across all seasons we have) ──
+            all_missing_eps: dict[int, set] = {}   # {season: missing_ep_set}
+            for s in all_seasons_in_db:
+                exp  = tmdb_info.get(s)   # may be None
+                miss = _missing_eps_for_season(overall[s], exp)
+                if miss:
+                    all_missing_eps[s] = miss
+
+            # Check if anything is actually missing
+            has_missing_seasons = bool(missing_seasons)
+            has_missing_eps     = bool(all_missing_eps)
+            if not has_missing_seasons and not has_missing_eps:
+                # Check per-lang too — maybe overall is fine but some lang is incomplete
+                lang_has_issues = False
+                for lang, lang_seasons in by_lang.items():
+                    lang_have = set(lang_seasons.keys())
+                    if lang_have != have_seasons:
+                        lang_has_issues = True
+                        break
+                    for s, ep_set in lang_seasons.items():
+                        exp  = tmdb_info.get(s)
+                        miss = _missing_eps_for_season(ep_set, exp)
+                        if miss:
+                            lang_has_issues = True
+                            break
+                    if lang_has_issues:
+                        break
+                if not lang_has_issues:
+                    return []   # fully complete — skip
+
+            lines = []
+            B = "╔══════════════════════════════╗"
+            M = "╚══════════════════════════════╝"
+            D = "━━━━━━━━━━━━━━━━━━━━━━"
+
+            lines.append(B)
+            lines.append("  📺 SERIES STATUS REPORT")
+            lines.append(M)
+            lines.append(f"🎬 Series Name       : {tmdb_name}")
+            if tmdb_total:
+                lines.append(f"📦 Total Seasons (TMDB): {tmdb_total}")
+            else:
+                lines.append(f"📦 Seasons in DB     : {len(all_seasons_in_db)}")
+            lines.append(D)
+            lines.append("❌ MISSING CONTENT")
+            lines.append(D)
+
+            # Missing seasons
+            if missing_seasons:
+                lines.append(f"📁 Seasons Missing :")
+                lines.append("➤ " + ", ".join(f"S{s:02d}" for s in missing_seasons))
+            else:
+                lines.append("📁 Seasons Missing : None ✅")
+
+            # Missing episodes overall
+            if all_missing_eps:
+                lines.append("🎞 Episodes Missing :")
+                for s in sorted(all_missing_eps):
+                    miss = all_missing_eps[s]
+                    lines.append(f"  S{s:02d} ➤ {_fmt_episodes(miss)}")
+            else:
+                lines.append("🎞 Episodes Missing : None ✅")
+
+            # ── Language Status ────────────────────────────────
+            lines.append(D)
+            lines.append("🌍 LANGUAGE STATUS")
+            lines.append(D)
+
+            # Sort langs: known first in LANG_ORDER, then others
+            all_langs = sorted(
+                by_lang.keys(),
+                key=lambda l: (LANG_ORDER.index(l) if l in LANG_ORDER else 999, l)
+            )
+
+            for lang in all_langs:
+                lang_seasons  = by_lang[lang]
+                lang_have     = set(lang_seasons.keys())
+                lang_miss_s   = sorted(have_seasons - lang_have)  # seasons others have but this lang doesn't
+                lang_miss_eps : dict[int, set] = {}
+
+                for s in sorted(lang_seasons.keys()):
+                    exp  = tmdb_info.get(s)
+                    miss = _missing_eps_for_season(lang_seasons[s], exp)
+                    if miss:
+                        lang_miss_eps[s] = miss
+
+                flag_label = LANG_FLAG.get(lang, f"🌐 {lang}")
+                lines.append(f"{flag_label}")
+
+                if lang_miss_s:
+                    lines.append(f"  • Missing Seasons : " + ", ".join(f"S{s:02d}" for s in lang_miss_s))
+                else:
+                    lines.append(f"  • Seasons : S" + ", S".join(f"{s:02d}" for s in sorted(lang_have)))
+
+                if lang_miss_eps:
+                    for s in sorted(lang_miss_eps):
+                        lines.append(f"  • S{s:02d} Missing Eps : {_fmt_episodes(lang_miss_eps[s])}")
+                else:
+                    lines.append(f"  • Episodes : Complete ✅")
+
+                # ── Per quality breakdown under this lang ──────
+                if lang in by_lang_qual:
+                    for qual in sorted(by_lang_qual[lang].keys()):
+                        qual_seasons = by_lang_qual[lang][qual]
+                        q_have       = set(qual_seasons.keys())
+                        q_miss_s     = sorted(lang_have - q_have)
+                        q_miss_eps   : dict[int, set] = {}
+                        for s in sorted(qual_seasons.keys()):
+                            exp  = tmdb_info.get(s)
+                            miss = _missing_eps_for_season(qual_seasons[s], exp)
+                            if miss:
+                                q_miss_eps[s] = miss
+
+                        # Only show quality row if it has issues
+                        if q_miss_s or q_miss_eps:
+                            lines.append(f"  📼 [{qual}]")
+                            if q_miss_s:
+                                lines.append("    ↳ Missing Seasons : " + ", ".join(f"S{s:02d}" for s in q_miss_s))
+                            if q_miss_eps:
+                                for s in sorted(q_miss_eps):
+                                    lines.append(f"    ↳ S{s:02d} Missing Eps : {_fmt_episodes(q_miss_eps[s])}")
+
+            lines.append(D)
+            lines.append("✅ Report End")
+            lines.append(D)
+            lines.append("")
+            return lines
+
+        # ── Main loop — build report ──────────────────────────
+        all_blocks : list[str] = []
+        series_with_issues     = 0
+        processed              = 0
 
         for series_name, _ in series_list:
-            seasons_data = db_data.get(series_name.lower(), {})
-            if not seasons_data:
-                continue
-            real_seasons = sorted(s for s in seasons_data if s > 0)
-            if not real_seasons:
-                continue
-
-            tmdb_info    = await _get_tmdb_info(series_name)
-            series_issues = []
-
-            min_s, max_s = real_seasons[0], real_seasons[-1]
-            missing_seasons = [s for s in range(min_s, max_s + 1) if s not in real_seasons]
-            if missing_seasons:
-                series_issues.append(
-                    f"  ❌ Missing seasons: {', '.join(f'S{s:02d}' for s in missing_seasons)}"
-                )
-
-            for season in real_seasons:
-                episodes = sorted(set(seasons_data[season]))
-                if not episodes:
-                    continue
-                if tmdb_info and season in tmdb_info:
-                    expected_eps = list(range(1, tmdb_info[season] + 1))
-                    src = "TMDB"
-                else:
-                    expected_eps = list(range(1, max(episodes) + 1))
-                    src = "DB range"
-
-                missing_eps = [e for e in expected_eps if e not in episodes]
-                if missing_eps:
-                    series_issues.append(
-                        f"  ⚠️ S{season:02d} missing [{src}]: {_ranges(missing_eps)}"
+            processed += 1
+            # Progress update every 25 series
+            if processed % 25 == 0:
+                try:
+                    await wait_msg.edit_text(
+                        f"🔍 <b>Scanning...</b> <code>{processed}/{len(series_list)}</code>",
+                        parse_mode=enums.ParseMode.HTML,
                     )
+                except Exception:
+                    pass
 
-            if series_issues:
-                missing_report.append(f"📺 {series_name.title()}")
-                missing_report.extend(series_issues)
-                missing_report.append("")
+            series_data = db_data.get(series_name, {})
+            if not series_data or not series_data.get("overall"):
+                # try case-insensitive match
+                key = next((k for k in db_data if k.lower() == series_name.lower()), None)
+                if key:
+                    series_data = db_data[key]
+                else:
+                    continue
+
+            tmdb_info = await _get_tmdb_info(series_name)
+
+            block = _build_series_block(series_name, series_data, tmdb_info)
+            if block:
+                all_blocks.extend(block)
+                series_with_issues += 1
 
         await wait_msg.delete()
 
-        if not missing_report:
-            plain         = "✅ No Missing Content Found!\nAll series have complete seasons and episodes."
+        # ── Output ────────────────────────────────────────────
+        total_checked = len(series_list)
+
+        if not all_blocks:
+            plain = (
+                "✅ NO MISSING CONTENT\n"
+                + "=" * 50 + "\n"
+                + f"  Checked : {total_checked} series\n"
+                + "  Result  : All series complete!\n"
+                + "=" * 50
+            )
             file_buf      = io.BytesIO(plain.encode("utf-8"))
             file_buf.name = "missing_report.txt"
             return await message.reply_document(
@@ -691,22 +934,24 @@ def register_command_handlers(cyber: Client):
                 parse_mode=enums.ParseMode.HTML,
             )
 
-        total_issues = len([l for l in missing_report if l.startswith("📺")])
-        header_lines = [
-            "=" * 50, "       MISSING CONTENT REPORT", "=" * 50,
-            f"  Checked  : {len(series_list)} series",
-            f"  Issues   : {total_issues} series have gaps",
-            "=" * 50, "",
+        header = [
+            "=" * 50,
+            "      MISSING CONTENT REPORT",
+            "=" * 50,
+            f"  Checked : {total_checked} series",
+            f"  Issues  : {series_with_issues} series have gaps",
+            "=" * 50,
+            "",
         ]
-        full_text     = "\n".join(header_lines) + "\n".join(missing_report)
+        full_text     = "\n".join(header) + "\n".join(all_blocks)
         file_buf      = io.BytesIO(full_text.encode("utf-8"))
         file_buf.name = "missing_report.txt"
         await message.reply_document(
             document=file_buf,
             caption=(
                 f"📋 <b>Missing Content Report</b>\n"
-                f"🔍 Checked : <code>{len(series_list)}</code> series\n"
-                f"⚠️ Issues  : <code>{total_issues}</code> series have gaps"
+                f"🔍 Checked : <code>{total_checked}</code> series\n"
+                f"⚠️ Issues  : <code>{series_with_issues}</code> series have gaps"
             ),
             parse_mode=enums.ParseMode.HTML,
         )
