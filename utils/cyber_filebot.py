@@ -438,7 +438,6 @@ async def _ensure_start_handler(main_cyber):
                 get_slot_statuses, all_slots_passed,
                 build_fsub_keyboard, fsub_text,
                 register_pending_fsub, clear_pending_fsub,
-                do_deliver_via_filebot,
                 _PENDING_FSUB,
             )
             statuses = await get_slot_statuses(main_cyber, uid)
@@ -464,7 +463,8 @@ async def _ensure_start_handler(main_cyber):
                         uid, txt, reply_markup=kb,
                         parse_mode=pyro_enums.ParseMode.HTML,
                     )
-                    register_pending_fsub(uid, gate_msg, payload)
+                    # via_filebot=True so auto-delivery after join uses file bot path
+                    register_pending_fsub(uid, gate_msg, payload, via_filebot=True)
                 return
 
             # Clear any pending fsub gate
@@ -527,7 +527,7 @@ async def _ensure_start_handler(main_cyber):
     logger.info("[FILEBOT] ✅ /start handler registered on file bot client.")
 
 
-async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int):
+async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_complete=None):
     """
     Full delivery via the file bot client directly.
     Sends sticker + files + end sticker all through file_client (second bot).
@@ -644,3 +644,9 @@ async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int):
     await _send_end_sticker(file_client, user_id, season, total, auto_delay)
 
     logger.info(f"[FILEBOT] ✅ Direct delivery done uid={user_id} sent={sent_count}/{total}")
+
+    if on_complete:
+        try:
+            await on_complete()
+        except Exception as e:
+            logger.error(f"[FILEBOT] on_complete error uid={user_id}: {e}")
