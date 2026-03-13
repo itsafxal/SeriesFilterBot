@@ -81,12 +81,14 @@ def set_session(user_id: int, data: dict):
         "expires_at": datetime.utcnow() + timedelta(seconds=SESSION_TTL),
     }
     try:
-        asyncio.get_running_loop().create_task(
-            asyncio.to_thread(
-                lambda: _sessions_col.replace_one({"_id": uid}, doc, upsert=True)
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(
+                asyncio.to_thread(
+                    lambda: _sessions_col.replace_one({"_id": uid}, doc, upsert=True)
+                )
             )
-        )
-    except RuntimeError:
+    except Exception:
         pass
 
 
@@ -130,10 +132,12 @@ def clear_session(user_id: int):
     uid = int(user_id)
     _SESSION_MEM.pop(uid, None)
     try:
-        asyncio.get_running_loop().create_task(
-            asyncio.to_thread(lambda: _sessions_col.delete_one({"_id": uid}))
-        )
-    except RuntimeError:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(
+                asyncio.to_thread(lambda: _sessions_col.delete_one({"_id": uid}))
+            )
+    except Exception:
         pass
 
 
@@ -434,9 +438,25 @@ async def _safe_send_single(cyber, user_id: int, f: dict,
 # ─────────────────────────────────────────────────────────────
 
 def _make_input_media(f: dict, caption: str) -> object | None:
-    file_id = f.get("file_id")
+    file_id    = f.get("file_id")
+    media_type = (f.get("media_type") or "document").lower()
     if not file_id:
         return None
+    # BUG FIX: use InputMediaVideo for video file_ids so Telegram accepts them
+    # in send_media_group. Wrapping a video file_id in InputMediaDocument causes
+    # MEDIA_EMPTY on the group send.
+    if media_type == "video":
+        return InputMediaVideo(
+            media=file_id,
+            caption=caption,
+            parse_mode=enums.ParseMode.HTML,
+        )
+    if media_type == "audio":
+        return InputMediaAudio(
+            media=file_id,
+            caption=caption,
+            parse_mode=enums.ParseMode.HTML,
+        )
     return InputMediaDocument(
         media=file_id,
         caption=caption,
