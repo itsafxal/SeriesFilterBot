@@ -55,7 +55,9 @@ from utils.cyber_delete import delete_message_later
 
 # ─────────────────────────────────────────────────────────────
 # SETTINGS TTL CACHE
-# FIX: key changed from "AUTO_DELETE_DELAY" → "FILE_AUTODEL_DELAY"
+# Two separate delay keys:
+#   AUTO_DELETE_DELAY  → search result messages (poster, suggestions, "no results")
+#   FILE_AUTODEL_DELAY → sent files + stickers (files.py / cyber_filebot.py)
 # ─────────────────────────────────────────────────────────────
 
 SETTINGS_TTL = 30  # seconds
@@ -73,7 +75,7 @@ async def _get_settings() -> dict:
     poster_on, landscape, auto_del, filter_on, maintenance = await asyncio.gather(
         get_poster_enabled(),
         get_poster_landscape(),
-        get_global_setting("FILE_AUTODEL_DELAY", 0),   # FIX: was "AUTO_DELETE_DELAY"
+        get_global_setting("AUTO_DELETE_DELAY", 0),   # search result messages only
         get_filter_enabled(),
         get_global_setting("MAINTENANCE_MODE", False),
     )
