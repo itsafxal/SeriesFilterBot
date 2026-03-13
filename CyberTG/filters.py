@@ -374,6 +374,25 @@ def _quality_label(quality: str, codec: str) -> str:
 # REGISTER FILTERS
 # ─────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────
+# BOT SELF CACHE — avoids get_me() on every message
+# ─────────────────────────────────────────────────────────────
+
+_bot_id_cache: int | None = None
+
+
+async def _get_bot_id(cyber) -> int | None:
+    global _bot_id_cache
+    if _bot_id_cache is not None:
+        return _bot_id_cache
+    try:
+        me = await cyber.get_me()
+        _bot_id_cache = me.id
+        return _bot_id_cache
+    except Exception:
+        return None
+
+
 def register_filters(cyber: Client):
 
     # ── SEARCH HANDLER ────────────────────────────────────────
@@ -382,6 +401,21 @@ def register_filters(cyber: Client):
     async def search_handler(_, m):
         if not m.text or m.text.startswith("/"):
             return
+
+        # ── Ignore replies to bot messages ────────────────────
+        # When an admin replies to the bot's own message (e.g. restart
+        # notification, resume prompt, delivery notice), the reply text
+        # would otherwise be treated as a search query and spam
+        # "No Results Found" multiple times. Skip silently.
+        # _get_bot_id() is cached after the first call — no API hit.
+        if m.reply_to_message:
+            try:
+                bot_id = await _get_bot_id(_)
+                rtu    = m.reply_to_message.from_user
+                if bot_id and rtu and rtu.id == bot_id:
+                    return
+            except Exception:
+                pass
 
         uid = m.from_user.id
 
