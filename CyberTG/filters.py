@@ -422,7 +422,7 @@ def register_filters(cyber: Client):
             )
             return
 
-        if uid not in _ADMINS and not settings["filter_enabled"]:
+        if uid not in ADMIN_USERS and not settings["filter_enabled"]:
             return
 
         if _is_on_cooldown(uid):
