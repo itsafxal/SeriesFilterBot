@@ -81,14 +81,12 @@ def set_session(user_id: int, data: dict):
         "expires_at": datetime.utcnow() + timedelta(seconds=SESSION_TTL),
     }
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(
-                asyncio.to_thread(
-                    lambda: _sessions_col.replace_one({"_id": uid}, doc, upsert=True)
-                )
+        asyncio.get_running_loop().create_task(
+            asyncio.to_thread(
+                lambda: _sessions_col.replace_one({"_id": uid}, doc, upsert=True)
             )
-    except Exception:
+        )
+    except RuntimeError:
         pass
 
 
@@ -132,12 +130,10 @@ def clear_session(user_id: int):
     uid = int(user_id)
     _SESSION_MEM.pop(uid, None)
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(
-                asyncio.to_thread(lambda: _sessions_col.delete_one({"_id": uid}))
-            )
-    except Exception:
+        asyncio.get_running_loop().create_task(
+            asyncio.to_thread(lambda: _sessions_col.delete_one({"_id": uid}))
+        )
+    except RuntimeError:
         pass
 
 
