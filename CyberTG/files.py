@@ -504,6 +504,67 @@ def _make_input_media(f: dict, caption: str) -> object | None:
 # MAIN DELIVERY — MEDIA GROUP BATCHING
 # ─────────────────────────────────────────────────────────────
 
+async def _send_autodel_notice(cyber, user_id: int, auto_delay: int):
+    """
+    Sends a notice message after file delivery when auto-delete is enabled.
+    Shows how long until files are deleted, a tip to save them,
+    and a Share button to share the main bot.
+
+    The notice itself is also scheduled for auto-delete (same delay).
+    """
+    from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+    # Format delay as human-readable
+    if auto_delay >= 3600:
+        hrs  = auto_delay // 3600
+        mins = (auto_delay % 3600) // 60
+        if mins:
+            time_str = f"{hrs}h {mins}m"
+        else:
+            time_str = f"{hrs} hour{'s' if hrs > 1 else ''}"
+    elif auto_delay >= 60:
+        mins = auto_delay // 60
+        secs = auto_delay % 60
+        if secs:
+            time_str = f"{mins}m {secs}s"
+        else:
+            time_str = f"{mins} minute{'s' if mins > 1 else ''}"
+    else:
+        time_str = f"{auto_delay} second{'s' if auto_delay > 1 else ''}"
+
+    text = (
+        f"⏳ <b>Files will be automatically deleted in {time_str}.</b>\n"
+        f"<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+        f"💾 <b>Save the files</b> to your Saved Messages or a personal chat\n"
+        f"before they are removed.\n\n"
+        f"<i>Tap a file → ⋮ → Forward to Saved Messages</i>"
+    )
+
+    # Build share button pointing to the main bot
+    try:
+        me       = await cyber.get_me()
+        bot_link = f"https://t.me/{me.username}"
+        share_url = f"https://t.me/share/url?url={bot_link}&text=Get%20your%20favourite%20series%20here%21"
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🤝 Share Bot", url=share_url)
+        ]])
+    except Exception:
+        kb = None
+
+    try:
+        msg = await cyber.send_message(
+            user_id,
+            text,
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=kb,
+        )
+        # Schedule the notice itself for deletion at the same time as the files
+        if msg:
+            delete_message_later(cyber, user_id, msg.id, auto_delay)
+    except Exception as e:
+        logger.debug(f"[DELIVER] autodel notice failed uid={user_id}: {e}")
+
+
 async def deliver_files_direct(cyber, user_id: int, on_complete=None):
     """
     Deliver all files as media group albums (up to 10 per group).
@@ -654,6 +715,10 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
 
     # End sticker
     await _send_end_sticker(cyber, user_id, season, total, auto_delay)
+
+    # ── Auto-delete notice + Share button ────────────────────
+    if auto_delay > 0:
+        await _send_autodel_notice(cyber, user_id, auto_delay)
 
     logger.info(f"[DELIVER] ✅ done uid={user_id} sent={sent_count}/{total}")
 
