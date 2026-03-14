@@ -222,27 +222,43 @@ async def _fw_sleep(fw: FloodWait):
 
 async def _forward_to_channel(main_cyber: Client, channel_id: int,
                                file_id: str, media_type: str,
-                               caption: str) -> int | None:
+                               caption: str, source_channel_id: int | None = None,
+                               source_message_id: int | None = None) -> int | None:
     """
-    Main bot sends a file to the deliver channel.
-    Returns the message_id in the channel, or None on failure.
+    Main bot sends a file to the relay channel.
+    If the stored file_id is stale, refreshes it from the source channel before retrying.
+    Returns the channel message_id, or None on failure.
     """
+    from CyberTG.files import _refresh_file_id
+
+    current_file_id = file_id
+
     for attempt in range(3):
         try:
             if media_type == "audio":
                 sent = await main_cyber.send_audio(
-                    channel_id, file_id,
+                    channel_id, current_file_id,
                     caption=caption, parse_mode=enums.ParseMode.HTML,
                 )
             else:
                 sent = await main_cyber.send_document(
-                    channel_id, file_id,
+                    channel_id, current_file_id,
                     caption=caption, parse_mode=enums.ParseMode.HTML,
                 )
             return sent.id
         except FloodWait as fw:
             await _fw_sleep(fw)
         except Exception as e:
+            err = str(e)
+            # Stale file_id — try to refresh once from source channel
+            if any(k in err for k in ("MEDIA_EMPTY", "FILE_ID_INVALID", "FILE_REFERENCE_EXPIRED")):
+                if source_channel_id and source_message_id and attempt == 0:
+                    logger.warning(f"[FILEBOT] stale file_id posting to relay — refreshing from source")
+                    fresh = await _refresh_file_id(main_cyber, source_channel_id, source_message_id)
+                    if fresh:
+                        current_file_id = fresh
+                        continue   # retry with fresh file_id
+                return None   # cannot refresh — caller will use source fallback
             logger.error(f"[FILEBOT] forward to channel attempt {attempt+1}: {e}")
             if attempt < 2:
                 await asyncio.sleep(2)
@@ -662,22 +678,36 @@ async def _safe_send_group_filebot(
 
 async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_complete=None, auto_delay: int | None = None):
     """
-    Full delivery via the file bot client directly.
-    Sends sticker + files + end sticker all through file_client (second bot).
-    Files are fetched from DB and sent directly using file_client — NO relay channel needed.
+    Relay delivery: main bot posts each file to the deliver channel,
+    file bot copies it from the channel to the user DM, then the channel
+    message is deleted.
+
+    WHY RELAY:
+    Telegram file_ids are bot-specific. DB stores file_ids captured by the
+    main bot — the file bot cannot send them directly (MEDIA_EMPTY/FILE_ID_INVALID).
+    By posting to a shared channel first, the file bot uses copy_message which
+    works regardless of whose file_id is in DB.
+
+    FALLBACK:
+    If relay post fails (stale file_id on main bot side), main bot copies
+    directly from source channel to user as a last resort.
     """
     from DB.database import get_all_files_by_season_and_quality, get_global_setting
     from CyberTG.files import (
         get_session_async, clear_session, clean_series_name,
         _normalize_for_query, _build_caption, DEFAULT_CAPTION,
-        _safe_send_single, _safe_send_group, _make_input_media,
         _send_start_sticker, _send_end_sticker,
-        MEDIA_GROUP_SIZE,
+        _forward_fallback,
     )
+
+    channel_id = _filebot_channel
+    if not channel_id:
+        logger.warning(f"[FILEBOT] No relay channel configured — cannot deliver uid={user_id}")
+        return
 
     session = await get_session_async(user_id)
     if not session:
-        logger.warning(f"[FILEBOT] _deliver_via_filebot_client: no session uid={user_id}")
+        logger.warning(f"[FILEBOT] no session uid={user_id}")
         return
 
     raw_series = session["series"]
@@ -697,7 +727,6 @@ async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_
     total = len(files)
     clear_session(user_id)
 
-    # Use caller-supplied auto_delay if provided (avoids redundant DB fetch)
     if auto_delay is None:
         auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
         try:
@@ -708,7 +737,7 @@ async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_
     custom_caption   = await get_global_setting("CUSTOM_FILE_CAPTION", None)
     caption_template = custom_caption if custom_caption else DEFAULT_CAPTION
 
-    # Progress message (via file bot)
+    # Progress message via file bot
     progress_msg = None
     if PROGRESS_MESSAGE_ENABLED:
         try:
@@ -720,72 +749,71 @@ async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_
         except Exception:
             pass
 
-    # Start sticker (via file bot)
+    # Start sticker via file bot
     await _send_start_sticker(file_client, user_id, season, auto_delay)
 
-    # Build all items
-    # BUG FIX: keep video/audio as their own type — they cannot go in a
-    # document media_group and must be sent solo via send_video / send_audio.
-    all_items = []
+    sent_count = 0
+
     for f in files:
-        cap = _build_caption(
+        cap        = _build_caption(
             caption_template, series, season,
             f.get("episode", 0), language, quality,
             f.get("file_name", ""),
         )
-        raw_type = (f.get("media_type") or "document").lower()
-        all_items.append((f, cap, f.get("file_id"), raw_type))
+        file_id    = f.get("file_id")
+        media_type = (f.get("media_type") or "document").lower()
+        file_name  = f.get("file_name", "unknown")
 
-    # Only pure document file_ids can be batched into a media_group
-    groupable = [(f, cap, fid) for f, cap, fid, t in all_items if t == "document" and fid]
-    # Everything else (video, audio, no file_id) sent one-by-one
-    solo      = [(f, cap)      for f, cap, fid, t in all_items if t != "document" or not fid]
-
-    sent_count = 0
-
-    # Send groupable docs in batches of up to 10 via FILE BOT
-    for batch_start in range(0, len(groupable), MEDIA_GROUP_SIZE):
-        batch = groupable[batch_start : batch_start + MEDIA_GROUP_SIZE]
-        if len(batch) == 1:
-            f, cap, fid = batch[0]
-            # BUG FIX: file_client sends to user; main_cyber used for source-channel fallback
-            ok = await _safe_send_single_filebot(file_client, main_cyber, user_id, f, cap, auto_delay)
+        if not file_id:
+            # No file_id in DB — main bot copies from source channel directly to user
+            logger.debug(f"[FILEBOT] no file_id for {file_name} — using source fallback")
+            ok = await _forward_fallback(main_cyber, user_id, f, cap, auto_delay)
             if ok:
                 sent_count += 1
-        else:
-            media_list   = [_make_input_media(f, cap) for f, cap, fid in batch]
-            source_files = [f for f, cap, fid in batch]
-            caption_map  = {id(f): cap for f, cap, fid in batch}
-            # BUG FIX: pass main_cyber so per-file fallback can access source channels
-            sent = await _safe_send_group_filebot(
-                file_client, main_cyber, user_id, media_list, auto_delay,
-                source_files=source_files,
-                caption_map=caption_map,
-            )
-            sent_count += len(sent)
+            continue
 
-    # Solo files (video, audio, missing file_id)
-    for f, cap in solo:
-        ok = await _safe_send_single_filebot(file_client, main_cyber, user_id, f, cap, auto_delay)
+        # ── Step 1: Main bot sends file → relay channel ───────────────
+        channel_msg_id = await _forward_to_channel(
+            main_cyber, channel_id, file_id, media_type, cap,
+            source_channel_id=f.get("channel_id"),
+            source_message_id=f.get("message_id"),
+        )
+
+        if not channel_msg_id:
+            # Main bot's stored file_id is stale — fall back to source channel copy
+            logger.warning(f"[FILEBOT] relay post failed for {file_name} — using source fallback")
+            ok = await _forward_fallback(main_cyber, user_id, f, cap, auto_delay)
+            if ok:
+                sent_count += 1
+            continue
+
+        # ── Step 2: File bot copies channel msg → user DM ─────────────
+        ok = await _copy_from_channel(file_client, user_id, channel_id, channel_msg_id, auto_delay)
         if ok:
             sent_count += 1
+        else:
+            logger.warning(f"[FILEBOT] file bot copy failed for {file_name} uid={user_id}")
 
-    # Cleanup
+        # ── Step 3: Delete relay message from channel ─────────────────
+        asyncio.create_task(_delete_channel_msg(main_cyber, channel_id, channel_msg_id))
+
+        await asyncio.sleep(0.05)  # small yield
+
+    # Cleanup progress message
     if progress_msg:
         try:
             await file_client.delete_messages(user_id, progress_msg.id)
         except Exception:
             pass
 
-    # End sticker (via file bot)
+    # End sticker via file bot
     await _send_end_sticker(file_client, user_id, season, total, auto_delay)
 
-    # ── Auto-delete notice + Share button (sent via file bot) ─
     if auto_delay > 0:
         from CyberTG.files import _send_autodel_notice
         await _send_autodel_notice(file_client, user_id, auto_delay)
 
-    logger.info(f"[FILEBOT] ✅ Direct delivery done uid={user_id} sent={sent_count}/{total}")
+    logger.info(f"[FILEBOT] ✅ Relay delivery done uid={user_id} sent={sent_count}/{total}")
 
     if on_complete:
         try:
