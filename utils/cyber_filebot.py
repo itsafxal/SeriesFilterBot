@@ -777,36 +777,59 @@ async def _copy_batch_from_channel(
     auto_delay: int,
 ) -> int:
     """
-    File bot copies multiple channel messages to user DM concurrently.
-    Returns count of successful copies.
+    File bot forwards the relay channel batch to user DM as a media group album.
+    Uses forward_messages with a list of IDs — Telegram preserves album grouping.
+    Falls back to per-message copy_message if forward fails.
+    Returns count of successfully delivered files.
     """
     from utils.cyber_delete import delete_message_later
 
-    sem = asyncio.Semaphore(5)   # max 5 concurrent copies
+    if not message_ids:
+        return 0
 
-    async def _copy_one(mid):
-        async with sem:
-            for attempt in range(3):
-                try:
-                    sent = await file_client.copy_message(
-                        chat_id=user_id,
-                        from_chat_id=channel_id,
-                        message_id=mid,
-                    )
-                    if sent and auto_delay > 0:
-                        delete_message_later(file_client, user_id, sent.id, auto_delay)
-                    return True
-                except FloodWait as fw:
-                    await _fw_sleep(fw)
-                except Exception as e:
-                    logger.error(f"[FILEBOT] copy msg {mid} attempt {attempt+1}: {e}")
-                    if attempt < 2:
-                        await asyncio.sleep(2)
-            return False
+    # ── Try forward_messages (preserves album grouping) ────────
+    for attempt in range(3):
+        try:
+            sent_msgs = await file_client.forward_messages(
+                chat_id=user_id,
+                from_chat_id=channel_id,
+                message_ids=message_ids,
+            )
+            if sent_msgs:
+                msgs = sent_msgs if isinstance(sent_msgs, list) else [sent_msgs]
+                if auto_delay > 0:
+                    for sm in msgs:
+                        delete_message_later(file_client, user_id, sm.id, auto_delay)
+                return len(msgs)
+        except FloodWait as fw:
+            await _fw_sleep(fw)
+        except Exception as e:
+            logger.warning(f"[FILEBOT] forward_messages attempt {attempt+1} failed: {e}")
+            if attempt < 2:
+                await asyncio.sleep(1)
 
-    results = await asyncio.gather(*[_copy_one(mid) for mid in message_ids],
-                                    return_exceptions=True)
-    return sum(1 for r in results if r is True)
+    # ── Fallback: copy each message individually ────────────────
+    logger.warning(f"[FILEBOT] forward_messages failed — falling back to copy_message per file")
+    count = 0
+    for mid in message_ids:
+        for attempt in range(3):
+            try:
+                sent = await file_client.copy_message(
+                    chat_id=user_id,
+                    from_chat_id=channel_id,
+                    message_id=mid,
+                )
+                if sent and auto_delay > 0:
+                    delete_message_later(file_client, user_id, sent.id, auto_delay)
+                count += 1
+                break
+            except FloodWait as fw:
+                await _fw_sleep(fw)
+            except Exception as e:
+                logger.error(f"[FILEBOT] copy_message msg={mid} attempt {attempt+1}: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(1)
+    return count
 
 
 async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_complete=None, auto_delay: int | None = None):
