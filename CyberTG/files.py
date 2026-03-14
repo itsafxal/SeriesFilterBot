@@ -427,6 +427,13 @@ async def _safe_send_group(cyber, user_id: int, media_group: list,
                             auto_delay: int,
                             source_files: list | None = None,
                             caption_map: dict | None = None) -> list:
+    """
+    Send a media group with FloodWait retry.
+    On stale file_id: refresh all files concurrently, rebuild, retry once.
+    Falls back to per-file if group send still fails.
+    """
+    refreshed = False
+
     while True:
         try:
             sent_msgs = await cyber.send_media_group(user_id, media_group)
@@ -434,23 +441,48 @@ async def _safe_send_group(cyber, user_id: int, media_group: list,
                 for sm in sent_msgs:
                     delete_message_later(cyber, user_id, sm.id, auto_delay)
             return sent_msgs or []
+
         except FloodWait as fw:
             wait = max(int(getattr(fw, "value", 10)), 5)
             logger.warning(f"[SEND] FloodWait {wait}s uid={user_id} — waiting")
             await asyncio.sleep(wait + 1)
+
         except Exception as e:
-            logger.error(f"[SEND] send_media_group failed uid={user_id}: {e} — falling back to per-file")
+            err = str(e)
+            stale = any(k in err for k in ("MEDIA_EMPTY", "FILE_ID_INVALID", "FILE_REFERENCE_EXPIRED"))
+            if stale and not refreshed and source_files:
+                logger.warning(f"[SEND] stale file_ids in group uid={user_id} — refreshing {len(source_files)} files")
+                fresh_ids = await asyncio.gather(
+                    *[_refresh_file_id(cyber, f.get("channel_id"), f.get("message_id"))
+                      for f in source_files],
+                    return_exceptions=True,
+                )
+                new_group = []
+                new_files = []
+                new_caps  = {}
+                for f, fresh in zip(source_files, fresh_ids):
+                    cap = (caption_map or {}).get(id(f), "") or f"<b>Episode {str(f.get('episode',0)).zfill(2)}</b>"
+                    fid = fresh if isinstance(fresh, str) and fresh else f.get("file_id")
+                    if fid:
+                        f_new = {**f, "file_id": fid}
+                        item  = _make_input_media(f_new, cap)
+                        if item:
+                            new_group.append(item)
+                            new_files.append(f_new)
+                            new_caps[id(f_new)] = cap
+                if new_group:
+                    media_group  = new_group
+                    source_files = new_files
+                    caption_map  = new_caps
+                    refreshed    = True
+                    continue
+            logger.error(f"[SEND] send_media_group failed uid={user_id}: {e} — per-file fallback")
             if source_files:
                 sent_fallback = []
                 for f in source_files:
-                    cap = ""
-                    if caption_map:
-                        cap = caption_map.get(id(f), "")
-                    if not cap:
-                        cap = (f.get("caption") or "").strip()
-                    if not cap:
-                        ep  = str(f.get("episode", 0)).zfill(2)
-                        cap = f"<b>Episode {ep}</b>"
+                    cap = (caption_map or {}).get(id(f), "") or \
+                          (f.get("caption") or "").strip() or \
+                          f"<b>Episode {str(f.get('episode',0)).zfill(2)}</b>"
                     ok = await _safe_send_single(cyber, user_id, f, cap, auto_delay)
                     if ok:
                         sent_fallback.append(True)
@@ -471,6 +503,11 @@ async def _safe_send_single(cyber, user_id: int, f: dict,
         try:
             if media_type == "audio":
                 sent = await cyber.send_audio(
+                    user_id, file_id,
+                    caption=caption, parse_mode=enums.ParseMode.HTML,
+                )
+            elif media_type == "video":
+                sent = await cyber.send_video(
                     user_id, file_id,
                     caption=caption, parse_mode=enums.ParseMode.HTML,
                 )
@@ -648,19 +685,22 @@ async def deliver_files_direct(cyber, user_id: int, on_complete=None):
 
     sent_count = 0
 
+    # Build send list: files with file_ids go into media group batches;
+    # files without file_ids are sent solo via _forward_fallback.
+    # Video and audio are kept as their own type so _make_input_media wraps
+    # them correctly (InputMediaVideo / InputMediaAudio) — mixing types in one
+    # album is fine; Telegram groups them. Only missing file_ids go solo.
     all_items = []
-    for i, f in enumerate(files):
+    for f in files:
         cap = _build_caption(
             caption_template, series, season,
             f.get("episode", 0), language, quality,
             f.get("file_name", ""),
         )
-        raw_type  = (f.get("media_type") or "document").lower()
-        norm_type = "document" if raw_type in ("video", "document") else raw_type
-        all_items.append((f, cap, f.get("file_id"), norm_type))
+        all_items.append((f, cap, f.get("file_id")))
 
-    groupable = [(f, cap, fid) for f, cap, fid, t in all_items if t == "document" and fid]
-    solo      = [(f, cap)      for f, cap, fid, t in all_items if t != "document" or not fid]
+    groupable = [(f, cap, fid) for f, cap, fid in all_items if fid]
+    solo      = [(f, cap)      for f, cap, fid in all_items if not fid]
 
     for batch_start in range(0, len(groupable), MEDIA_GROUP_SIZE):
         batch = groupable[batch_start : batch_start + MEDIA_GROUP_SIZE]
