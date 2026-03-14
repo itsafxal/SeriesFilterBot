@@ -319,10 +319,11 @@ async def deliver_via_filebot(
         caption    = caption_builder(f)
 
         if not file_id:
-            # No file_id — use fallback forward directly to user via main bot
+            # No file_id — fetch from source channel via main bot, send to user via file bot
             try:
                 from CyberTG.files import _forward_fallback
-                ok = await _forward_fallback(main_cyber, user_id, f, caption, auto_delay)
+                ok = await _forward_fallback(main_cyber, user_id, f, caption, auto_delay,
+                                             send_client=file_client)
                 if ok:
                     sent_count += 1
             except Exception as e:
@@ -566,8 +567,9 @@ async def _safe_send_single_filebot(
     file_name  = f.get("file_name", "unknown")
 
     if not file_id:
-        # No file_id — use main bot to fetch from source channel, send via main bot
-        return await _forward_fallback(fallback_client, user_id, f, caption, auto_delay)
+        # No file_id — fetch from source channel via main bot, send via file bot
+        return await _forward_fallback(fallback_client, user_id, f, caption, auto_delay,
+                                       send_client=send_client)
 
     while True:
         try:
@@ -597,14 +599,15 @@ async def _safe_send_single_filebot(
             err = str(e)
             if any(k in err for k in ("MEDIA_EMPTY", "FILE_ID_INVALID", "FILE_REFERENCE_EXPIRED")):
                 logger.warning(f"[FILEBOT] stale file_id for {file_name} — refreshing via main bot")
-                # BUG FIX: refresh via main bot (fallback_client), then re-send via file bot
+                # Refresh file_id via main bot (has channel access), then re-send via file bot
                 from CyberTG.files import _refresh_file_id
                 fresh_id = await _refresh_file_id(fallback_client, f.get("channel_id"), f.get("message_id"))
                 if fresh_id:
                     f_fresh = {**f, "file_id": fresh_id}
                     return await _safe_send_single_filebot(send_client, fallback_client, user_id, f_fresh, caption, auto_delay)
-                # Cannot refresh — fall back to main-bot delivery
-                return await _forward_fallback(fallback_client, user_id, f, caption, auto_delay)
+                # Cannot refresh — fall back via main bot fetch, file bot send
+                return await _forward_fallback(fallback_client, user_id, f, caption, auto_delay,
+                                               send_client=send_client)
             logger.error(f"[FILEBOT] BadRequest uid={user_id} file={file_name}: {e}")
             return False
         except Exception as e:
