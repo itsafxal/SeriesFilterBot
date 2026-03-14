@@ -218,22 +218,65 @@ def _build_caption(template: str, series: str, season: int,
 # FORWARD FALLBACK  (stale file_id → copy from source channel)
 # ─────────────────────────────────────────────────────────────
 
+# ── Refresh deduplication ─────────────────────────────────────────────────────
+# Prevents N concurrent sends of the same stale file_id from each firing their
+# own get_messages() call.  The first caller acquires the Future; all subsequent
+# callers for the same (channel_id, message_id) await the same Future.
+# Short TTL result cache avoids repeat refreshes within the same delivery burst.
+
+_REFRESH_INFLIGHT: dict[tuple, asyncio.Future] = {}
+_REFRESH_CACHE:    dict[tuple, tuple]           = {}   # key → (file_id|None, ts)
+_REFRESH_CACHE_TTL = 30   # seconds — fresh enough for one delivery burst
+
+
 async def _refresh_file_id(cyber, channel_id: int, message_id: int) -> str | None:
+    key = (channel_id, message_id)
+
+    # 1. Short-lived result cache — skip API if we just refreshed this file
+    cached = _REFRESH_CACHE.get(key)
+    if cached:
+        result, ts = cached
+        if time.time() - ts < _REFRESH_CACHE_TTL:
+            logger.debug(f"[REFRESH] cache hit ch={channel_id} msg={message_id}")
+            return result
+        del _REFRESH_CACHE[key]
+
+    # 2. In-flight dedup — if another coroutine is already fetching this key, wait for it
+    inflight = _REFRESH_INFLIGHT.get(key)
+    if inflight is not None:
+        logger.debug(f"[REFRESH] coalescing refresh ch={channel_id} msg={message_id}")
+        try:
+            return await asyncio.shield(inflight)
+        except Exception:
+            return None
+
+    # 3. We are the first — create a Future so others can coalesce on it
+    loop = asyncio.get_event_loop()
+    fut  = loop.create_future()
+    _REFRESH_INFLIGHT[key] = fut
+
+    result = None
     try:
         msgs = await cyber.get_messages(channel_id, message_id)
         msg  = msgs if not isinstance(msgs, list) else (msgs[0] if msgs else None)
-        if not msg:
-            return None
-        media = (
-            getattr(msg, "video",    None)
-            or getattr(msg, "audio",    None)
-            or getattr(msg, "document", None)
-        )
-        if media and getattr(media, "file_id", None):
-            return media.file_id
+        if msg:
+            media = (
+                getattr(msg, "video",    None)
+                or getattr(msg, "audio",    None)
+                or getattr(msg, "document", None)
+            )
+            if media and getattr(media, "file_id", None):
+                result = media.file_id
     except Exception as e:
         logger.debug(f"[REFRESH] get_messages ch={channel_id} msg={message_id}: {e}")
-    return None
+    finally:
+        _REFRESH_INFLIGHT.pop(key, None)
+        if not fut.done():
+            fut.set_result(result)
+
+    # 4. Cache the result (even None) to suppress further refreshes in this burst
+    _REFRESH_CACHE[key] = (result, time.time())
+    return result
 
 
 async def _forward_fallback(cyber, user_id: int, f: dict,
