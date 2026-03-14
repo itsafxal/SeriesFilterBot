@@ -292,12 +292,15 @@ async def _copy_from_channel(file_client: Client, user_id: int,
     return False
 
 
-async def _delete_channel_msg(main_cyber: Client, channel_id: int, message_id: int):
-    """Clean up the relay message from deliver channel after copying."""
+async def _delete_channel_msg(main_cyber: Client, channel_id: int, message_id):
+    """Clean up relay message(s) from deliver channel after copying.
+    Accepts a single message_id (int) or a list of message_ids.
+    """
     try:
-        await main_cyber.delete_messages(channel_id, message_id)
+        ids = message_id if isinstance(message_id, list) else [message_id]
+        await main_cyber.delete_messages(channel_id, ids)
     except Exception as e:
-        logger.debug(f"[FILEBOT] cleanup channel msg {message_id}: {e}")
+        logger.debug(f"[FILEBOT] cleanup channel msg(s): {e}")
 
 
 async def deliver_via_filebot(
@@ -677,28 +680,153 @@ async def _safe_send_group_filebot(
             return []
 
 
+async def _forward_batch_to_channel(
+    main_cyber: Client, channel_id: int,
+    batch: list,   # list of (f, cap) dicts
+) -> list[int]:
+    """
+    Main bot sends a batch of files to the relay channel as a media group.
+    Returns list of channel message_ids (one per file in the batch).
+    Falls back to per-file sends if send_media_group fails.
+    Handles stale file_ids by refreshing from source channel before retrying.
+    """
+    from CyberTG.files import _refresh_file_id, _make_input_media
+    from pyrogram.types import InputMediaDocument, InputMediaVideo, InputMediaAudio
+
+    # ── Build InputMedia list, refreshing any stale file_ids ──
+    async def _resolve(f, cap):
+        file_id    = f.get("file_id")
+        media_type = (f.get("media_type") or "document").lower()
+        if not file_id:
+            return None, f, cap
+        # Try to use as-is first; we'll refresh on failure
+        return file_id, f, cap
+
+    resolved = await asyncio.gather(*[_resolve(f, cap) for f, cap in batch])
+
+    def _make_item(file_id, media_type, cap):
+        if media_type == "audio":
+            return InputMediaAudio(media=file_id, caption=cap, parse_mode=enums.ParseMode.HTML)
+        elif media_type == "video":
+            return InputMediaVideo(media=file_id, caption=cap, parse_mode=enums.ParseMode.HTML)
+        return InputMediaDocument(media=file_id, caption=cap, parse_mode=enums.ParseMode.HTML)
+
+    # ── Attempt send_media_group ───────────────────────────────
+    media_items = []
+    valid_files = []
+    for file_id, f, cap in resolved:
+        if not file_id:
+            continue
+        media_type = (f.get("media_type") or "document").lower()
+        media_items.append(_make_item(file_id, media_type, cap))
+        valid_files.append((f, cap))
+
+    if not media_items:
+        return []
+
+    for attempt in range(2):
+        try:
+            sent_msgs = await main_cyber.send_media_group(channel_id, media_items)
+            return [m.id for m in sent_msgs]
+        except FloodWait as fw:
+            await _fw_sleep(fw)
+        except Exception as e:
+            err = str(e)
+            if any(k in err for k in ("MEDIA_EMPTY", "FILE_ID_INVALID", "FILE_REFERENCE_EXPIRED")) and attempt == 0:
+                # Refresh all stale file_ids concurrently then rebuild
+                logger.warning(f"[FILEBOT] stale file_id in batch — refreshing {len(valid_files)} files")
+                fresh_ids = await asyncio.gather(*[
+                    _refresh_file_id(main_cyber, f.get("channel_id"), f.get("message_id"))
+                    for f, _ in valid_files
+                ], return_exceptions=True)
+                media_items = []
+                refreshed_files = []
+                for (f, cap), fresh in zip(valid_files, fresh_ids):
+                    fid = fresh if isinstance(fresh, str) and fresh else f.get("file_id")
+                    if fid:
+                        media_type = (f.get("media_type") or "document").lower()
+                        media_items.append(_make_item(fid, media_type, cap))
+                        refreshed_files.append((f, cap))
+                valid_files = refreshed_files
+                continue
+            # Group send failed — fall back to per-file
+            logger.warning(f"[FILEBOT] send_media_group to channel failed: {e} — per-file fallback")
+            break
+
+    # ── Per-file fallback ──────────────────────────────────────
+    msg_ids = []
+    for f, cap in valid_files:
+        file_id    = f.get("file_id")
+        media_type = (f.get("media_type") or "document").lower()
+        if not file_id:
+            continue
+        mid = await _forward_to_channel(
+            main_cyber, channel_id, file_id, media_type, cap,
+            source_channel_id=f.get("channel_id"),
+            source_message_id=f.get("message_id"),
+        )
+        if mid:
+            msg_ids.append(mid)
+        await asyncio.sleep(0.05)
+    return msg_ids
+
+
+async def _copy_batch_from_channel(
+    file_client: Client, user_id: int,
+    channel_id: int, message_ids: list[int],
+    auto_delay: int,
+) -> int:
+    """
+    File bot copies multiple channel messages to user DM concurrently.
+    Returns count of successful copies.
+    """
+    from utils.cyber_delete import delete_message_later
+
+    sem = asyncio.Semaphore(5)   # max 5 concurrent copies
+
+    async def _copy_one(mid):
+        async with sem:
+            for attempt in range(3):
+                try:
+                    sent = await file_client.copy_message(
+                        chat_id=user_id,
+                        from_chat_id=channel_id,
+                        message_id=mid,
+                    )
+                    if sent and auto_delay > 0:
+                        delete_message_later(file_client, user_id, sent.id, auto_delay)
+                    return True
+                except FloodWait as fw:
+                    await _fw_sleep(fw)
+                except Exception as e:
+                    logger.error(f"[FILEBOT] copy msg {mid} attempt {attempt+1}: {e}")
+                    if attempt < 2:
+                        await asyncio.sleep(2)
+            return False
+
+    results = await asyncio.gather(*[_copy_one(mid) for mid in message_ids],
+                                    return_exceptions=True)
+    return sum(1 for r in results if r is True)
+
+
 async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_complete=None, auto_delay: int | None = None):
     """
-    Relay delivery: main bot posts each file to the deliver channel,
-    file bot copies it from the channel to the user DM, then the channel
-    message is deleted.
+    Relay delivery with media-group batching:
 
-    WHY RELAY:
-    Telegram file_ids are bot-specific. DB stores file_ids captured by the
-    main bot — the file bot cannot send them directly (MEDIA_EMPTY/FILE_ID_INVALID).
-    By posting to a shared channel first, the file bot uses copy_message which
-    works regardless of whose file_id is in DB.
+      For each batch of up to 10 files:
+        1. Main bot sends batch → relay channel as send_media_group
+        2. File bot copies each msg from channel → user DM (concurrently)
+        3. Main bot bulk-deletes the batch from channel
 
-    FALLBACK:
-    If relay post fails (stale file_id on main bot side), main bot copies
-    directly from source channel to user as a last resort.
+      Files with no file_id or whose relay fails fall back to main-bot
+      copy_message from source channel directly to user.
     """
     from DB.database import get_all_files_by_season_and_quality, get_global_setting
     from CyberTG.files import (
         get_session_async, clear_session, clean_series_name,
         _normalize_for_query, _build_caption, DEFAULT_CAPTION,
         _send_start_sticker, _send_end_sticker,
-        _forward_fallback,
+        _forward_fallback, MEDIA_GROUP_SIZE,
     )
 
     channel_id = _filebot_channel
@@ -753,52 +881,52 @@ async def _deliver_via_filebot_client(main_cyber, file_client, user_id: int, on_
     # Start sticker via file bot
     await _send_start_sticker(file_client, user_id, season, auto_delay)
 
+    # Split into groupable (have file_id) and solo (no file_id / non-document)
+    # Note: send_media_group supports documents, videos, audios in separate groups;
+    # we treat all as groupable — _forward_batch_to_channel handles the typing.
+    groupable = [(f, _build_caption(caption_template, series, season,
+                                    f.get("episode", 0), language, quality,
+                                    f.get("file_name", "")))
+                 for f in files if f.get("file_id")]
+    solo      = [(f, _build_caption(caption_template, series, season,
+                                    f.get("episode", 0), language, quality,
+                                    f.get("file_name", "")))
+                 for f in files if not f.get("file_id")]
+
     sent_count = 0
 
-    for f in files:
-        cap        = _build_caption(
-            caption_template, series, season,
-            f.get("episode", 0), language, quality,
-            f.get("file_name", ""),
-        )
-        file_id    = f.get("file_id")
-        media_type = (f.get("media_type") or "document").lower()
-        file_name  = f.get("file_name", "unknown")
+    # ── Batch relay via media group ────────────────────────────
+    for batch_start in range(0, len(groupable), MEDIA_GROUP_SIZE):
+        batch = groupable[batch_start : batch_start + MEDIA_GROUP_SIZE]
 
-        if not file_id:
-            # No file_id in DB — main bot copies from source channel directly to user
-            logger.debug(f"[FILEBOT] no file_id for {file_name} — using source fallback")
-            ok = await _forward_fallback(main_cyber, user_id, f, cap, auto_delay)
-            if ok:
-                sent_count += 1
+        # Step 1: main bot → relay channel (as media group)
+        channel_msg_ids = await _forward_batch_to_channel(main_cyber, channel_id, batch)
+
+        if not channel_msg_ids:
+            # Entire batch failed — fall back per-file via source channel
+            logger.warning(f"[FILEBOT] batch relay failed uid={user_id} — source fallback for {len(batch)} files")
+            for f, cap in batch:
+                ok = await _forward_fallback(main_cyber, user_id, f, cap, auto_delay)
+                if ok:
+                    sent_count += 1
             continue
 
-        # ── Step 1: Main bot sends file → relay channel ───────────────
-        channel_msg_id = await _forward_to_channel(
-            main_cyber, channel_id, file_id, media_type, cap,
-            source_channel_id=f.get("channel_id"),
-            source_message_id=f.get("message_id"),
+        # Step 2: file bot copies each channel msg → user DM (concurrent)
+        copied = await _copy_batch_from_channel(
+            file_client, user_id, channel_id, channel_msg_ids, auto_delay
+        )
+        sent_count += copied
+
+        # Step 3: bulk-delete relay messages from channel (fire-and-forget)
+        asyncio.create_task(
+            _delete_channel_msg(main_cyber, channel_id, channel_msg_ids)
         )
 
-        if not channel_msg_id:
-            # Main bot's stored file_id is stale — fall back to source channel copy
-            logger.warning(f"[FILEBOT] relay post failed for {file_name} — using source fallback")
-            ok = await _forward_fallback(main_cyber, user_id, f, cap, auto_delay)
-            if ok:
-                sent_count += 1
-            continue
-
-        # ── Step 2: File bot copies channel msg → user DM ─────────────
-        ok = await _copy_from_channel(file_client, user_id, channel_id, channel_msg_id, auto_delay)
+    # ── Solo files (no file_id) ───────────────────────────────
+    for f, cap in solo:
+        ok = await _forward_fallback(main_cyber, user_id, f, cap, auto_delay)
         if ok:
             sent_count += 1
-        else:
-            logger.warning(f"[FILEBOT] file bot copy failed for {file_name} uid={user_id}")
-
-        # ── Step 3: Delete relay message from channel ─────────────────
-        asyncio.create_task(_delete_channel_msg(main_cyber, channel_id, channel_msg_id))
-
-        await asyncio.sleep(0.05)  # small yield
 
     # Cleanup progress message
     if progress_msg:
