@@ -237,20 +237,39 @@ async def _refresh_file_id(cyber, channel_id: int, message_id: int) -> str | Non
 
 
 async def _forward_fallback(cyber, user_id: int, f: dict,
-                             caption: str, auto_delay: int) -> bool:
+                             caption: str, auto_delay: int,
+                             send_client=None) -> bool:
+    """
+    Refresh a stale/missing file_id and deliver to the user.
+
+    Parameters
+    ----------
+    cyber        : Client used to FETCH from the source channel
+                   (must be a member of that channel — always use main bot here).
+    send_client  : Client used to SEND to the user DM.
+                   Defaults to `cyber` for backward compatibility (direct delivery).
+                   Pass the file bot client here when delivering via filebot so the
+                   file arrives from the file bot, not the main bot.
+    """
     channel_id = f.get("channel_id")
     message_id = f.get("message_id")
     file_name  = f.get("file_name", "unknown")
+
+    # send_client defaults to cyber (main-bot direct path, no change in behaviour)
+    if send_client is None:
+        send_client = cyber
 
     if not channel_id or not message_id:
         logger.warning(f"[FALLBACK] No source info for {file_name} — skipping")
         return False
 
+    # ── Step 1: try get_messages on the source channel (fetch_client = cyber) ──
     fresh_id = await _refresh_file_id(cyber, channel_id, message_id)
 
     if fresh_id:
         f_fresh = {**f, "file_id": fresh_id}
-        ok = await _safe_send_single(cyber, user_id, f_fresh, caption, auto_delay)
+        # Send via send_client (file bot when in filebot path, main bot otherwise)
+        ok = await _safe_send_single(send_client, user_id, f_fresh, caption, auto_delay)
         if ok:
             try:
                 asyncio.create_task(update_file_id(channel_id, message_id, fresh_id))
@@ -264,6 +283,9 @@ async def _forward_fallback(cyber, user_id: int, f: dict,
         logger.warning(f"[FALLBACK] send with fresh file_id failed for {file_name}")
         return False
 
+    # ── Step 2: get_messages failed → try copy_message via fetch_client (cyber) ──
+    # NOTE: copy_message must use the bot that is a channel member (cyber/main bot).
+    # We cannot copy via the file bot because it has no channel access.
     logger.warning(
         f"[FALLBACK] get_messages failed for ch={channel_id} msg={message_id} "
         f"— trying copy_message"
