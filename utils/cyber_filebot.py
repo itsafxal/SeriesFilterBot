@@ -554,8 +554,12 @@ async def _safe_send_single_filebot(
     send_client, fallback_client, user_id: int, f: dict, caption: str, auto_delay: int
 ) -> bool:
     """
-    Send one file to user via send_client.
-    On stale file_id, refresh using fallback_client (main bot has channel access).
+    Send one file to user via send_client (file bot).
+
+    On stale/invalid file_id the file bot cannot use the main bot's refreshed
+    file_id — Telegram file_ids are bot-specific.  In that case we fall back to
+    the main bot copying the message directly from the source channel to the user,
+    which is always valid as long as the main bot is a channel member.
     """
     from pyrogram.errors import FloodWait, BadRequest
     from pyrogram import enums as _enums
@@ -567,9 +571,9 @@ async def _safe_send_single_filebot(
     file_name  = f.get("file_name", "unknown")
 
     if not file_id:
-        # No file_id — fetch from source channel via main bot, send via file bot
+        # No file_id stored — main bot fetches from source channel and sends to user
         return await _forward_fallback(fallback_client, user_id, f, caption, auto_delay,
-                                       send_client=send_client)
+                                       send_client=fallback_client)
 
     while True:
         try:
@@ -598,16 +602,13 @@ async def _safe_send_single_filebot(
         except BadRequest as e:
             err = str(e)
             if any(k in err for k in ("MEDIA_EMPTY", "FILE_ID_INVALID", "FILE_REFERENCE_EXPIRED")):
-                logger.warning(f"[FILEBOT] stale file_id for {file_name} — refreshing via main bot")
-                # Refresh file_id via main bot (has channel access), then re-send via file bot
-                from CyberTG.files import _refresh_file_id
-                fresh_id = await _refresh_file_id(fallback_client, f.get("channel_id"), f.get("message_id"))
-                if fresh_id:
-                    f_fresh = {**f, "file_id": fresh_id}
-                    return await _safe_send_single_filebot(send_client, fallback_client, user_id, f_fresh, caption, auto_delay)
-                # Cannot refresh — fall back via main bot fetch, file bot send
+                logger.warning(f"[FILEBOT] stale file_id for {file_name} — falling back to main bot copy")
+                # IMPORTANT: file_ids are bot-specific. We cannot refresh the main bot's
+                # file_id and reuse it with the file bot — Telegram will reject it.
+                # Instead, have the main bot copy the message directly from the source
+                # channel to the user DM. This is reliable and requires no relay.
                 return await _forward_fallback(fallback_client, user_id, f, caption, auto_delay,
-                                               send_client=send_client)
+                                               send_client=fallback_client)
             logger.error(f"[FILEBOT] BadRequest uid={user_id} file={file_name}: {e}")
             return False
         except Exception as e:
@@ -622,71 +623,15 @@ async def _safe_send_group_filebot(
     caption_map: dict | None = None,
 ) -> list:
     """
-    Send a media_group via send_client.
+    Attempt send_media_group via send_client (file bot).
 
-    PRE-REFRESH: Before attempting send_media_group, any source file whose
-    file_id may be stale is refreshed via fallback_client (main bot).  All
-    refreshes in the batch are launched concurrently so one batch costs at
-    most one round-trip per unique (channel_id, message_id) — and zero if
-    the dedup cache in _refresh_file_id already has the result.
-
-    This prevents the previous pattern where send_media_group always failed
-    due to stale file_ids, fell back to per-file, and each file independently
-    fired a redundant refresh of the same source message.
+    On any failure, fall back to per-file delivery via _safe_send_single_filebot.
+    Stale file_id handling is delegated entirely to _safe_send_single_filebot,
+    which correctly uses the main bot (fallback_client) to copy from the source
+    channel — because file_ids are bot-specific and cannot be shared between bots.
     """
-    from pyrogram.errors import FloodWait, BadRequest
+    from pyrogram.errors import FloodWait
     from utils.cyber_delete import delete_message_later
-    from CyberTG.files import _refresh_file_id, _make_input_media, update_file_id
-
-    # ── Pre-refresh: resolve any stale file_ids before building the group ──
-    if source_files:
-        # Gather refreshes concurrently; dedup cache in _refresh_file_id ensures
-        # the same (channel_id, message_id) is only fetched once even if multiple
-        # files in the batch share the same source message.
-        async def _noop():
-            return None
-
-        refresh_tasks = [
-            _refresh_file_id(fallback_client, f.get("channel_id"), f.get("message_id"))
-            if f.get("channel_id") and f.get("message_id")
-            else _noop()
-            for f in source_files
-        ]
-        fresh_ids = await asyncio.gather(*refresh_tasks, return_exceptions=True)
-
-        rebuilt_group  = []
-        rebuilt_files  = []
-        rebuilt_captions = {}
-
-        for i, (f, fresh) in enumerate(zip(source_files, fresh_ids)):
-            cap = (caption_map or {}).get(id(f), "") or (f.get("caption") or "").strip()
-            if not cap:
-                ep  = str(f.get("episode", 0)).zfill(2)
-                cap = f"<b>Episode {ep}</b>"
-
-            if isinstance(fresh, str) and fresh:
-                # Got a fresh file_id — update in-place and persist to DB
-                f_fresh = {**f, "file_id": fresh}
-                try:
-                    asyncio.create_task(
-                        update_file_id(f.get("channel_id"), f.get("message_id"), fresh)
-                    )
-                except Exception:
-                    pass
-            else:
-                f_fresh = f   # keep original; send attempt below will handle failure
-
-            item = _make_input_media(f_fresh, cap)
-            if item:
-                rebuilt_group.append(item)
-                rebuilt_files.append(f_fresh)
-                rebuilt_captions[id(f_fresh)] = cap
-
-        # Replace caller's media_group with the refreshed version
-        if rebuilt_group:
-            media_group  = rebuilt_group
-            source_files = rebuilt_files
-            caption_map  = rebuilt_captions
 
     while True:
         try:
