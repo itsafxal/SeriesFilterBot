@@ -34,6 +34,7 @@ import asyncio
 from typing import Optional
 
 from pyrogram import Client, enums as pyro_enums
+from pyrogram import enums
 from pyrogram.errors import FloodWait
 from pyrogram import filters as pyro_filters
 
