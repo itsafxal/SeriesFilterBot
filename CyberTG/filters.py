@@ -130,15 +130,23 @@ def _stamp_cooldown(uid: int):
 # ─────────────────────────────────────────────────────────────
 
 async def safe_edit(coro, q):
+    """
+    Await an edit coroutine and ALWAYS answer the callback query.
+    Telegram requires answerCallbackQuery within 10 s or the button stays stuck.
+    """
     try:
         await coro
     except MessageNotModified:
-        await q.answer()
+        pass
     except FloodWait as fw:
-        await q.answer()
         await asyncio.sleep(fw.value)
     except Exception:
+        pass
+    # Always answer — clears the Telegram loading spinner regardless of outcome
+    try:
         await q.answer()
+    except Exception:
+        pass
 
 
 async def _safe_reply_photo(m, photo: str, caption: str, parse_mode, reply_markup):
@@ -493,20 +501,27 @@ def register_filters(cyber: Client):
         settings = await _get_settings()
         if q.from_user.id not in ADMIN_USERS and settings["maintenance"]:
             return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
+
+        # Answer immediately — clears spinner before slow poster/DB fetch
+        try:
+            await q.answer()
+        except Exception:
+            pass
+
         series = q.data.split("|", 1)[1]
         auto_del = settings["auto_delete_delay"]
         poster, year, genre, rating = await _get_poster(series, settings)
         seasons = list((await get_series_summary(series))["seasons"])
         kb = build_season_pages(seasons, q.from_user.id, series)
-        await safe_edit(
-            _safe_edit_media(
+        try:
+            await _safe_edit_media(
                 q, poster or DEFAULT_POSTER,
                 caption=build_caption(series, year, genre, rating, seasons=seasons),
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb,
-            ),
-            q,
-        )
+            )
+        except Exception:
+            pass
         if auto_del > 0 and q.message:
             delete_message_later(cyber, q.message.chat.id, q.message.id, auto_del)
 
@@ -524,9 +539,19 @@ def register_filters(cyber: Client):
         _, uid, series, page = q.data.split("|", 3)
         if not await check_owner(q, uid):
             return
+        # Answer immediately
+        try:
+            await q.answer()
+        except Exception:
+            pass
         seasons = list((await get_series_summary(series))["seasons"])
         kb = build_season_pages(seasons, uid, series, int(page))
-        await safe_edit(q.message.edit_reply_markup(kb), q)
+        try:
+            await q.message.edit_reply_markup(kb)
+        except MessageNotModified:
+            pass
+        except Exception:
+            pass
 
     @cyber.on_callback_query(filters.regex("^noop$"))
     async def noop(_, q):
@@ -542,6 +567,13 @@ def register_filters(cyber: Client):
             return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
         if not await check_owner(q, uid):
             return
+
+        # Answer immediately — clears Telegram spinner before slow DB/API work
+        try:
+            await q.answer()
+        except Exception:
+            pass
+
         langs, poster_r = await asyncio.gather(
             get_unique_languages_by_season(series, int(season)),
             _get_poster(series, settings),
@@ -549,14 +581,16 @@ def register_filters(cyber: Client):
         poster, year, genre, rating = poster_r
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{series}")
         kb   = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
-        await safe_edit(
-            q.message.edit_caption(
+        try:
+            await q.message.edit_caption(
                 build_caption(series, year, genre, rating, languages=langs, step="language"),
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb,
-            ),
-            q,
-        )
+            )
+        except MessageNotModified:
+            pass
+        except Exception:
+            pass
 
     # ── LANGUAGE → QUALITY (URL buttons)
     # FIX: uses cached _get_bot_info() instead of cyber.get_me() per tap
@@ -567,8 +601,15 @@ def register_filters(cyber: Client):
         _, uid, series, season, lang = q.data.split("|", 4)
         if not await check_owner(q, uid):
             return
+
+        # Answer immediately — clears Telegram spinner before any slow DB/API work
+        try:
+            await q.answer()
+        except Exception:
+            pass
+
         settings = await _get_settings()
-        # FIX: cache bot username — no fresh get_me() on every quality tap
+        # Run all slow fetches concurrently
         qc_pairs, poster_r, (_, bot_username) = await asyncio.gather(
             get_unique_qualities_with_codec(series, lang, int(season)),
             _get_poster(series, settings),
@@ -585,11 +626,20 @@ def register_filters(cyber: Client):
             _fb_uname = None
         _link_username = _fb_uname or bot_username
 
+        # FIX: encode ALL payloads concurrently instead of sequentially in a loop.
+        # Each encode_payload does a MongoDB write — doing them one-by-one can take
+        # 5-15s total for multiple qualities, blowing past Telegram's 10s timeout.
+        payloads = await asyncio.gather(
+            *[encode_payload(series, season, lang, quality, uid) for quality, _ in qc_pairs],
+            return_exceptions=True,
+        )
+
         rows, row = [], []
-        for quality, codec in qc_pairs:
-            label   = _quality_label(quality, codec)
-            payload = await encode_payload(series, season, lang, quality, uid)
-            link    = f"https://t.me/{_link_username}?start={payload}"
+        for (quality, codec), payload in zip(qc_pairs, payloads):
+            if isinstance(payload, Exception):
+                continue
+            label = _quality_label(quality, codec)
+            link  = f"https://t.me/{_link_username}?start={payload}"
             row.append(InlineKeyboardButton(f"⬇️  {label}", url=link))
             if len(row) == 2:
                 rows.append(row)
@@ -599,15 +649,17 @@ def register_filters(cyber: Client):
         rows.append([back])
         kb = InlineKeyboardMarkup(rows)
 
-        await safe_edit(
-            q.message.edit_caption(
+        try:
+            await q.message.edit_caption(
                 build_caption(series, year, genre, rating,
                               languages=[lang], qualities=qs, step="quality"),
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb,
-            ),
-            q,
-        )
+            )
+        except MessageNotModified:
+            pass
+        except Exception:
+            pass
 
     # ── BACK NAVIGATION ───────────────────────────────────────
 
@@ -616,6 +668,11 @@ def register_filters(cyber: Client):
         _, uid, series = q.data.split("|", 2)
         if not await check_owner(q, uid):
             return
+        # Answer immediately
+        try:
+            await q.answer()
+        except Exception:
+            pass
         settings = await _get_settings()
         seasons, poster_r = await asyncio.gather(
             get_series_summary(series),
@@ -624,20 +681,27 @@ def register_filters(cyber: Client):
         season_list = list(seasons["seasons"])
         poster, year, genre, rating = poster_r
         kb = build_season_pages(season_list, uid, series, page=0)
-        await safe_edit(
-            q.message.edit_caption(
+        try:
+            await q.message.edit_caption(
                 build_caption(series, year, genre, rating, seasons=season_list, step="season"),
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb,
-            ),
-            q,
-        )
+            )
+        except MessageNotModified:
+            pass
+        except Exception:
+            pass
 
     @cyber.on_callback_query(filters.regex("^bk_lang\\|"))
     async def bk_lang(_, q):
         _, uid, series, season = q.data.split("|", 3)
         if not await check_owner(q, uid):
             return
+        # Answer immediately
+        try:
+            await q.answer()
+        except Exception:
+            pass
         settings = await _get_settings()
         langs, poster_r = await asyncio.gather(
             get_unique_languages_by_season(series, int(season)),
@@ -646,14 +710,16 @@ def register_filters(cyber: Client):
         poster, year, genre, rating = poster_r
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{series}")
         kb   = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
-        await safe_edit(
-            q.message.edit_caption(
+        try:
+            await q.message.edit_caption(
                 build_caption(series, year, genre, rating, languages=langs, step="language"),
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb,
-            ),
-            q,
-        )
+            )
+        except MessageNotModified:
+            pass
+        except Exception:
+            pass
 
     # NOTE: bk_qual handler REMOVED — quality step shows URL buttons (no callback),
     # so there is no "back from quality" navigation. The handler was dead code that
