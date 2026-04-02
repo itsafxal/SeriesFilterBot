@@ -598,9 +598,20 @@ async def update_file_id(channel_id: int, message_id: int, new_file_id: str):
 # GROUPS TRACKING
 # ─────────────────────────────────────────────────────────────
 
-async def add_group(chat_id: int):
+async def add_group(chat_id: int, title: str = "", username: str = ""):
+    """Store group with metadata (title, username, joined_at). Safe to upsert repeatedly."""
     def _sync():
-        groups_collection.update_one({"_id": chat_id}, {"$set": {"_id": chat_id}}, upsert=True)
+        from datetime import datetime
+        groups_collection.update_one(
+            {"_id": chat_id},
+            {"$set": {
+                "_id":       chat_id,
+                "title":     title or "",
+                "username":  username or "",
+                "joined_at": datetime.utcnow(),
+            }},
+            upsert=True,
+        )
     await asyncio.to_thread(_sync)
 
 
@@ -616,6 +627,17 @@ async def get_total_groups() -> int:
             return groups_collection.estimated_document_count()
         except Exception:
             return 0
+    return await asyncio.to_thread(_sync)
+
+
+async def get_all_groups() -> list[int]:
+    """Returns list of all tracked group chat_ids for broadcast."""
+    def _sync():
+        try:
+            return [doc["_id"] for doc in groups_collection.find({}, {"_id": 1})]
+        except Exception as e:
+            logger.error(f"get_all_groups error: {e}")
+            return []
     return await asyncio.to_thread(_sync)
 
 
