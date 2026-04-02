@@ -46,6 +46,7 @@ from DB.database import (
     get_total_series,
     get_total_files_per_db,
     get_total_groups,
+    get_all_groups,
     get_all_series,
     delete_all_files,
     delete_one_file,
@@ -245,6 +246,92 @@ def register_command_handlers(cyber: Client):
             f"🚫 Blocked : <code>{blocked}</code>\n"
             f"❌ Failed  : <code>{failed}</code>\n"
             f"👥 Total   : <code>{total}</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    # ──────────────────────────────────────────────────────────
+    # /gbroadcast — broadcast a message to ALL connected groups
+    # Usage: reply to a message with /gbroadcast
+    # ──────────────────────────────────────────────────────────
+    @cyber.on_message(filters.command("gbroadcast") & filters.user(ADMIN_USERS))
+    async def gbroadcast(_, msg: Message):
+        if not msg.reply_to_message:
+            return await msg.reply(
+                "↩️ <b>Reply to a message to broadcast it to all groups.</b>\n\n"
+                "<i>Usage:</i> Reply to any message with <code>/gbroadcast</code>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        groups  = await get_all_groups()
+        total   = len(groups)
+
+        if total == 0:
+            return await msg.reply(
+                "⚠️ <b>No groups connected.</b>\n\n"
+                "The bot has not been added to any groups yet, "
+                "or no groups are stored in the database.",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        sent    = 0
+        failed  = 0
+        blocked = 0
+
+        progress = await msg.reply(
+            f"📡 <b>Broadcasting to {total} groups...</b>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+        for i, chat_id in enumerate(groups):
+            while True:
+                try:
+                    await msg.reply_to_message.copy(chat_id)
+                    sent += 1
+                    break
+                except FloodWait as fw:
+                    wait_secs = max(int(getattr(fw, "value", 10)), 5)
+                    logger.warning(f"[GBROADCAST] FloodWait {wait_secs}s")
+                    await asyncio.sleep(wait_secs + 1)
+                except Exception as e:
+                    err = str(e).lower()
+                    if any(k in err for k in ("blocked", "deactivated", "not found",
+                                               "forbidden", "kicked", "banned",
+                                               "chat not found", "peer_id_invalid")):
+                        blocked += 1
+                        # Remove stale/unreachable group from DB
+                        try:
+                            from DB.database import remove_group as _rg
+                            await _rg(chat_id)
+                            logger.info(f"[GBROADCAST] Removed unreachable group {chat_id}")
+                        except Exception:
+                            pass
+                    else:
+                        failed += 1
+                        logger.warning(f"[GBROADCAST] Failed for {chat_id}: {e}")
+                    break
+
+            # Update progress every 20 groups
+            if (i + 1) % 20 == 0 or (i + 1) == total:
+                try:
+                    await progress.edit_text(
+                        f"📡 <b>Broadcasting to groups...</b>\n\n"
+                        f"✅ Sent    : <code>{sent}</code>\n"
+                        f"🚫 Removed : <code>{blocked}</code>\n"
+                        f"❌ Failed  : <code>{failed}</code>\n"
+                        f"📊 Progress: <code>{i+1}/{total}</code>",
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
+
+            await asyncio.sleep(0.1)   # slightly longer delay for groups (safer rate limit)
+
+        await progress.edit_text(
+            f"✅ <b>Group Broadcast Complete</b>\n\n"
+            f"✅ Sent    : <code>{sent}</code>\n"
+            f"🚫 Removed : <code>{blocked}</code>\n"
+            f"❌ Failed  : <code>{failed}</code>\n"
+            f"🏘 Total   : <code>{total}</code>",
             parse_mode=enums.ParseMode.HTML,
         )
 
