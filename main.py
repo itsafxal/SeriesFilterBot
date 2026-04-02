@@ -13,7 +13,7 @@ from utils.cyber_delete import start_scheduler
 from DB.database import (
     initialize_sql_db, get_global_setting, set_global_setting,
     repair_normalized_names_in_mongo, add_group, remove_group,
-    ensure_all_indexes,
+    ensure_all_indexes, get_all_groups,
 )
 from config import API_ID, API_HASH, BOT_TOKEN, logger, ADMIN_USERS
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -241,9 +241,9 @@ def main():
     register_index_handlers(cyber)
 
     # ── Group tracking — keeps /stats group count accurate ──────────
-    # FIX: uses cached _BOT_ID instead of calling get_me() on every event.
-    # get_me() was making an API call for every user joining/leaving any group
-    # the bot is in — this can be hundreds of calls per day needlessly.
+    # FIX 1: uses cached _BOT_ID instead of calling get_me() on every event.
+    # FIX 2: passes chat title + username to add_group for richer metadata.
+    # FIX 3: correctly detects bot being added from LEFT/BANNED state too.
     from pyrogram import filters as _filters
     from pyrogram.types import ChatMemberUpdated
 
@@ -266,19 +266,46 @@ def main():
             new_member = update.new_chat_member
             old_member = update.old_chat_member
 
-            # Bot was added to a group
-            if (new_member and new_member.user and new_member.user.id == bot_id and
-                    new_member.status in (enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR)):
-                await add_group(chat.id)
-            # Bot was removed from a group
-            elif (old_member and old_member.user and old_member.user.id == bot_id and
-                  old_member.status in (enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR) and
-                  (new_member is None or new_member.status in (
-                      enums.ChatMemberStatus.LEFT,
-                      enums.ChatMemberStatus.BANNED,
-                      enums.ChatMemberStatus.RESTRICTED,
-                  ))):
-                await remove_group(chat.id)
+            # Identify if this event is about the bot itself
+            new_is_bot = (
+                new_member and new_member.user and new_member.user.id == bot_id
+            )
+            old_is_bot = (
+                old_member and old_member.user and old_member.user.id == bot_id
+            )
+
+            ACTIVE_STATUSES = (
+                enums.ChatMemberStatus.MEMBER,
+                enums.ChatMemberStatus.ADMINISTRATOR,
+                enums.ChatMemberStatus.OWNER,
+            )
+            GONE_STATUSES = (
+                enums.ChatMemberStatus.LEFT,
+                enums.ChatMemberStatus.BANNED,
+                enums.ChatMemberStatus.RESTRICTED,
+            )
+
+            chat_title    = getattr(chat, "title", "") or ""
+            chat_username = getattr(chat, "username", "") or ""
+
+            # Bot was added / promoted to a group
+            if new_is_bot and new_member.status in ACTIVE_STATUSES:
+                old_status = old_member.status if old_member else None
+                if old_status not in ACTIVE_STATUSES:
+                    await add_group(chat.id, title=chat_title, username=chat_username)
+                    logger.info(
+                        f"[GROUP] ➕ Bot added to '{chat_title}' ({chat.id})"
+                    )
+
+            # Bot was removed / banned / left from a group
+            elif old_is_bot and old_member.status in ACTIVE_STATUSES:
+                new_status = new_member.status if new_member else None
+                if new_status is None or new_status in GONE_STATUSES:
+                    await remove_group(chat.id)
+                    logger.info(
+                        f"[GROUP] ➖ Bot removed from '{chat_title}' ({chat.id})"
+                    )
+
         except Exception as e:
             logger.debug(f"[GROUP] tracking error: {e}")
 
