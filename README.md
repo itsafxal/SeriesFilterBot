@@ -145,7 +145,7 @@ python main.py
 
 **Afsal**
 🔗 https://github.com/itsafxal
-
+🔗 https://t.me/CyberTGz
 ---
 
 # ⭐ Support
