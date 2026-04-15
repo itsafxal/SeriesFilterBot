@@ -9,3 +9,14 @@
   <img src="https://img.shields.io/badge/DATABASE-MONGO%20%2B%20SQLITE-0ea5e9?style=for-the-badge">
   <img src="https://img.shields.io/badge/STATUS-ACTIVE-00ffcc?style=for-the-badge">
 </p>
+
+
+<p align="center">
+  <img src="https://files.catbox.moe/ivj3km.jpg" width="30%">
+  <img src="https://files.catbox.moe/krlzjs.jpg" width="30%">
+  <img src="https://files.catbox.moe/rjj4do.jpg" width="30%">
+</p>
+
+<p align="center">
+  ✦ Clean • Minimal • Premium Interface ✦
+</p>
