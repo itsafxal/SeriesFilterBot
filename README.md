@@ -34,6 +34,20 @@
 
 ---
 
+# 🤖 Live Bot
+
+<p align="center">
+  <a href="https://t.me/SeriesSpaceBot">
+    <img src="https://img.shields.io/badge/TRY%20LIVE%20BOT-@SeriesSpaceBot-ff0055?style=for-the-badge&logo=telegram">
+  </a>
+</p>
+
+<p align="center">
+  👉 Click above to test the bot instantly
+</p>
+
+---
+
 # 🎥 Live Demo
 
 <p align="center">
@@ -48,7 +62,7 @@
 
 # ✨ Features
 
-```id="featuresfinal"
+```id="featuresfinal2"
 🎬 Smart Series Search Engine
 📦 Ordered Episode Delivery (No Random Sending)
 ⚡ High-Speed Indexing System
@@ -67,7 +81,7 @@
 
 # 🧠 System Flow
 
-```mermaid id="systemflowfinal"
+```mermaid id="systemflowfinal2"
 graph TD
 A[User] --> B[Search Engine]
 B --> C[Smart Filter]
@@ -84,7 +98,7 @@ C --> I[OMDB API]
 
 # 🚀 Installation
 
-```bash id="installfinal"
+```bash id="installfinal2"
 git clone https://github.com/yourrepo
 cd cyber-series-bot
 pip install -r requirements.txt
@@ -94,7 +108,7 @@ pip install -r requirements.txt
 
 # 🔑 Configuration
 
-```id="configfinal"
+```id="configfinal2"
 API_ID=
 API_HASH=
 BOT_TOKEN=
@@ -108,7 +122,7 @@ MONGO_URI_DB2=
 
 # ▶️ Run
 
-```bash id="runfinal"
+```bash id="runfinal2"
 python main.py
 ```
 
@@ -145,7 +159,7 @@ python main.py
 
 **Afsal**
 🔗 https://github.com/itsafxal
-🔗 https://t.me/CyberTGz
+
 ---
 
 # ⭐ Support
