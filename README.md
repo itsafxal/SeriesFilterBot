@@ -1,11 +1,11 @@
 <!-- 🔥 ANIMATED HEADER -->
 
 <p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0f2027,50:ff0055,100:00ffcc&height=260&section=header&text=CYBER%20SERIES%20BOT&fontSize=48&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=Next%20Gen%20Telegram%20OTT%20System&descAlignY=58&descSize=20"/>
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0f2027,50:ff0055,100:00ffcc&height=260&section=header&text=SERIES%20FILTER%20BOT&fontSize=48&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=A%20Next%20Gen%20Telegram%20Series%20Bot&descAlignY=58&descSize=20"/>
 </p>
 
 <p align="center">
-  <img src="https://readme-typing-svg.herokuapp.com?color=00ffcc&size=25&center=true&vCenter=true&width=800&lines=⚡+Ultra+Fast+Series+Delivery;🎬+Netflix+Like+UI+Experience;📦+Batch+Episode+Sending;🧠+Smart+Search+%2B+Filtering;🔥+Built+for+Scale+%26+Performance"/>
+  <img src="https://readme-typing-svg.herokuapp.com?color=00ffcc&size=25&center=true&vCenter=true&width=800&lines=⚡+Ultra+Fast+Series+Delivery;🎬+Smart+Search+System;📦+Ordered+Episode+Sending;🧠+Advanced+Filtering+Engine;🔥+Built+for+Scale+%26+Performance"/>
 </p>
 
 ---
@@ -16,7 +16,7 @@
 
 | 🚀 SYSTEM | ⚡ ENGINE | 🎬 EXPERIENCE | 📊 SCALE |
 | --------- | -------- | ------------- | -------- |
-| 🟢 LIVE   | ⚡ FAST   | 🍿 OTT UI     | 🔥 HIGH  |
+| 🟢 LIVE   | ⚡ FAST   | 🤖 SMART BOT  | 🔥 HIGH  |
 
 </div>
 
@@ -46,33 +46,9 @@
 
 ---
 
-# 🍿 UI Experience (OTT Style)
-
-<p align="center">
-  <img src="https://files.catbox.moe/ivj3km.jpg" width="30%" style="border-radius:15px;">
-  <img src="https://files.catbox.moe/krlzjs.jpg" width="30%" style="border-radius:15px;">
-  <img src="https://files.catbox.moe/rjj4do.jpg" width="30%" style="border-radius:15px;">
-</p>
-
-<p align="center">
-  ✦ Minimal • Clean • Premium Telegram UI ✦
-</p>
-
----
-
-# 🎬 Promo Video
-
-<p align="center">
-  <a href="https://youtu.be/dQw4w9WgXcQ">
-    <img src="https://img.youtube.com/vi/dQw4w9WgXcQ/maxresdefault.jpg" width="70%">
-  </a>
-</p>
-
----
-
 # ✨ Features
 
-```id="ultimatefeatures"
+```id="featuresfinal"
 🎬 Smart Series Search Engine
 📦 Ordered Episode Delivery (No Random Sending)
 ⚡ High-Speed Indexing System
@@ -91,7 +67,7 @@
 
 # 🧠 System Flow
 
-```mermaid id="ultimatesystem"
+```mermaid id="systemflowfinal"
 graph TD
 A[User] --> B[Search Engine]
 B --> C[Smart Filter]
@@ -108,7 +84,7 @@ C --> I[OMDB API]
 
 # 🚀 Installation
 
-```bash id="ultimateinstall"
+```bash id="installfinal"
 git clone https://github.com/yourrepo
 cd cyber-series-bot
 pip install -r requirements.txt
@@ -118,7 +94,7 @@ pip install -r requirements.txt
 
 # 🔑 Configuration
 
-```id="ultimateconfig"
+```id="configfinal"
 API_ID=
 API_HASH=
 BOT_TOKEN=
@@ -132,7 +108,7 @@ MONGO_URI_DB2=
 
 # ▶️ Run
 
-```bash id="ultimaterun"
+```bash id="runfinal"
 python main.py
 ```
 
@@ -197,5 +173,5 @@ If you like this project:
 </p>
 
 <p align="center">
-  💎 <b>Not just a bot — A full OTT experience inside Telegram</b>
+  💎 <b>Series Filter Bot — Smart, Fast, Powerful</b>
 </p>
