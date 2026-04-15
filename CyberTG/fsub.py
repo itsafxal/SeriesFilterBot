@@ -504,15 +504,22 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
         })
         print(f"[FSUB] session set uid={uid} → series={series!r} season={season} lang={lang!r} quality={quality!r}")
 
+        # FIX: on_complete releases the lock AFTER delivery finishes.
+        # Previously the lock was never released because files.py had no
+        # on_complete parameter, causing every user to be permanently locked
+        # after their first delivery.
         async def _after_delivery():
             release_delivery_lock(uid)
             print(f"[FSUB] delivery done uid={uid} — lock released")
 
+        # FIX: do NOT release the lock here — _after_delivery does it.
+        # deliver_files_direct now accepts and calls on_complete.
         await deliver_files_direct(cyber, uid, on_complete=_after_delivery)
         return True
 
     except Exception as e:
         print(f"[FSUB] do_deliver error uid={uid}: {e}")
+        # Always release on exception so user isn't permanently locked
         release_delivery_lock(uid)
         return False
 
@@ -560,8 +567,17 @@ async def _try_auto_deliver(cyber, uid: int):
 
     else:
         try:
-            bot    = await cyber.get_me()
-            new_kb = build_fsub_keyboard(bot.username, payload, statuses)
+            # FIX: use cached bot username instead of get_me() on every press
+            from utils.filters import _get_bot_info as _gbf  # noqa: F401
+        except ImportError:
+            _gbf = None
+        try:
+            if _gbf:
+                _, bot_username = await _gbf(cyber)
+            else:
+                bot_obj = await cyber.get_me()
+                bot_username = bot_obj.username
+            new_kb = build_fsub_keyboard(bot_username, payload, statuses)
             await msg.edit_reply_markup(new_kb)
         except Exception:
             pass
