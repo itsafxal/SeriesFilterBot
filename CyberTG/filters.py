@@ -441,6 +441,7 @@ def register_filters(cyber: Client):
         series, suggestions = await resolve_series_with_suggestions(m.text)
 
         if series:
+            series = series.lower()  # FIX: normalize so callback_data uses DB's normalized_name
             poster, year, genre, rating = await _get_poster(series, settings)
             seasons = list((await get_series_summary(series))["seasons"])
             kb      = build_season_pages(seasons, uid, series)
@@ -508,7 +509,7 @@ def register_filters(cyber: Client):
         except Exception:
             pass
 
-        series = q.data.split("|", 1)[1]
+        series = q.data.split("|", 1)[1].lower()  # FIX: normalize to lowercase — DB uses normalized_name
         auto_del = settings["auto_delete_delay"]
         poster, year, genre, rating = await _get_poster(series, settings)
         seasons = list((await get_series_summary(series))["seasons"])
@@ -537,6 +538,7 @@ def register_filters(cyber: Client):
     @cyber.on_callback_query(filters.regex("^spg\\|"))
     async def spg(_, q):
         _, uid, series, page = q.data.split("|", 3)
+        series = series.lower()  # FIX: DB stores normalized_name in lowercase
         if not await check_owner(q, uid):
             return
         # Answer immediately
@@ -562,6 +564,7 @@ def register_filters(cyber: Client):
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q):
         _, uid, series, season = q.data.split("|", 3)
+        series = series.lower()  # FIX: DB stores normalized_name in lowercase
         settings = await _get_settings()
         if q.from_user.id not in ADMIN_USERS and settings["maintenance"]:
             return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
@@ -599,6 +602,7 @@ def register_filters(cyber: Client):
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q):
         _, uid, series, season, lang = q.data.split("|", 4)
+        series = series.lower()  # FIX: DB stores normalized_name in lowercase
         if not await check_owner(q, uid):
             return
 
@@ -619,12 +623,10 @@ def register_filters(cyber: Client):
         qs   = [qc[0] for qc in qc_pairs]
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
 
-        try:
-            from utils.cyber_filebot import get_filebot_username
-            _fb_uname = await get_filebot_username()
-        except Exception:
-            _fb_uname = None
-        _link_username = _fb_uname or bot_username
+        # FIX: filebot removed — always use main bot username for delivery links.
+        # Previously this tried to import cyber_filebot which no longer exists,
+        # causing _fb_uname=None and generating broken "t.me/None?start=..." URLs.
+        _link_username = bot_username
 
         # FIX: encode ALL payloads concurrently instead of sequentially in a loop.
         # Each encode_payload does a MongoDB write — doing them one-by-one can take
@@ -666,6 +668,7 @@ def register_filters(cyber: Client):
     @cyber.on_callback_query(filters.regex("^bk_season\\|"))
     async def bk_season(_, q):
         _, uid, series = q.data.split("|", 2)
+        series = series.lower()  # FIX: DB stores normalized_name in lowercase
         if not await check_owner(q, uid):
             return
         # Answer immediately
@@ -695,6 +698,7 @@ def register_filters(cyber: Client):
     @cyber.on_callback_query(filters.regex("^bk_lang\\|"))
     async def bk_lang(_, q):
         _, uid, series, season = q.data.split("|", 3)
+        series = series.lower()  # FIX: DB stores normalized_name in lowercase
         if not await check_owner(q, uid):
             return
         # Answer immediately
