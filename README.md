@@ -11,12 +11,3 @@
 </p>
 
 
-<p align="center">
-  <img src="https://files.catbox.moe/ivj3km.jpg" width="30%">
-  <img src="https://files.catbox.moe/krlzjs.jpg" width="30%">
-  <img src="https://files.catbox.moe/rjj4do.jpg" width="30%">
-</p>
-
-<p align="center">
-  ✦ Clean • Minimal • Premium Interface ✦
-</p>
