@@ -150,10 +150,17 @@ async def safe_send(cyber, user_id, f, caption, auto_delay):
 # MAIN DELIVERY
 # ─────────────────────────────
 
-async def deliver_files_direct(cyber, user_id):
+async def deliver_files_direct(cyber, user_id, on_complete=None):
+    """
+    Deliver files to user.
+    on_complete: optional async callable invoked after delivery finishes
+                 (used by fsub.py to release the delivery lock).
+    """
 
     session = await get_session_async(user_id)
     if not session:
+        if on_complete:
+            await on_complete()
         return
 
     series = session["series"]
@@ -167,6 +174,10 @@ async def deliver_files_direct(cyber, user_id):
 
     if not files:
         await cyber.send_message(user_id, "❌ No files found.")
+        # FIX: clear session and release lock even when no files found
+        clear_session(user_id)
+        if on_complete:
+            await on_complete()
         return
 
     # ✅ SORT EPISODES PROPERLY
@@ -175,6 +186,8 @@ async def deliver_files_direct(cyber, user_id):
     auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
     auto_delay = int(auto_delay or 0)
 
+    # FIX: clear session AFTER reading all needed data, not before sending
+    # so a retry can still find the session if something goes wrong mid-send.
     clear_session(user_id)
 
     if PROGRESS_MESSAGE_ENABLED:
@@ -222,3 +235,7 @@ async def deliver_files_direct(cyber, user_id):
         )
 
     logger.info(f"✅ Delivered {sent}/{len(files)} to {user_id}")
+
+    # FIX: notify caller (fsub.py) that delivery is done so the lock is released
+    if on_complete:
+        await on_complete()
