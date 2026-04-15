@@ -522,72 +522,12 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
 # ═══════════════════════════════════════════════════════════════
 
 async def do_deliver_via_filebot(main_cyber, uid: int, payload: str, source: str = "unknown") -> bool:
-    if not acquire_delivery_lock(uid):
-        print(f"[FSUB] do_deliver_via_filebot uid={uid} source={source} → LOCKED")
-        return False
-
-    print(f"[FSUB] do_deliver_via_filebot uid={uid} source={source} → lock acquired")
-
-    try:
-        from utils.cyber_filter import decode_payload_async
-        decoded = await decode_payload_async(payload)
-
-        if not decoded:
-            release_delivery_lock(uid)
-            from pyrogram import enums as _enums
-            await main_cyber.send_message(
-                uid,
-                "⏳ <b>Link Expired</b>\n"
-                "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-                "This download link has expired.\n"
-                "<i>Please search for the series again to get a fresh link.</i>",
-                parse_mode="html",
-            )
-            return False
-
-        owner, series, season, lang, quality = decoded
-
-        if int(owner) != uid:
-            release_delivery_lock(uid)
-            await main_cyber.send_message(
-                uid,
-                "⛔ <b>Access Denied</b>\n"
-                "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-                "<i>This link belongs to another user.</i>",
-                parse_mode="html",
-            )
-            return False
-
-        try:
-            from utils.cyber_filebot import get_filebot_client, is_filebot_configured, _deliver_via_filebot_client
-            if is_filebot_configured():
-                file_client = await get_filebot_client()
-                if file_client:
-                    from CyberTG.files import set_session
-                    set_session(uid, {
-                        "series":   series,
-                        "season":   int(season),
-                        "language": lang,
-                        "quality":  quality,
-                    })
-
-                    async def _after():
-                        release_delivery_lock(uid)
-                        print(f"[FSUB] filebot delivery done uid={uid} — lock released")
-
-                    await _deliver_via_filebot_client(main_cyber, file_client, uid, on_complete=_after)
-                    return True
-        except Exception as e:
-            print(f"[FSUB] filebot path failed uid={uid}: {e} — falling back to main bot")
-
-        print(f"[FSUB] do_deliver_via_filebot falling back to main-bot delivery uid={uid}")
-        release_delivery_lock(uid)
-        return await do_deliver(main_cyber, uid, payload, source=f"{source}_fallback")
-
-    except Exception as e:
-        print(f"[FSUB] do_deliver_via_filebot error uid={uid}: {e}")
-        release_delivery_lock(uid)
-        return False
+    # FIX: filebot has been removed. This stub keeps backward compatibility for
+    # any call-sites that still reference do_deliver_via_filebot (e.g. _try_auto_deliver
+    # with via_filebot=True from old pending entries in memory). All delivery is now
+    # handled by the main bot via do_deliver().
+    print(f"[FSUB] do_deliver_via_filebot → delegating to main-bot delivery uid={uid} source={source}")
+    return await do_deliver(main_cyber, uid, payload, source=source)
 
 
 # ═══════════════════════════════════════════════════════════════
