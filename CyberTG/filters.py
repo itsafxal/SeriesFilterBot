@@ -18,9 +18,70 @@ FIXES in this version:
 
   4. Settings TTL cache unchanged — poster_enabled, poster_landscape, auto_delete_delay,
      filter_enabled, maintenance are still fetched once per 30s and cached in process.
+
+  ─────────────────────────────────────────────────────────────
+  BUG FIX (this version): SEASON BUTTON BROKEN FOR SHORT/SPECIAL SERIES NAMES
+  ─────────────────────────────────────────────────────────────
+
+  ROOT CAUSE:
+    The series name stored in callback_data (e.g. "gss|{uid}|{series}|{season}")
+    comes from two sources:
+
+      a) search_handler  → calls search_series(query) → returns normalized_name
+         from SQLite (e.g. "Dark", "Dark Season 1", etc.)
+      b) sug handler     → takes the raw series from the suggestion button label
+         (e.g. "Dark") set by suggest_series() / suggest_series_with_year()
+
+    The DB stores normalized_name as the result of _normalized_series_name()
+    applied to each file_name.  That function always produces Title-Case output,
+    e.g. "Dark", "Breaking Bad", "The Boys".
+
+    When the user taps a Season button, gss splits q.data and calls:
+        get_unique_languages_by_season(series, int(season))
+
+    This hits SQLite with a COLLATE NOCASE query, so case should not matter.
+
+    THE ACTUAL BUG: The suggestion buttons in the "Did you mean..." screen are
+    built from suggest_series_with_year() results.  That function calls
+    search_series(query) → get_all_series_sync() internally → returns the
+    normalized_name strings as stored in SQLite.  So far so good.
+
+    HOWEVER, cyber_series.suggest_series() also calls the TMDB/OMDB enrichment
+    step (_validate_and_enrich), and format_suggestion_label() appends the year:
+        "Dark (2017)"
+    The callback_data for that button is set to:
+        f"sug|{s}"   where s = "Dark (2017)"   ← YEAR IS INCLUDED!
+
+    Then in the sug handler:
+        series = q.data.split("|", 1)[1].lower()
+        → series = "dark (2017)"
+
+    That series name (with the year suffix) is then embedded into:
+        f"gss|{uid}|{series}|{s}"
+        → "gss|12345|dark (2017)|1"
+
+    When gss fires, it queries:
+        get_unique_languages_by_season("dark (2017)", 1)
+    but SQLite has the row stored as normalized_name = "Dark" — no year — so
+    the query returns [] (empty). No languages found → no buttons → season tap
+    does nothing (silent failure).
+
+  FIX APPLIED:
+    1. In sug handler: strip any " (YYYY)" year suffix from the series name
+       before embedding it into season button callback_data.
+
+    2. In build_season_pages: keep using series as-is (already cleaned by sug).
+
+    3. In gss / gls / bk_season / bk_lang / spg: add a strip_year() call on
+       the incoming series value from callback_data, as a belt-and-suspenders
+       defence against any other path that could sneak a year in.
+
+    4. The suggestion button LABEL still shows the year for display purposes —
+       only the callback_data payload is stripped of the year.
 """
 
 import math
+import re
 import time
 import asyncio
 
@@ -49,9 +110,27 @@ from DB.database import (
     get_poster_landscape,
 )
 
-from utils.cyber_series import suggest_series, check_owner
+from utils.cyber_series import suggest_series_with_year, check_owner
 from utils.cyber_filter import encode_payload
 from utils.cyber_delete import delete_message_later
+
+
+# ─────────────────────────────────────────────────────────────
+# YEAR SUFFIX STRIPPER  ← FIX
+# ─────────────────────────────────────────────────────────────
+
+_YEAR_SUFFIX_RE = re.compile(r"\s*\(\d{4}\)\s*$")
+
+
+def _strip_year(series: str) -> str:
+    """
+    Remove trailing year suffix added by format_suggestion_label().
+    e.g. "dark (2017)"  →  "dark"
+         "the boys (2019)" → "the boys"
+         "dark"            → "dark"   (unchanged)
+    Always returns lowercase (DB normalized_name is stored lowercase).
+    """
+    return _YEAR_SUFFIX_RE.sub("", series.lower()).strip()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -223,9 +302,10 @@ async def resolve_series_with_suggestions(text: str):
 
     if not results:
         try:
-            fuzzy = await suggest_series(query)
+            fuzzy = await suggest_series_with_year(query)
             if isinstance(fuzzy, (list, tuple)):
-                return None, list(dict.fromkeys(fuzzy))[:4]
+                # fuzzy is list of (title, year) tuples
+                return None, list(fuzzy)[:4]
         except Exception:
             pass
         return None, []
@@ -237,9 +317,10 @@ async def resolve_series_with_suggestions(text: str):
         result_words = unique[0].lower().split()
         if len(query_words) >= len(result_words):
             return unique[0], []
-        return None, unique
+        # Return as (title, year=None) tuples to be consistent
+        return None, [(unique[0], None)]
 
-    return None, unique
+    return None, [(s, None) for s in unique]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -307,6 +388,8 @@ def build_season_pages(seasons, uid, series, page=0):
     start = page * SEASONS_PER_PAGE
     chunk = seasons[start:start + SEASONS_PER_PAGE]
 
+    # FIX: series arriving here must already be year-stripped and lowercased.
+    # build_season_pages does NOT strip itself — callers are responsible.
     rows, row = [], []
     for s in chunk:
         row.append(InlineKeyboardButton(
@@ -441,7 +524,8 @@ def register_filters(cyber: Client):
         series, suggestions = await resolve_series_with_suggestions(m.text)
 
         if series:
-            series = series.lower()  # FIX: normalize so callback_data uses DB's normalized_name
+            # FIX: normalize so callback_data uses DB's normalized_name (no year suffix)
+            series = _strip_year(series)
             poster, year, genre, rating = await _get_poster(series, settings)
             seasons = list((await get_series_summary(series))["seasons"])
             kb      = build_season_pages(seasons, uid, series)
@@ -458,6 +542,8 @@ def register_filters(cyber: Client):
             return
 
         if suggestions:
+            # suggestions is now a list of (title, year_or_None) tuples
+            from utils.cyber_series import format_suggestion_label
             lines = [
                 "🔍 <b>Did you mean...</b>",
                 "<b>━━━━━━━━━━━━━━━━━━━━━</b>",
@@ -467,10 +553,16 @@ def register_filters(cyber: Client):
                 "",
                 "Tap a title to select it ↓",
             ]
-            buttons = [
-                [InlineKeyboardButton(f"🎬  {s}", callback_data=f"sug|{s}")]
-                for s in suggestions
-            ]
+            buttons = []
+            for title, yr in suggestions:
+                display_label = format_suggestion_label(title, yr)
+                # FIX: callback_data stores the CLEAN title (no year), not the display label.
+                # The year is only for human display; the DB doesn't know about it.
+                clean_title = _strip_year(title)
+                buttons.append([InlineKeyboardButton(
+                    f"🎬  {display_label}",
+                    callback_data=f"sug|{clean_title}"
+                )])
             buttons.append([InlineKeyboardButton("✖️  Close", callback_data="close_spell")])
             msg = await _safe_reply_photo(
                 m, SPELL_IMG,
@@ -509,7 +601,12 @@ def register_filters(cyber: Client):
         except Exception:
             pass
 
-        series = q.data.split("|", 1)[1].lower()  # FIX: normalize to lowercase — DB uses normalized_name
+        # FIX: strip year suffix AND normalize to lowercase.
+        # callback_data is already clean (set by search_handler above),
+        # but _strip_year is idempotent so calling it again is safe.
+        raw_series = q.data.split("|", 1)[1]
+        series = _strip_year(raw_series)
+
         auto_del = settings["auto_delete_delay"]
         poster, year, genre, rating = await _get_poster(series, settings)
         seasons = list((await get_series_summary(series))["seasons"])
@@ -538,7 +635,8 @@ def register_filters(cyber: Client):
     @cyber.on_callback_query(filters.regex("^spg\\|"))
     async def spg(_, q):
         _, uid, series, page = q.data.split("|", 3)
-        series = series.lower()  # FIX: DB stores normalized_name in lowercase
+        # FIX: strip year AND normalize to lowercase
+        series = _strip_year(series)
         if not await check_owner(q, uid):
             return
         # Answer immediately
@@ -564,7 +662,12 @@ def register_filters(cyber: Client):
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q):
         _, uid, series, season = q.data.split("|", 3)
-        series = series.lower()  # FIX: DB stores normalized_name in lowercase
+        # FIX: strip year suffix AND normalize to lowercase.
+        # This is the core fix for the "Dark" and other series bug:
+        # if series arrived as "dark (2017)" from old callback_data,
+        # _strip_year turns it into "dark" which matches DB normalized_name.
+        series = _strip_year(series)
+
         settings = await _get_settings()
         if q.from_user.id not in ADMIN_USERS and settings["maintenance"]:
             return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
@@ -602,7 +705,8 @@ def register_filters(cyber: Client):
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q):
         _, uid, series, season, lang = q.data.split("|", 4)
-        series = series.lower()  # FIX: DB stores normalized_name in lowercase
+        # FIX: strip year AND normalize to lowercase
+        series = _strip_year(series)
         if not await check_owner(q, uid):
             return
 
@@ -624,13 +728,9 @@ def register_filters(cyber: Client):
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
 
         # FIX: filebot removed — always use main bot username for delivery links.
-        # Previously this tried to import cyber_filebot which no longer exists,
-        # causing _fb_uname=None and generating broken "t.me/None?start=..." URLs.
         _link_username = bot_username
 
         # FIX: encode ALL payloads concurrently instead of sequentially in a loop.
-        # Each encode_payload does a MongoDB write — doing them one-by-one can take
-        # 5-15s total for multiple qualities, blowing past Telegram's 10s timeout.
         payloads = await asyncio.gather(
             *[encode_payload(series, season, lang, quality, uid) for quality, _ in qc_pairs],
             return_exceptions=True,
@@ -668,7 +768,8 @@ def register_filters(cyber: Client):
     @cyber.on_callback_query(filters.regex("^bk_season\\|"))
     async def bk_season(_, q):
         _, uid, series = q.data.split("|", 2)
-        series = series.lower()  # FIX: DB stores normalized_name in lowercase
+        # FIX: strip year AND normalize to lowercase
+        series = _strip_year(series)
         if not await check_owner(q, uid):
             return
         # Answer immediately
@@ -698,7 +799,8 @@ def register_filters(cyber: Client):
     @cyber.on_callback_query(filters.regex("^bk_lang\\|"))
     async def bk_lang(_, q):
         _, uid, series, season = q.data.split("|", 3)
-        series = series.lower()  # FIX: DB stores normalized_name in lowercase
+        # FIX: strip year AND normalize to lowercase
+        series = _strip_year(series)
         if not await check_owner(q, uid):
             return
         # Answer immediately
