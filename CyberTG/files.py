@@ -229,10 +229,11 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
         await cyber.delete_messages(user_id, msg.id)
 
     if auto_delay:
-        await cyber.send_message(
+        notif = await cyber.send_message(
             user_id,
             f"⏳ Files will delete in {auto_delay} seconds"
         )
+        delete_message_later(cyber, user_id, notif.id, auto_delay)
 
     logger.info(f"✅ Delivered {sent}/{len(files)} to {user_id}")
 
