@@ -333,7 +333,7 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
             doc.get("season", 0),
             doc.get("episode", 0),
             doc.get("quality", "Unknown"),
-            doc.get("language", "English"),
+            doc.get("language", "Unknown") or "Unknown",  # replace None/'' with Unknown
             doc.get("file_id"),
             doc.get("media_type", "document"),
             doc.get("caption", ""),
@@ -413,6 +413,18 @@ def repair_normalized_names_in_sqlite_sync(logger):
         logger.info(f"🛠️ Repaired {len(updates)} normalized_name rows.")
     else:
         logger.info("[NORM REPAIR] No rows needed repair.")
+
+    # Also fix any blank/None language values that would cause BUTTON_DATA_INVALID
+    try:
+        cursor.execute(
+            "UPDATE files SET language = 'Unknown' WHERE language IS NULL OR language = ''"
+        )
+        if cursor.rowcount:
+            conn.commit()
+            logger.info(f"🛠️ Fixed {cursor.rowcount} blank language rows → 'Unknown'.")
+    except Exception as _le:
+        logger.error(f"[NORM REPAIR] blank language fix failed: {_le}")
+
     # Mark as done so future boots skip this entirely
     try:
         conn.execute(
@@ -627,6 +639,7 @@ def get_unique_languages_by_season_sync(series_name: str, season: int):
     cursor.execute("""
         SELECT DISTINCT language FROM files
         WHERE normalized_name = ? COLLATE NOCASE AND season = ?
+          AND language IS NOT NULL AND language != ''
         ORDER BY language ASC
     """, (series_name.lower(), season))
     return tuple(r[0] for r in cursor.fetchall())
