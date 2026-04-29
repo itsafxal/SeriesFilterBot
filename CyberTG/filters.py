@@ -116,8 +116,51 @@ from utils.cyber_delete import delete_message_later
 
 
 # ─────────────────────────────────────────────────────────────
-# YEAR SUFFIX STRIPPER  ← FIX
+# SERIES NAME REGISTRY
+# Telegram limits callback_data to 64 bytes.
+# Embedding the full series name (e.g. "gss|1234567890|stranger things|1")
+# can exceed that limit for long UIDs or series names.
+#
+# Solution: map every series name to a short numeric key (sid) at runtime.
+# callback_data stores the sid; handlers look up the real name.
+# The registry is process-scoped (survives for the bot's lifetime) and
+# capped at _SID_MAX entries to avoid unbounded growth.
 # ─────────────────────────────────────────────────────────────
+
+_SID_MAP:    dict[int, str] = {}   # sid  → series_name
+_SID_REVMAP: dict[str, int] = {}   # series_name → sid
+_SID_NEXT:   int            = 1
+_SID_MAX:    int            = 50_000
+
+
+def _get_sid(series: str) -> int:
+    """Return existing sid for series, or allocate a new one."""
+    global _SID_NEXT
+    series = series.lower().strip()
+    if series in _SID_REVMAP:
+        return _SID_REVMAP[series]
+    sid = _SID_NEXT
+    _SID_NEXT += 1
+    # Evict oldest entry if cap hit (rare — 50k unique series is enormous)
+    if len(_SID_MAP) >= _SID_MAX:
+        oldest_sid = next(iter(_SID_MAP))
+        oldest_name = _SID_MAP.pop(oldest_sid)
+        _SID_REVMAP.pop(oldest_name, None)
+    _SID_MAP[sid]        = series
+    _SID_REVMAP[series]  = sid
+    return sid
+
+
+def _sid_to_series(sid_str: str) -> str:
+    """Resolve a sid string back to the full series name. Returns '' if unknown."""
+    try:
+        return _SID_MAP.get(int(sid_str), "")
+    except (ValueError, TypeError):
+        # Fallback: old-style callback_data that embedded the name directly
+        return sid_str.lower().strip()
+
+
+
 
 _YEAR_SUFFIX_RE = re.compile(r"\s*\(\d{4}\)\s*$")
 
@@ -384,16 +427,17 @@ def build_grid_keyboard(items, cb_builder, per_row=2, back_btn=None):
 
 
 def build_season_pages(seasons, uid, series, page=0):
+    # Use a short numeric sid instead of the full series name in callback_data
+    # to stay well under Telegram's 64-byte callback_data limit.
+    sid = _get_sid(series)
     total_pages = math.ceil(len(seasons) / SEASONS_PER_PAGE)
     start = page * SEASONS_PER_PAGE
     chunk = seasons[start:start + SEASONS_PER_PAGE]
 
-    # FIX: series arriving here must already be year-stripped and lowercased.
-    # build_season_pages does NOT strip itself — callers are responsible.
     rows, row = [], []
     for s in chunk:
         row.append(InlineKeyboardButton(
-            f"Season {s:02d}", callback_data=f"gss|{uid}|{series}|{s}"
+            f"Season {s:02d}", callback_data=f"gss|{uid}|{sid}|{s}"
         ))
         if len(row) == 3:
             rows.append(row)
@@ -404,10 +448,10 @@ def build_season_pages(seasons, uid, series, page=0):
     if total_pages > 1:
         nav = []
         if page > 0:
-            nav.append(InlineKeyboardButton("◀  Prev", callback_data=f"spg|{uid}|{series}|{page-1}"))
+            nav.append(InlineKeyboardButton("◀  Prev", callback_data=f"spg|{uid}|{sid}|{page-1}"))
         nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
         if page < total_pages - 1:
-            nav.append(InlineKeyboardButton("Next  ▶", callback_data=f"spg|{uid}|{series}|{page+1}"))
+            nav.append(InlineKeyboardButton("Next  ▶", callback_data=f"spg|{uid}|{sid}|{page+1}"))
         rows.append(nav)
 
     return InlineKeyboardMarkup(rows)
@@ -634,8 +678,11 @@ def register_filters(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^spg\\|"))
     async def spg(_, q):
-        _, uid, series, page = q.data.split("|", 3)
-        # FIX: strip year AND normalize to lowercase
+        _, uid, sid_or_series, page = q.data.split("|", 3)
+        series = _sid_to_series(sid_or_series)
+        if not series:
+            return await q.answer("Session expired. Please search again.", show_alert=True)
+        # FIX: strip any stray year suffix, ensure lowercase
         series = _strip_year(series)
         if not await check_owner(q, uid):
             return
@@ -661,11 +708,13 @@ def register_filters(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q):
-        _, uid, series, season = q.data.split("|", 3)
-        # FIX: strip year suffix AND normalize to lowercase.
-        # This is the core fix for the "Dark" and other series bug:
-        # if series arrived as "dark (2017)" from old callback_data,
-        # _strip_year turns it into "dark" which matches DB normalized_name.
+        _, uid, sid_or_series, season = q.data.split("|", 3)
+        # Resolve sid → full series name (sid is an int key; fallback handles
+        # any old-style callbacks that still embed the name directly).
+        series = _sid_to_series(sid_or_series)
+        if not series:
+            return await q.answer("Session expired. Please search again.", show_alert=True)
+        # Belt-and-suspenders: strip any stray year suffix, ensure lowercase
         series = _strip_year(series)
 
         settings = await _get_settings()
@@ -685,8 +734,9 @@ def register_filters(cyber: Client):
             _get_poster(series, settings),
         )
         poster, year, genre, rating = poster_r
-        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{series}")
-        kb   = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
+        sid  = _get_sid(series)
+        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{sid}")
+        kb   = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{sid}|{season}|{l}", back_btn=back)
         _cap = build_caption(series, year, genre, rating, languages=langs, step="language")
         try:
             await q.message.edit_caption(_cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
@@ -706,8 +756,10 @@ def register_filters(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q):
-        _, uid, series, season, lang = q.data.split("|", 4)
-        # FIX: strip year AND normalize to lowercase
+        _, uid, sid_or_series, season, lang = q.data.split("|", 4)
+        series = _sid_to_series(sid_or_series)
+        if not series:
+            return await q.answer("Session expired. Please search again.", show_alert=True)
         series = _strip_year(series)
         if not await check_owner(q, uid):
             return
@@ -769,8 +821,10 @@ def register_filters(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^bk_season\\|"))
     async def bk_season(_, q):
-        _, uid, series = q.data.split("|", 2)
-        # FIX: strip year AND normalize to lowercase
+        _, uid, sid_or_series = q.data.split("|", 2)
+        series = _sid_to_series(sid_or_series)
+        if not series:
+            return await q.answer("Session expired. Please search again.", show_alert=True)
         series = _strip_year(series)
         if not await check_owner(q, uid):
             return
@@ -802,8 +856,10 @@ def register_filters(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^bk_lang\\|"))
     async def bk_lang(_, q):
-        _, uid, series, season = q.data.split("|", 3)
-        # FIX: strip year AND normalize to lowercase
+        _, uid, sid_or_series, season = q.data.split("|", 3)
+        series = _sid_to_series(sid_or_series)
+        if not series:
+            return await q.answer("Session expired. Please search again.", show_alert=True)
         series = _strip_year(series)
         if not await check_owner(q, uid):
             return
@@ -818,8 +874,9 @@ def register_filters(cyber: Client):
             _get_poster(series, settings),
         )
         poster, year, genre, rating = poster_r
-        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{series}")
-        kb   = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
+        sid  = _get_sid(series)
+        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{sid}")
+        kb   = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{sid}|{season}|{l}", back_btn=back)
         _cap = build_caption(series, year, genre, rating, languages=langs, step="language")
         try:
             await q.message.edit_caption(_cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
