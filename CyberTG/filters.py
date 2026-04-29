@@ -687,16 +687,18 @@ def register_filters(cyber: Client):
         poster, year, genre, rating = poster_r
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{series}")
         kb   = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
+        _cap = build_caption(series, year, genre, rating, languages=langs, step="language")
         try:
-            await q.message.edit_caption(
-                build_caption(series, year, genre, rating, languages=langs, step="language"),
-                parse_mode=enums.ParseMode.HTML,
-                reply_markup=kb,
-            )
+            await q.message.edit_caption(_cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
         except MessageNotModified:
             pass
-        except Exception:
-            pass
+        except Exception as _e:
+            import logging as _log
+            _log.getLogger("BOT").error(f"[gss] edit_caption failed series={series!r} season={season}: {_e}")
+            try:
+                await q.message.edit_text(_cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
+            except Exception:
+                pass
 
     # ── LANGUAGE → QUALITY (URL buttons)
     # FIX: uses cached _get_bot_info() instead of cyber.get_me() per tap
@@ -785,16 +787,18 @@ def register_filters(cyber: Client):
         season_list = list(seasons["seasons"])
         poster, year, genre, rating = poster_r
         kb = build_season_pages(season_list, uid, series, page=0)
+        _cap = build_caption(series, year, genre, rating, seasons=season_list, step="season")
         try:
-            await q.message.edit_caption(
-                build_caption(series, year, genre, rating, seasons=season_list, step="season"),
-                parse_mode=enums.ParseMode.HTML,
-                reply_markup=kb,
-            )
+            await q.message.edit_caption(_cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
         except MessageNotModified:
             pass
-        except Exception:
-            pass
+        except Exception as _e:
+            import logging as _log
+            _log.getLogger("BOT").error(f"[bk_season] edit_caption failed series={series!r}: {_e}")
+            try:
+                await q.message.edit_text(_cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
+            except Exception:
+                pass
 
     @cyber.on_callback_query(filters.regex("^bk_lang\\|"))
     async def bk_lang(_, q):
@@ -816,16 +820,18 @@ def register_filters(cyber: Client):
         poster, year, genre, rating = poster_r
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{series}")
         kb   = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{series}|{season}|{l}", back_btn=back)
+        _cap = build_caption(series, year, genre, rating, languages=langs, step="language")
         try:
-            await q.message.edit_caption(
-                build_caption(series, year, genre, rating, languages=langs, step="language"),
-                parse_mode=enums.ParseMode.HTML,
-                reply_markup=kb,
-            )
+            await q.message.edit_caption(_cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
         except MessageNotModified:
             pass
-        except Exception:
-            pass
+        except Exception as _e:
+            import logging as _log
+            _log.getLogger("BOT").error(f"[bk_lang] edit_caption failed series={series!r} season={season}: {_e}")
+            try:
+                await q.message.edit_text(_cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
+            except Exception:
+                pass
 
     # NOTE: bk_qual handler REMOVED — quality step shows URL buttons (no callback),
     # so there is no "back from quality" navigation. The handler was dead code that
