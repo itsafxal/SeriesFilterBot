@@ -490,6 +490,8 @@ _QUALITY_ORDER = ["4K", "1080P", "720P", "480P", "360P", "UNKNOWN"]
 @lru_cache(maxsize=1024)
 def get_series_summary_sync(series_name: str):
     """Single query for all summary data — 3× faster than 3 separate queries."""
+    # FIX: always lowercase — DB stores normalized_name in lowercase
+    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
 
@@ -529,7 +531,8 @@ def search_series_sync(query: str):
     conn   = _get_conn()
     cursor = conn.cursor()
 
-    q = query.strip()
+    # FIX: always lowercase — normalized_name is stored lowercase in DB
+    q = (query or "").strip().lower()
     if not q:
         return ()
 
@@ -564,6 +567,8 @@ def search_series_sync(query: str):
 
 @lru_cache(maxsize=1024)
 def get_unique_languages_by_name_sync(series_name: str):
+    # FIX: normalize to lowercase before cache key and query
+    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
@@ -575,6 +580,8 @@ def get_unique_languages_by_name_sync(series_name: str):
 
 @lru_cache(maxsize=1024)
 def get_unique_seasons_by_name_sync(series_name: str, language: str):
+    # FIX: normalize series_name to lowercase
+    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
@@ -587,6 +594,8 @@ def get_unique_seasons_by_name_sync(series_name: str, language: str):
 
 @lru_cache(maxsize=1024)
 def get_unique_qualities_by_season_sync(series_name: str, language: str, season: int):
+    # FIX: normalize series_name to lowercase
+    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
@@ -600,6 +609,8 @@ def get_unique_qualities_by_season_sync(series_name: str, language: str, season:
 
 def get_all_files_by_season_and_quality_sync(series_name: str, season: int,
                                              quality: str, language: str):
+    # FIX: normalize series_name to lowercase
+    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
@@ -612,6 +623,9 @@ def get_all_files_by_season_and_quality_sync(series_name: str, season: int,
 
 @lru_cache(maxsize=1024)
 def get_unique_languages_by_season_sync(series_name: str, season: int):
+    # FIX: normalize series_name to lowercase — DB stores normalized_name lowercase
+    # This was the primary cause of season buttons doing nothing after suggestion click
+    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
@@ -624,6 +638,8 @@ def get_unique_languages_by_season_sync(series_name: str, season: int):
 
 @lru_cache(maxsize=1024)
 def get_unique_qualities_by_lang_season_sync(series_name: str, language: str, season: int):
+    # FIX: normalize series_name to lowercase
+    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
@@ -649,6 +665,8 @@ def get_unique_qualities_with_codec_sync(series_name: str, language: str, season
       2. codec present (non-empty first)
       3. codec alpha   (deterministic tie-break between e.g. H.264 vs H.265)
     """
+    # FIX: normalize series_name to lowercase
+    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
