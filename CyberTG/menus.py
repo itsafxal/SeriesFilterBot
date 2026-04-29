@@ -262,7 +262,6 @@ async def global_settings_router(_, query):
         [InlineKeyboardButton(f"Caption Lang  {cap_status}", callback_data="caplang|toggle"),
          InlineKeyboardButton(f"Filter  {filt_status}",      callback_data="filtertog|toggle")],
         [InlineKeyboardButton(f"Poster  {post_status}  ({ori_status})", callback_data="postertog|main")],
-        [InlineKeyboardButton("🤖  File Bot",    callback_data="filebot|main")],
         [InlineKeyboardButton("Back",            callback_data="admin|menu")],
     ])
     await safe_edit(
@@ -937,6 +936,11 @@ async def caplang_toggle_router(_, query: CallbackQuery):
     new_val = not current
     await set_global_setting("CAPTION_LANG", new_val)
     status  = "ON" if new_val else "OFF"
+    try:
+        from CyberTG.filters import _invalidate_settings_cache
+        _invalidate_settings_cache()
+    except Exception:
+        pass
     await query.answer(f"Caption Language Detection: {status}", show_alert=True)
     await global_settings_router(_, query)
 
@@ -950,6 +954,13 @@ async def filter_toggle_router(_, query: CallbackQuery):
     new_val = not current
     await set_filter_enabled(new_val)
     status  = "ON" if new_val else "OFF"
+    # FIX: invalidate the 30-second TTL cache in filters.py so the new value
+    # takes effect immediately for the next user search (not after 30 s).
+    try:
+        from CyberTG.filters import _invalidate_settings_cache
+        _invalidate_settings_cache()
+    except Exception:
+        pass
     await query.answer(f"Filter Search: {status}", show_alert=True)
     await global_settings_router(_, query)
 
@@ -1011,172 +1022,7 @@ async def poster_settings_router(_, query: CallbackQuery):
 # ══════════════════════════════════════════════════════════════
 
 
-# ══════════════════════════════════════════════════════════════
-# FILE BOT ADMIN ROUTER
-# ══════════════════════════════════════════════════════════════
-
-# State tracker for multi-step file bot setup
-_filebot_state: dict = {}   # { user_id: { "step": "token"|"channel" } }
-
-
-async def filebot_router(bot, query):
-    """Handles all filebot| callback queries."""
-    await query.answer()
-    uid    = query.from_user.id
-    action = query.data.split("|", 1)[1] if "|" in query.data else "main"
-
-    from utils.cyber_filebot import get_filebot_info, del_filebot_config
-
-    if action == "main":
-        info = get_filebot_info()
-        if info:
-            token_preview, channel_id = info
-            status_text = (
-                f"<b>🤖 File Bot Settings</b>\n"
-                f"──────────────────────\n\n"
-                f"✅ <b>File Bot is active</b>\n\n"
-                f"🔑 Token   : <code>{token_preview}</code>\n"
-                f"📡 Channel : <code>{channel_id}</code>\n\n"
-                f"<i>Files will be sent via the file bot.</i>"
-            )
-        else:
-            status_text = (
-                f"<b>🤖 File Bot Settings</b>\n"
-                f"──────────────────────\n\n"
-                f"❌ <b>No file bot configured</b>\n\n"
-                f"<i>Files are delivered directly by the main bot.\n"
-                f"Set a file bot to use dual-bot delivery.</i>"
-            )
-
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔧  Set File Bot", callback_data="filebot|set")],
-            [InlineKeyboardButton("🗑  Remove File Bot", callback_data="filebot|del")],
-            [InlineKeyboardButton("Back", callback_data="gset|main")],
-        ])
-        await safe_edit(query.message, caption=status_text, reply_markup=kb)
-        return
-
-    if action == "del":
-        await del_filebot_config()
-        await safe_edit(
-            query.message,
-            caption=(
-                "<b>🤖 File Bot</b>\n──────────────────────\n\n"
-                "✅ File bot removed.\n"
-                "<i>Files will now be delivered directly by the main bot.</i>"
-            ),
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Back", callback_data="filebot|main")]
-            ]),
-        )
-        return
-
-    if action == "set":
-        _filebot_state[uid] = {"step": "token"}
-        await safe_edit(
-            query.message,
-            caption=(
-                "<b>🤖 Set File Bot — Step 1 of 2</b>\n──────────────────────\n\n"
-                "Send the <b>Bot Token</b> of your file bot.\n\n"
-                "<i>Example: <code>123456:ABCdefGHI...</code></i>\n\n"
-                "Send /cancel to abort."
-            ),
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Cancel", callback_data="filebot|main")]
-            ]),
-        )
-        return
-
-
-async def _handle_filebot_input(bot, message):
-    """
-    Handles text input during multi-step file bot setup.
-    Called from the message handler registered below.
-    """
-    uid  = message.from_user.id
-    text = (message.text or "").strip()
-    state = _filebot_state.get(uid)
-
-    if not state:
-        return
-
-    if text == "/cancel":
-        _filebot_state.pop(uid, None)
-        await message.reply(
-            "❌ File bot setup cancelled.",
-            parse_mode=enums.ParseMode.HTML,
-        )
-        return
-
-    step = state.get("step")
-
-    if step == "token":
-        # Validate: must look like a bot token (digits:letters)
-        import re
-        if not re.match(r"^\d+:[A-Za-z0-9_-]{30,}$", text):
-            await message.reply(
-                "❌ That doesn't look like a valid bot token.\n"
-                "Expected format: <code>123456789:ABCdefGHI...</code>\n\n"
-                "Try again or send /cancel.",
-                parse_mode=enums.ParseMode.HTML,
-            )
-            return
-        state["token"] = text
-        state["step"]  = "channel"
-        await message.reply(
-            "<b>🤖 Set File Bot — Step 2 of 2</b>\n──────────────────────\n\n"
-            "Now send the <b>Deliver Channel ID</b>.\n\n"
-            "This channel must have <b>both bots as admin</b>.\n"
-            "<i>Example: <code>-1001234567890</code></i>\n\n"
-            "Send /cancel to abort.",
-            parse_mode=enums.ParseMode.HTML,
-        )
-        return
-
-    if step == "channel":
-        try:
-            channel_id = int(text)
-        except ValueError:
-            await message.reply(
-                "❌ Channel ID must be a number.\n"
-                "<i>Example: <code>-1001234567890</code></i>\n\n"
-                "Try again or send /cancel.",
-                parse_mode=enums.ParseMode.HTML,
-            )
-            return
-
-        token = state.get("token")
-        _filebot_state.pop(uid, None)
-
-        wait = await message.reply("⏳ Connecting file bot...", parse_mode=enums.ParseMode.HTML)
-
-        from utils.cyber_filebot import set_filebot_config, get_filebot_username, register_filebot_start_handler
-        # set_filebot_config connects immediately and caches the username
-        await set_filebot_config(token, channel_id)
-        fb_username = await get_filebot_username()
-
-        if fb_username:
-            # Register /start handler on the newly connected file bot
-            try:
-                register_filebot_start_handler(bot)
-            except Exception as _e:
-                import logging
-                logging.getLogger("BOT").warning(f"[FILEBOT] start handler register error: {_e}")
-            await wait.edit_text(
-                f"✅ <b>File Bot Connected!</b>\n──────────────────────\n\n"
-                f"🤖 Bot     : @{fb_username}\n"
-                f"📡 Channel : <code>{channel_id}</code>\n\n"
-                f"<i>Files will now be sent via the file bot.</i>",
-                parse_mode=enums.ParseMode.HTML,
-            )
-        else:
-            await wait.edit_text(
-                "❌ <b>Could not connect file bot.</b>\n\n"
-                "Check that the token is correct and the bot is not already running elsewhere.\n"
-                "Config was saved — you can try again via File Bot settings.",
-                parse_mode=enums.ParseMode.HTML,
-            )
-        return
+# File Bot removed — all delivery handled by main bot directly.
 
 
 _ALL_COMMANDS = [
@@ -1200,20 +1046,6 @@ def register_menu_handlers(cyber: Client):
 
     @cyber.on_callback_query(filters.regex(r"^gset\|"))
     async def _(c, q): await global_settings_router(c, q)
-
-    @cyber.on_callback_query(filters.regex(r"^filebot\|") & filters.user(ADMIN_USERS))
-    async def _(c, q): await filebot_router(c, q)
-
-    @cyber.on_message(filters.text & filters.private & filters.user(ADMIN_USERS), group=-1)
-    async def _filebot_text(c, m):
-        # Runs BEFORE search handler (group -1 < group 0).
-        # Only intercepts when admin is mid-setup; otherwise lets message propagate.
-        from pyrogram import ContinuePropagation, StopPropagation
-        uid = m.from_user.id if m.from_user else None
-        if uid and uid in _filebot_state:
-            await _handle_filebot_input(c, m)
-            raise StopPropagation   # handled — stop here
-        raise ContinuePropagation   # not in setup — let search handler run
 
     @cyber.on_callback_query(filters.regex(r"^index\|"))
     async def _(c, q): await index_action_router(c, q)
@@ -1264,9 +1096,6 @@ def register_menu_handlers(cyber: Client):
         q.data = back
         router_map = {
             "gset|main":          global_settings_router,
-            "filebot|main":       filebot_router,
-            "filebot|set":        filebot_router,
-            "filebot|del":        filebot_router,
             "index|index":        index_action_router,
             "caption|caption":    caption_action_router,
             "autodel|autodel":    autodel_action_router,
