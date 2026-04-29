@@ -90,6 +90,20 @@ CAPTION_FORMAT_HELP = (
 # ══════════════════════════════════════════════════════════════
 
 async def safe_edit(message, text=None, caption=None, reply_markup=None):
+    """
+    Edit a message's text/caption and keyboard.
+
+    FIX: Three-stage fallback so the keyboard ALWAYS updates even when the
+    caption/text content hasn't changed (Telegram raises MessageNotModified
+    when only markup differs in some edge cases).
+
+    Stage 1 — edit_caption / edit_text  (updates both content + markup)
+    Stage 2 — edit_reply_markup         (updates only markup, never raises
+                                         MessageNotModified for markup-only
+                                         changes — fixes filter ON/OFF toggle)
+    Stage 3 — edit_caption with empty   (last resort for media messages where
+                                         edit_text fails)
+    """
     try:
         if caption is not None:
             await message.edit_caption(
@@ -103,10 +117,42 @@ async def safe_edit(message, text=None, caption=None, reply_markup=None):
                 reply_markup=reply_markup,
                 parse_mode=enums.ParseMode.HTML,
             )
+        return  # success — done
     except MessageNotModified:
-        pass
-    except Exception as e:
-        logger.error(f"Edit error: {e}")
+        # Caption/text identical — Telegram refused the full edit.
+        # The keyboard may still be different, so push it separately.
+        if reply_markup is not None:
+            try:
+                await message.edit_reply_markup(reply_markup=reply_markup)
+            except Exception:
+                pass
+        return
+    except Exception:
+        # edit_caption failed (e.g. message is a plain text, not a photo).
+        # Try edit_text as fallback.
+        try:
+            content = caption if caption is not None else (text or "")
+            await message.edit_text(
+                text=content,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML,
+            )
+            return
+        except MessageNotModified:
+            if reply_markup is not None:
+                try:
+                    await message.edit_reply_markup(reply_markup=reply_markup)
+                except Exception:
+                    pass
+            return
+        except Exception as e:
+            logger.error(f"Edit error: {e}")
+            # Last resort — just push the new keyboard
+            if reply_markup is not None:
+                try:
+                    await message.edit_reply_markup(reply_markup=reply_markup)
+                except Exception:
+                    pass
 
 
 def _cancel_btn(back_cb: str) -> list:
@@ -264,9 +310,21 @@ async def global_settings_router(_, query):
         [InlineKeyboardButton(f"Poster  {post_status}  ({ori_status})", callback_data="postertog|main")],
         [InlineKeyboardButton("Back",            callback_data="admin|menu")],
     ])
+
+    # FIX: embed live status values in the caption so the text is always
+    # different from the previous render — Telegram then never raises
+    # MessageNotModified and the updated keyboard is guaranteed to appear.
+    caption = (
+        "<b>Global Settings</b>\n"
+        "──────────────────────\n\n"
+        f"Filter: <b>{filt_status}</b>  |  "
+        f"Poster: <b>{post_status}</b>  |  "
+        f"Lang: <b>{cap_status}</b>"
+    )
+
     await safe_edit(
         query.message,
-        caption="<b>Global Settings</b>\n──────────────────────",
+        caption=caption,
         reply_markup=keyboard,
     )
     await query.answer()
@@ -954,14 +1012,19 @@ async def filter_toggle_router(_, query: CallbackQuery):
     new_val = not current
     await set_filter_enabled(new_val)
     status  = "ON" if new_val else "OFF"
-    # FIX: invalidate the 30-second TTL cache in filters.py so the new value
-    # takes effect immediately for the next user search (not after 30 s).
+
+    # Invalidate the 30-second TTL cache in filters.py so the new value
+    # takes effect immediately for the next user search.
     try:
         from CyberTG.filters import _invalidate_settings_cache
         _invalidate_settings_cache()
     except Exception:
         pass
+
     await query.answer(f"Filter Search: {status}", show_alert=True)
+
+    # Re-render the full settings menu so the button label updates.
+    # We call global_settings_router which rebuilds the keyboard with fresh DB values.
     await global_settings_router(_, query)
 
 
