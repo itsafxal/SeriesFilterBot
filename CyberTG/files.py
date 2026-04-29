@@ -14,6 +14,10 @@ from DB.database import (
     get_global_setting,
     config_db,
     update_file_id,
+    get_cached_sticker,
+    save_sticker_cache,
+    get_sticker_style,
+    save_sticker_style,
 )
 from utils.cyber_delete import delete_message_later
 
@@ -147,6 +151,69 @@ async def safe_send(cyber, user_id, f, caption, auto_delay):
 
 
 # ─────────────────────────────
+# STICKER HELPERS
+# ─────────────────────────────
+
+async def _send_start_sticker(cyber, user_id: int, season: int, auto_delay: int) -> int | None:
+    """
+    Send the START sticker for a season.
+    Tries DB-cached file_id first; falls back to generating + uploading.
+    Returns the sent message ID (so it can be scheduled for deletion), or None.
+    FIX: style is persisted per season so the same style is reused on retries.
+    """
+    try:
+        from utils.cyber_sticker import make_start_sticker
+
+        # Reuse previously chosen style for this season (consistent appearance)
+        style_idx = await get_sticker_style(season, "start")
+        buf, chosen_style = make_start_sticker(season, style_idx=style_idx)
+
+        # Persist style choice for future deliveries of this season
+        if style_idx is None:
+            await save_sticker_style(season, "start", chosen_style)
+
+        sent = await cyber.send_sticker(user_id, buf)
+        # Cache the file_id so next time we skip re-generation
+        await save_sticker_cache(season, sent.sticker.file_id, kind="start")
+
+        if auto_delay:
+            delete_message_later(cyber, user_id, sent.id, auto_delay)
+
+        return sent.id
+
+    except Exception as e:
+        logger.warning(f"[STICKER] Failed to send START sticker season={season}: {e}")
+        return None
+
+
+async def _send_end_sticker(cyber, user_id: int, season: int, total: int, auto_delay: int) -> int | None:
+    """
+    Send the END sticker after all files for a season are delivered.
+    FIX: scheduled for deletion with same auto_delay as the files.
+    """
+    try:
+        from utils.cyber_sticker import make_end_sticker
+
+        style_idx = await get_sticker_style(season, "end")
+        buf, chosen_style = make_end_sticker(season, total, style_idx=style_idx)
+
+        if style_idx is None:
+            await save_sticker_style(season, "end", chosen_style)
+
+        sent = await cyber.send_sticker(user_id, buf)
+        await save_sticker_cache(season, sent.sticker.file_id, kind="end")
+
+        if auto_delay:
+            delete_message_later(cyber, user_id, sent.id, auto_delay)
+
+        return sent.id
+
+    except Exception as e:
+        logger.warning(f"[STICKER] Failed to send END sticker season={season}: {e}")
+        return None
+
+
+# ─────────────────────────────
 # MAIN DELIVERY
 # ─────────────────────────────
 
@@ -174,7 +241,6 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
 
     if not files:
         await cyber.send_message(user_id, "❌ No files found.")
-        # FIX: clear session and release lock even when no files found
         clear_session(user_id)
         if on_complete:
             await on_complete()
@@ -186,9 +252,12 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
     auto_delay = await get_global_setting("FILE_AUTODEL_DELAY", 0)
     auto_delay = int(auto_delay or 0)
 
-    # FIX: clear session AFTER reading all needed data, not before sending
-    # so a retry can still find the session if something goes wrong mid-send.
     clear_session(user_id)
+
+    # ── SEND START STICKER ─────────────────────────────────────
+    # FIX: sent before files; scheduled for deletion with same delay as files
+    if STICKER_ENABLED:
+        await _send_start_sticker(cyber, user_id, season, auto_delay)
 
     if PROGRESS_MESSAGE_ENABLED:
         msg = await cyber.send_message(user_id, f"📦 Sending {len(files)} files...")
@@ -235,8 +304,13 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
         )
         delete_message_later(cyber, user_id, notif.id, auto_delay)
 
+    # ── SEND END STICKER ──────────────────────────────────────
+    # FIX: sent after all files, deleted with same auto_delay so it disappears
+    # together with the files (style saved per-season to DB for consistency).
+    if STICKER_ENABLED:
+        await _send_end_sticker(cyber, user_id, season, sent, auto_delay)
+
     logger.info(f"✅ Delivered {sent}/{len(files)} to {user_id}")
 
-    # FIX: notify caller (fsub.py) that delivery is done so the lock is released
     if on_complete:
         await on_complete()
