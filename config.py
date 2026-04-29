@@ -32,10 +32,10 @@ OMDB_API_KEYS = [
 ]
 
 def TMDB_API_KEY() -> str:
-    return _random.choice(TMDB_API_KEYS)
+    return cycle(TMDB_API_KEYS)
 
 def OMDB_API_KEY() -> str:
-    return _random.choice(OMDB_API_KEYS)
+    return cycle(OMDB_API_KEYS)
 
 TMDB_CACHE_DB        = "/tmp/TMDB_cache.db"
 TMDB_IMAGE_BASE      = "https://image.tmdb.org/t/p/w500"
