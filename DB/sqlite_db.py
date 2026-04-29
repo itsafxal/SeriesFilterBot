@@ -134,7 +134,10 @@ def _normalized_series_from_filename(file_name: str) -> str:
     # FIX: Increase from 4 to 6 words
     if len(parts) > 6:
         parts = parts[:6]
-    return " ".join(parts).title()
+    # FIX: always return lowercase so normalized_name is consistent everywhere.
+    # save_file_to_sql_sync does .lower() before writing; this makes migration
+    # and repair produce the same value so queries never mismatch.
+    return " ".join(parts).lower()
 
 
 def _extract_language_local(file_name: str) -> str:
@@ -374,13 +377,18 @@ def repair_normalized_names_in_sqlite_sync(logger):
     """
     OPTIMIZED: only runs if the _meta table shows it hasn't been done yet,
     OR if there are actually rows that need repair. Skips on subsequent boots.
+
+    FIX: _normalized_series_from_filename now returns lowercase (was .title()).
+    The one-time flag key was renamed to 'norm_repair_done_v2' so this repair
+    always re-runs once after upgrading, fixing any Title Case rows left by the
+    old version of this function.
     """
     conn   = _get_conn()
-    # Check one-time flag
+    # Check one-time flag — use 'norm_repair_done_v2' so upgrading bots re-run
     try:
         conn.execute("CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)")
         done = conn.execute(
-            "SELECT value FROM _meta WHERE key='norm_repair_done'"
+            "SELECT value FROM _meta WHERE key='norm_repair_done_v2'"
         ).fetchone()
         if done and done[0] == "1":
             logger.info("[NORM REPAIR] Already done on previous boot — skipping.")
@@ -394,8 +402,10 @@ def repair_normalized_names_in_sqlite_sync(logger):
     updates = []
     for row in rows:
         rowid, file_name, old_norm = row[0], row[1], row[2]
+        # FIX: _normalized_series_from_filename now returns lowercase; force
+        # lowercase on old_norm too so Title Case rows always get updated.
         new_norm = _normalized_series_from_filename(file_name or "")
-        if new_norm and new_norm != old_norm:
+        if new_norm and new_norm != (old_norm or "").lower():
             updates.append((new_norm, rowid))
     if updates:
         cursor.executemany("UPDATE files SET normalized_name = ? WHERE rowid = ?", updates)
@@ -406,7 +416,7 @@ def repair_normalized_names_in_sqlite_sync(logger):
     # Mark as done so future boots skip this entirely
     try:
         conn.execute(
-            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('norm_repair_done', '1')"
+            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('norm_repair_done_v2', '1')"
         )
         conn.commit()
     except Exception:
@@ -490,17 +500,15 @@ _QUALITY_ORDER = ["4K", "1080P", "720P", "480P", "360P", "UNKNOWN"]
 @lru_cache(maxsize=1024)
 def get_series_summary_sync(series_name: str):
     """Single query for all summary data — 3× faster than 3 separate queries."""
-    # FIX: always lowercase — DB stores normalized_name in lowercase
-    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
 
     cursor.execute("""
         SELECT DISTINCT language, season, quality
         FROM files
-        WHERE normalized_name = ? AND season > 0
+        WHERE normalized_name = ? COLLATE NOCASE AND season > 0
         ORDER BY season ASC
-    """, (series_name,))
+    """, (series_name.lower(),))
 
     rows         = cursor.fetchall()
     languages    = set()
@@ -531,8 +539,7 @@ def search_series_sync(query: str):
     conn   = _get_conn()
     cursor = conn.cursor()
 
-    # FIX: always lowercase — normalized_name is stored lowercase in DB
-    q = (query or "").strip().lower()
+    q = query.strip()
     if not q:
         return ()
 
@@ -567,41 +574,35 @@ def search_series_sync(query: str):
 
 @lru_cache(maxsize=1024)
 def get_unique_languages_by_name_sync(series_name: str):
-    # FIX: normalize to lowercase before cache key and query
-    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT DISTINCT language FROM files
-        WHERE normalized_name = ? ORDER BY language ASC
-    """, (series_name,))
+        WHERE normalized_name = ? COLLATE NOCASE ORDER BY language ASC
+    """, (series_name.lower(),))
     return tuple(r[0] for r in cursor.fetchall())
 
 
 @lru_cache(maxsize=1024)
 def get_unique_seasons_by_name_sync(series_name: str, language: str):
-    # FIX: normalize series_name to lowercase
-    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT DISTINCT season FROM files
-        WHERE normalized_name = ? AND language = ? AND season > 0
+        WHERE normalized_name = ? COLLATE NOCASE AND language = ? AND season > 0
         ORDER BY season ASC
-    """, (series_name, language))
+    """, (series_name.lower(), language))
     return tuple(r[0] for r in cursor.fetchall())
 
 
 @lru_cache(maxsize=1024)
 def get_unique_qualities_by_season_sync(series_name: str, language: str, season: int):
-    # FIX: normalize series_name to lowercase
-    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT DISTINCT quality FROM files
-        WHERE normalized_name = ? AND language = ? AND season = ?
-    """, (series_name, language, season))
+        WHERE normalized_name = ? COLLATE NOCASE AND language = ? AND season = ?
+    """, (series_name.lower(), language, season))
     qs = [r[0] for r in cursor.fetchall()]
     return tuple(sorted([q for q in qs if q in _QUALITY_ORDER],
                         key=lambda x: _QUALITY_ORDER.index(x)))
@@ -609,43 +610,36 @@ def get_unique_qualities_by_season_sync(series_name: str, language: str, season:
 
 def get_all_files_by_season_and_quality_sync(series_name: str, season: int,
                                              quality: str, language: str):
-    # FIX: normalize series_name to lowercase
-    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT * FROM files
-        WHERE normalized_name = ? AND season = ? AND quality = ? AND language = ?
+        WHERE normalized_name = ? COLLATE NOCASE AND season = ? AND quality = ? AND language = ?
         ORDER BY episode ASC
-    """, (series_name, season, quality, language))
+    """, (series_name.lower(), season, quality, language))
     return [dict(row) for row in cursor.fetchall()]
 
 
 @lru_cache(maxsize=1024)
 def get_unique_languages_by_season_sync(series_name: str, season: int):
-    # FIX: normalize series_name to lowercase — DB stores normalized_name lowercase
-    # This was the primary cause of season buttons doing nothing after suggestion click
-    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT DISTINCT language FROM files
-        WHERE normalized_name = ? AND season = ?
+        WHERE normalized_name = ? COLLATE NOCASE AND season = ?
         ORDER BY language ASC
-    """, (series_name, season))
+    """, (series_name.lower(), season))
     return tuple(r[0] for r in cursor.fetchall())
 
 
 @lru_cache(maxsize=1024)
 def get_unique_qualities_by_lang_season_sync(series_name: str, language: str, season: int):
-    # FIX: normalize series_name to lowercase
-    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT DISTINCT quality FROM files
-        WHERE normalized_name = ? AND language = ? AND season = ?
-    """, (series_name, language, season))
+        WHERE normalized_name = ? COLLATE NOCASE AND language = ? AND season = ?
+    """, (series_name.lower(), language, season))
     qs = [r[0] for r in cursor.fetchall()]
     return tuple(sorted([q for q in qs if q in _QUALITY_ORDER],
                         key=lambda x: _QUALITY_ORDER.index(x)))
@@ -665,19 +659,17 @@ def get_unique_qualities_with_codec_sync(series_name: str, language: str, season
       2. codec present (non-empty first)
       3. codec alpha   (deterministic tie-break between e.g. H.264 vs H.265)
     """
-    # FIX: normalize series_name to lowercase
-    series_name = (series_name or "").strip().lower()
     conn   = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT DISTINCT quality, codec
         FROM files
-        WHERE normalized_name = ? AND language = ? AND season = ?
+        WHERE normalized_name = ? COLLATE NOCASE AND language = ? AND season = ?
         ORDER BY
             quality ASC,
             CASE WHEN codec IS NOT NULL AND codec != '' THEN 0 ELSE 1 END ASC,
             codec ASC
-    """, (series_name, language, season))
+    """, (series_name.lower(), language, season))
     rows = cursor.fetchall()
 
     seen   = set()
