@@ -415,6 +415,9 @@ def build_caption(series, year, genre, rating,
 def build_grid_keyboard(items, cb_builder, per_row=2, back_btn=None):
     rows, row = [], []
     for it in items:
+        # Skip empty/None values — Telegram rejects keyboards with empty button labels
+        if not it:
+            continue
         row.append(InlineKeyboardButton(it, callback_data=cb_builder(it)))
         if len(row) == per_row:
             rows.append(row)
