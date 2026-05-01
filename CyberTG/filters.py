@@ -605,10 +605,11 @@ def register_filters(cyber: Client):
                 display_label = format_suggestion_label(title, yr)
                 # FIX: callback_data stores the CLEAN title (no year), not the display label.
                 # The year is only for human display; the DB doesn't know about it.
+                # BUTTON LOCK: uid is embedded so check_owner can enforce ownership.
                 clean_title = _strip_year(title)
                 buttons.append([InlineKeyboardButton(
                     f"🎬  {display_label}",
-                    callback_data=f"sug|{clean_title}"
+                    callback_data=f"sug|{uid}|{clean_title}"
                 )])
             buttons.append([InlineKeyboardButton("✖️  Close", callback_data="close_spell")])
             msg = await _safe_reply_photo(
@@ -642,6 +643,16 @@ def register_filters(cyber: Client):
         if q.from_user.id not in ADMIN_USERS and settings["maintenance"]:
             return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
 
+        # BUTTON LOCK: parse uid and enforce ownership.
+        # New format: "sug|{uid}|{series}"  — legacy: "sug|{series}" (no uid → allow through)
+        parts = q.data.split("|", 2)
+        if len(parts) == 3:
+            _, uid_str, raw_series = parts
+            if not await check_owner(q, uid_str):
+                return
+        else:
+            raw_series = parts[1]
+
         # Answer immediately — clears spinner before slow poster/DB fetch
         try:
             await q.answer()
@@ -651,13 +662,15 @@ def register_filters(cyber: Client):
         # FIX: strip year suffix AND normalize to lowercase.
         # callback_data is already clean (set by search_handler above),
         # but _strip_year is idempotent so calling it again is safe.
-        raw_series = q.data.split("|", 1)[1]
         series = _strip_year(raw_series)
 
         auto_del = settings["auto_delete_delay"]
         poster, year, genre, rating = await _get_poster(series, settings)
         seasons = list((await get_series_summary(series))["seasons"])
-        kb = build_season_pages(seasons, q.from_user.id, series)
+        # Use the owner uid (from callback_data) so all downstream buttons
+        # keep the same uid → check_owner stays consistent end-to-end.
+        owner_uid = int(uid_str) if len(parts) == 3 else q.from_user.id
+        kb = build_season_pages(seasons, owner_uid, series)
         try:
             await _safe_edit_media(
                 q, poster or DEFAULT_POSTER,
