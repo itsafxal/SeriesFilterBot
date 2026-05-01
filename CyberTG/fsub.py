@@ -487,9 +487,11 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
             release_delivery_lock(uid)
             await cyber.send_message(
                 uid,
-                "⛔ <b>Access Denied</b>\n"
+                "⛔ <b>Not Your Link</b>\n"
                 "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-                "<i>This link belongs to another user.</i>",
+                "This download link was generated for another user and cannot be used here.\n\n"
+                "🔍 <b>Please search for the series yourself</b> to get your own personal link.\n\n"
+                "<i>Just type the series name in the chat to get started.</i>",
                 parse_mode="html",
             )
             return False
