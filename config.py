@@ -10,30 +10,30 @@ load_dotenv()
 # =========================
 # BOT SETTINGS
 # =========================
-API_ID = int(os.getenv("API_ID", "28643132"))
-API_HASH = os.getenv("API_HASH", "510c3009ea589830a89e045bf8aae656")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8231385133:AAF3eGcM5wev6tt8JJ0LisknyxxoutkUk_s")
+API_ID = int(os.getenv("API_ID", ""))
+API_HASH = os.getenv("API_HASH", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 # =========================
 # MONGO DB
 # =========================
 MONGO_URI_CONFIG = os.getenv(
     "MONGO_URI_CONFIG",
-    "mongodb+srv://ss:ss@seriesfilterbot.p88od4y.mongodb.net/?appName=SeriesFilterBOT"
+    ""
 )
 MONGO_URI_DB1 = os.getenv(
     "MONGO_URI_DB1",
-    "mongodb+srv://SB1:SB1@cluster0.foxpowr.mongodb.net/?appName=Cluster0"
+    ""
 )
 MONGO_URI_DB2 = os.getenv(
     "MONGO_URI_DB2",
-    "mongodb+srv://SB2:SB2@cluster0.04scp0s.mongodb.net/?appName=Cluster0"
+    ""
 )
 
 # =========================
 # ADMIN
 # =========================
-ADMIN_USERS = list(map(int, os.getenv("ADMIN_USERS", "5794562450").split(",")))
+ADMIN_USERS = list(map(int, os.getenv("ADMIN_USERS", "").split(",")))
 
 # =========================
 # IMAGES
@@ -47,12 +47,12 @@ DEFAULT_POSTER = os.getenv("DEFAULT_POSTER", "https://files.catbox.moe/rjj4do.jp
 # =========================
 TMDB_API_KEYS = [k.strip() for k in os.getenv(
     "TMDB_API_KEYS",
-    "0e027f75bc7f6a14139ad3e6fe76ed97,d13fa0ad942cf34ce943a82c95dc3e92"
+    ""
 ).split(",") if k.strip()]
 
 OMDB_API_KEYS = [k.strip() for k in os.getenv(
     "OMDB_API_KEYS",
-    "f93ab313,fd7c2997"
+    ""
 ).split(",") if k.strip()]
 
 # Create rotating iterators (IMPORTANT: define once)
