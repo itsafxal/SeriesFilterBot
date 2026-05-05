@@ -9,7 +9,7 @@ requests
 beautifulsoup4
 pyspellchecker
 aiohttp
-requests
 rapidfuzz
 apscheduler
 Pillow>=10.0.0
+aiofiles
