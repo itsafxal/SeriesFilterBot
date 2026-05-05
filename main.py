@@ -201,12 +201,85 @@ async def run_bot_async(cyber: Client):
 # ─────────────────────────────────────────────────────────────
 
 def _setup_group_tracking(cyber: Client):
-    """Setup group tracking handler with optimizations."""
-    from pyrogram import filters as _filters
-    from pyrogram.types import ChatMemberUpdated
+    """
+    Track bot being added to / removed from groups.
 
+    • on_message(new_chat_members)  — fired when the bot joins a group.
+      Sends a welcome message in the group and an optional log to the admin.
+
+    • on_chat_member_updated()      — fired when the bot is kicked / banned /
+      left.  Removes the group from DB silently.
+    """
+    from pyrogram import filters as _filters
+    from pyrogram.types import ChatMemberUpdated, InlineKeyboardMarkup, InlineKeyboardButton
+
+    # ── BOT ADDED TO GROUP ───────────────────────────────────────────────────
+    @cyber.on_message(_filters.new_chat_members & _filters.group)
+    async def _bot_added_to_group(_, message):
+        try:
+            bot_id = _BOT_ID
+            if bot_id is None:
+                return
+
+            # Check whether THIS update is about the bot itself
+            new_ids = [u.id for u in (message.new_chat_members or [])]
+            if bot_id not in new_ids:
+                return  # someone else joined — not our event
+
+            chat       = message.chat
+            chat_title = getattr(chat, "title", "") or "Unknown Group"
+            chat_id    = chat.id
+            added_by   = message.from_user.mention if message.from_user else "Anonymous"
+
+            # ── 1. Save to DB ────────────────────────────────────────────────
+            try:
+                await add_group(
+                    chat_id,
+                    title=chat_title,
+                    username=getattr(chat, "username", "") or "",
+                )
+                logger.info(f"[GROUP] ➕ Bot added to '{chat_title}' ({chat_id}) — saved to DB")
+            except Exception as e:
+                logger.error(f"[GROUP] Failed to add group {chat_id} to DB: {e}")
+
+            # ── 2. Welcome message in the group ──────────────────────────────
+            try:
+                await message.reply_text(
+                    f"<b>👋 Thanks for adding me to {chat_title}!\n\n"
+                    f"⚡ Don't forget to make me Admin for full functionality.</b>",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("➕ Add me to your group", url=f"https://t.me/{_BOT_USERNAME}?startgroup=start")]
+                    ]),
+                )
+            except Exception as e:
+                logger.warning(f"[GROUP] Could not send welcome message to {chat_id}: {e}")
+
+            # ── 3. Log to admin (optional) ───────────────────────────────────
+            admin_id = ADMIN_USERS[0] if ADMIN_USERS else None
+            if admin_id:
+                try:
+                    total = await cyber.get_chat_members_count(chat_id)
+                except Exception:
+                    total = "N/A"
+
+                try:
+                    await cyber.send_message(
+                        admin_id,
+                        f"<b>📥 Bot Added to a Group</b>\n\n"
+                        f"🏷 <b>Title :</b> {chat_title}\n"
+                        f"🆔 <b>ID    :</b> <code>{chat_id}</code>\n"
+                        f"👥 <b>Members :</b> {total}\n"
+                        f"👤 <b>Added by :</b> {added_by}",
+                    )
+                except Exception as e:
+                    logger.warning(f"[GROUP] Could not send log to admin: {e}")
+
+        except Exception as e:
+            logger.debug(f"[GROUP] _bot_added_to_group error: {e}")
+
+    # ── BOT REMOVED / LEFT / BANNED ─────────────────────────────────────────
     @cyber.on_chat_member_updated()
-    async def _track_groups(_, update: ChatMemberUpdated):
+    async def _bot_left_group(_, update: ChatMemberUpdated):
         try:
             chat = update.chat
             if not chat or chat.type not in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
@@ -214,23 +287,12 @@ def _setup_group_tracking(cyber: Client):
 
             bot_id = _BOT_ID
             if bot_id is None:
-                # Fallback: try to get ID if startup fetch failed
-                try:
-                    me = await cyber.get_me()
-                    bot_id = me.id
-                except Exception:
-                    return
+                return
 
-            new_member = update.new_chat_member
             old_member = update.old_chat_member
+            new_member = update.new_chat_member
 
-            # Identify if this event is about the bot itself
-            new_is_bot = (
-                new_member and new_member.user and new_member.user.id == bot_id
-            )
-            old_is_bot = (
-                old_member and old_member.user and old_member.user.id == bot_id
-            )
+            old_is_bot = old_member and old_member.user and old_member.user.id == bot_id
 
             ACTIVE_STATUSES = (
                 enums.ChatMemberStatus.MEMBER,
@@ -243,25 +305,10 @@ def _setup_group_tracking(cyber: Client):
                 enums.ChatMemberStatus.RESTRICTED,
             )
 
-            chat_title = getattr(chat, "title", "") or ""
-            chat_username = getattr(chat, "username", "") or ""
-
-            # Bot was added / promoted to a group
-            if new_is_bot and new_member.status in ACTIVE_STATUSES:
-                old_status = old_member.status if old_member else None
-                if old_status not in ACTIVE_STATUSES:
-                    try:
-                        await add_group(chat.id, title=chat_title, username=chat_username)
-                        logger.info(
-                            f"[GROUP] ➕ Bot added to '{chat_title}' ({chat.id}) — saved to DB"
-                        )
-                    except Exception as e:
-                        logger.error(f"[GROUP] Failed to add group {chat.id} to DB: {e}")
-
-            # Bot was removed / banned / left from a group
-            elif old_is_bot and old_member.status in ACTIVE_STATUSES:
+            if old_is_bot and old_member.status in ACTIVE_STATUSES:
                 new_status = new_member.status if new_member else None
                 if new_status is None or new_status in GONE_STATUSES:
+                    chat_title = getattr(chat, "title", "") or ""
                     try:
                         await remove_group(chat.id)
                         logger.info(
@@ -271,7 +318,7 @@ def _setup_group_tracking(cyber: Client):
                         logger.error(f"[GROUP] Failed to remove group {chat.id} from DB: {e}")
 
         except Exception as e:
-            logger.debug(f"[GROUP] tracking error: {e}")
+            logger.debug(f"[GROUP] _bot_left_group error: {e}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -279,6 +326,18 @@ def _setup_group_tracking(cyber: Client):
 # ─────────────────────────────────────────────────────────────
 
 def main():
+    required_missing = []
+    if not API_ID:
+        required_missing.append("API_ID")
+    if not API_HASH:
+        required_missing.append("API_HASH")
+    if not BOT_TOKEN:
+        required_missing.append("BOT_TOKEN")
+    if required_missing:
+        logger.error("[INIT] Missing required environment variables: %s", ", ".join(required_missing))
+        logger.error("[INIT] Please set these variables in your .env file before starting the bot.")
+        return
+
     logger.info("[INIT] Initializing SQL database (migration from DB1 + DB2)...")
     try:
         initialize_sql_db()
