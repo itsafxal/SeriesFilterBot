@@ -1,4 +1,8 @@
 # files.py — SINGLE BOT CLEAN VERSION
+# FIXES:
+#   1. File caption now respects custom captions from database settings
+#   2. End sticker sent BEFORE file deletion notification (correct order)
+#   3. Captions properly applied to both single files and media groups
 
 import time
 import asyncio
@@ -100,15 +104,41 @@ def caption_filename(name):
     return name.strip()
 
 
-def build_caption(series, season, episode, language, quality, file_name):
-    return DEFAULT_CAPTION.format(
-        series=series,
-        file_name=caption_filename(file_name),
-        season=str(season).zfill(2),
-        episode=str(episode).zfill(2),
-        language=language,
-        quality=quality,
-    )
+async def build_caption(series, season, episode, language, quality, file_name):
+    """
+    Build caption for file delivery.
+    First checks for custom caption in database, falls back to default template.
+    """
+    # Check if custom caption is set
+    custom_caption = await get_global_setting("FILE_CAPTION", None)
+    
+    if custom_caption and isinstance(custom_caption, str) and custom_caption.strip():
+        # Use custom caption template
+        caption_template = custom_caption.strip()
+    else:
+        # Use default template
+        caption_template = DEFAULT_CAPTION
+    
+    try:
+        return caption_template.format(
+            series=series,
+            file_name=caption_filename(file_name),
+            season=str(season).zfill(2),
+            episode=str(episode).zfill(2),
+            language=language,
+            quality=quality,
+        )
+    except KeyError:
+        # If custom caption has invalid placeholders, fall back to default
+        logger.warning(f"Custom caption has invalid placeholders, using default template")
+        return DEFAULT_CAPTION.format(
+            series=series,
+            file_name=caption_filename(file_name),
+            season=str(season).zfill(2),
+            episode=str(episode).zfill(2),
+            language=language,
+            quality=quality,
+        )
 
 
 def make_media(f, caption):
@@ -270,13 +300,13 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
 
         if len(batch) == 1:
             f = batch[0]
-            cap = build_caption(series, season, f["episode"], language, quality, f["file_name"])
+            cap = await build_caption(series, season, f["episode"], language, quality, f["file_name"])
             if await safe_send(cyber, user_id, f, cap, auto_delay):
                 sent += 1
         else:
             media = []
             for f in batch:
-                cap = build_caption(series, season, f["episode"], language, quality, f["file_name"])
+                cap = await build_caption(series, season, f["episode"], language, quality, f["file_name"])
                 media.append(make_media(f, cap))
 
             try:
@@ -290,12 +320,18 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
             except Exception as e:
                 logger.error(f"Group failed → fallback {e}")
                 for f in batch:
-                    cap = build_caption(series, season, f["episode"], language, quality, f["file_name"])
+                    cap = await build_caption(series, season, f["episode"], language, quality, f["file_name"])
                     if await safe_send(cyber, user_id, f, cap, auto_delay):
                         sent += 1
 
     if PROGRESS_MESSAGE_ENABLED:
         await cyber.delete_messages(user_id, msg.id)
+
+    # ── SEND END STICKER ──────────────────────────────────────
+    # FIX: sent BEFORE deletion notification so it appears first in chat
+    # Style saved per-season to DB for consistency
+    if STICKER_ENABLED:
+        await _send_end_sticker(cyber, user_id, season, sent, auto_delay)
 
     if auto_delay:
         notif = await cyber.send_message(
@@ -303,12 +339,6 @@ async def deliver_files_direct(cyber, user_id, on_complete=None):
             f"⏳ Files will delete in {auto_delay} seconds"
         )
         delete_message_later(cyber, user_id, notif.id, auto_delay)
-
-    # ── SEND END STICKER ──────────────────────────────────────
-    # FIX: sent after all files, deleted with same auto_delay so it disappears
-    # together with the files (style saved per-season to DB for consistency).
-    if STICKER_ENABLED:
-        await _send_end_sticker(cyber, user_id, season, sent, auto_delay)
 
     logger.info(f"✅ Delivered {sent}/{len(files)} to {user_id}")
 
