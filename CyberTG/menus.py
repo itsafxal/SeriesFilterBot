@@ -38,6 +38,7 @@ from DB.database import (
     set_caption_clean_keywords,
     get_files_count_per_channel,
 )
+from utils.files import _invalidate_caption_cache
 
 from .fsub import (
     set_fsub_slot,
@@ -655,6 +656,7 @@ async def caption_action_router(_, query):
 
     elif action == "delete":
         await set_global_setting(KEY, None)
+        _invalidate_caption_cache()   # flush so next delivery reverts to DEFAULT_CAPTION
         await safe_edit(
             query.message,
             caption="Caption reset to default.",
@@ -940,6 +942,7 @@ async def admin_input_handler(bot, message: Message):
 
         elif state == "WAITING_CAPTION":
             await set_global_setting("CUSTOM_FILE_CAPTION", message.text)
+            _invalidate_caption_cache()   # flush in-memory cache so next delivery uses new template
             success_text = "Caption updated."
 
         elif state == "WAITING_AUTODEL":
