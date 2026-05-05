@@ -108,33 +108,34 @@ def caption_filename(name):
     return name.strip()
 
 
-# ── Per-delivery caption cache ─────────────────────────────────
-# Fetched once per deliver_files_direct() call and passed down,
-# so we avoid N MongoDB round-trips (one per file).
-# Value is the raw template string, or None to use DEFAULT_CAPTION.
+# ── Caption template cache ─────────────────────────────────────
+# Avoids hitting MongoDB on every file during delivery.
+# TTL = 60 s — short enough that an admin change takes effect within
+# one minute without requiring any cross-module invalidation call.
+
 _caption_template_cache: str | None = None
-_caption_cache_valid: bool = False
+_caption_cache_ts: float = 0.0
+_CAPTION_CACHE_TTL: float = 60.0   # seconds
 
 
 def _invalidate_caption_cache():
-    """Call this after set_global_setting('CUSTOM_FILE_CAPTION', ...)."""
-    global _caption_cache_valid
-    _caption_cache_valid = False
+    """Expire the cache immediately (optional — cache auto-expires in 60 s anyway)."""
+    global _caption_cache_ts
+    _caption_cache_ts = 0.0
 
 
 async def _get_caption_template() -> str:
     """
-    Fetch the active caption template exactly once per bot session, caching the
-    result in memory.  Cache is invalidated when the admin saves a new caption.
-
-    Returns the template string (custom or DEFAULT_CAPTION).
+    Return the active caption template, re-fetching from MongoDB at most once
+    every 60 seconds.  No external invalidation needed — admin changes are
+    picked up automatically on the next delivery after the TTL expires.
     """
-    global _caption_template_cache, _caption_cache_valid
+    global _caption_template_cache, _caption_cache_ts
 
-    if _caption_cache_valid:
-        return _caption_template_cache  # type: ignore[return-value]
+    if _caption_template_cache is not None and (time.time() - _caption_cache_ts) < _CAPTION_CACHE_TTL:
+        return _caption_template_cache
 
-    # Primary key used by menus.py
+    # Primary key saved by the admin panel
     raw = await get_global_setting("CUSTOM_FILE_CAPTION", None)
 
     # Backward-compat key used by older deployments
@@ -143,13 +144,13 @@ async def _get_caption_template() -> str:
 
     if raw and isinstance(raw, str) and raw.strip():
         _caption_template_cache = raw.strip()
-        logger.info(f"[CAPTION] Using custom template: {_caption_template_cache!r}")
+        logger.info(f"[CAPTION] Loaded custom template: {_caption_template_cache!r}")
     else:
         _caption_template_cache = DEFAULT_CAPTION
-        logger.info("[CAPTION] No custom caption found — using DEFAULT_CAPTION.")
+        logger.info("[CAPTION] No custom caption in DB — using DEFAULT_CAPTION.")
 
-    _caption_cache_valid = True
-    return _caption_template_cache  # type: ignore[return-value]
+    _caption_cache_ts = time.time()
+    return _caption_template_cache
 
 
 def build_caption_sync(template: str, series, season, episode, language, quality, file_name) -> str:
