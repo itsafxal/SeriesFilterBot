@@ -47,6 +47,10 @@ SESSION_TTL = 600
 
 _SESSION_MEM = {}
 _sessions_col = config_db["user_sessions"]
+try:
+    _sessions_col.create_index("expires_at", expireAfterSeconds=0, background=True)
+except Exception:
+    pass
 
 
 def set_session(user_id, data):
@@ -104,41 +108,82 @@ def caption_filename(name):
     return name.strip()
 
 
+# ── Per-delivery caption cache ─────────────────────────────────
+# Fetched once per deliver_files_direct() call and passed down,
+# so we avoid N MongoDB round-trips (one per file).
+# Value is the raw template string, or None to use DEFAULT_CAPTION.
+_caption_template_cache: str | None = None
+_caption_cache_valid: bool = False
+
+
+def _invalidate_caption_cache():
+    """Call this after set_global_setting('CUSTOM_FILE_CAPTION', ...)."""
+    global _caption_cache_valid
+    _caption_cache_valid = False
+
+
+async def _get_caption_template() -> str:
+    """
+    Fetch the active caption template exactly once per bot session, caching the
+    result in memory.  Cache is invalidated when the admin saves a new caption.
+
+    Returns the template string (custom or DEFAULT_CAPTION).
+    """
+    global _caption_template_cache, _caption_cache_valid
+
+    if _caption_cache_valid:
+        return _caption_template_cache  # type: ignore[return-value]
+
+    # Primary key used by menus.py
+    raw = await get_global_setting("CUSTOM_FILE_CAPTION", None)
+
+    # Backward-compat key used by older deployments
+    if not raw or not isinstance(raw, str) or not raw.strip():
+        raw = await get_global_setting("FILE_CAPTION", None)
+
+    if raw and isinstance(raw, str) and raw.strip():
+        _caption_template_cache = raw.strip()
+        logger.info(f"[CAPTION] Using custom template: {_caption_template_cache!r}")
+    else:
+        _caption_template_cache = DEFAULT_CAPTION
+        logger.info("[CAPTION] No custom caption found — using DEFAULT_CAPTION.")
+
+    _caption_cache_valid = True
+    return _caption_template_cache  # type: ignore[return-value]
+
+
+def build_caption_sync(template: str, series, season, episode, language, quality, file_name) -> str:
+    """
+    Apply a caption template with the given file metadata.
+    Falls back to DEFAULT_CAPTION if the template contains unknown placeholders.
+    """
+    vars_ = dict(
+        series=series,
+        file_name=caption_filename(file_name),
+        season=str(season).zfill(2),
+        episode=str(episode).zfill(2),
+        language=language,
+        quality=quality,
+    )
+    try:
+        return template.format_map(vars_)
+    except (KeyError, ValueError) as exc:
+        logger.warning(
+            f"[CAPTION] Custom template has invalid placeholder ({exc}); "
+            f"template={template!r} — falling back to DEFAULT_CAPTION"
+        )
+        _invalidate_caption_cache()   # force re-fetch next delivery
+        return DEFAULT_CAPTION.format_map(vars_)
+
+
 async def build_caption(series, season, episode, language, quality, file_name):
     """
-    Build caption for file delivery.
-    First checks for custom caption in database, falls back to default template.
+    Build caption for a single file.
+    Template is fetched from DB once per session (cached); use
+    _invalidate_caption_cache() after admin updates the setting.
     """
-    # Check if custom caption is set
-    custom_caption = await get_global_setting("FILE_CAPTION", None)
-    
-    if custom_caption and isinstance(custom_caption, str) and custom_caption.strip():
-        # Use custom caption template
-        caption_template = custom_caption.strip()
-    else:
-        # Use default template
-        caption_template = DEFAULT_CAPTION
-    
-    try:
-        return caption_template.format(
-            series=series,
-            file_name=caption_filename(file_name),
-            season=str(season).zfill(2),
-            episode=str(episode).zfill(2),
-            language=language,
-            quality=quality,
-        )
-    except KeyError:
-        # If custom caption has invalid placeholders, fall back to default
-        logger.warning(f"Custom caption has invalid placeholders, using default template")
-        return DEFAULT_CAPTION.format(
-            series=series,
-            file_name=caption_filename(file_name),
-            season=str(season).zfill(2),
-            episode=str(episode).zfill(2),
-            language=language,
-            quality=quality,
-        )
+    template = await _get_caption_template()
+    return build_caption_sync(template, series, season, episode, language, quality, file_name)
 
 
 def make_media(f, caption):
