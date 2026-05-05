@@ -5,6 +5,7 @@
 #   3. Concurrent background tasks for faster startup
 #   4. Improved logging and exception handling
 #   5. Safe shutdown with proper cleanup
+#   6. FIXED: Group tracking now properly awaits add_group/remove_group
 
 import asyncio
 from pyrogram import Client, enums
@@ -249,19 +250,25 @@ def _setup_group_tracking(cyber: Client):
             if new_is_bot and new_member.status in ACTIVE_STATUSES:
                 old_status = old_member.status if old_member else None
                 if old_status not in ACTIVE_STATUSES:
-                    await add_group(chat.id, title=chat_title, username=chat_username)
-                    logger.info(
-                        f"[GROUP] ➕ Bot added to '{chat_title}' ({chat.id})"
-                    )
+                    try:
+                        await add_group(chat.id, title=chat_title, username=chat_username)
+                        logger.info(
+                            f"[GROUP] ➕ Bot added to '{chat_title}' ({chat.id})"
+                        )
+                    except Exception as e:
+                        logger.error(f"[GROUP] Failed to add group {chat.id}: {e}")
 
             # Bot was removed / banned / left from a group
             elif old_is_bot and old_member.status in ACTIVE_STATUSES:
                 new_status = new_member.status if new_member else None
                 if new_status is None or new_status in GONE_STATUSES:
-                    await remove_group(chat.id)
-                    logger.info(
-                        f"[GROUP] ➖ Bot removed from '{chat_title}' ({chat.id})"
-                    )
+                    try:
+                        await remove_group(chat.id)
+                        logger.info(
+                            f"[GROUP] ➖ Bot removed from '{chat_title}' ({chat.id})"
+                        )
+                    except Exception as e:
+                        logger.error(f"[GROUP] Failed to remove group {chat.id}: {e}")
 
         except Exception as e:
             logger.debug(f"[GROUP] tracking error: {e}")
