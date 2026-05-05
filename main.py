@@ -253,10 +253,10 @@ def _setup_group_tracking(cyber: Client):
                     try:
                         await add_group(chat.id, title=chat_title, username=chat_username)
                         logger.info(
-                            f"[GROUP] ➕ Bot added to '{chat_title}' ({chat.id})"
+                            f"[GROUP] ➕ Bot added to '{chat_title}' ({chat.id}) — saved to DB"
                         )
                     except Exception as e:
-                        logger.error(f"[GROUP] Failed to add group {chat.id}: {e}")
+                        logger.error(f"[GROUP] Failed to add group {chat.id} to DB: {e}")
 
             # Bot was removed / banned / left from a group
             elif old_is_bot and old_member.status in ACTIVE_STATUSES:
@@ -265,10 +265,10 @@ def _setup_group_tracking(cyber: Client):
                     try:
                         await remove_group(chat.id)
                         logger.info(
-                            f"[GROUP] ➖ Bot removed from '{chat_title}' ({chat.id})"
+                            f"[GROUP] ➖ Bot removed from '{chat_title}' ({chat.id}) — removed from DB"
                         )
                     except Exception as e:
-                        logger.error(f"[GROUP] Failed to remove group {chat.id}: {e}")
+                        logger.error(f"[GROUP] Failed to remove group {chat.id} from DB: {e}")
 
         except Exception as e:
             logger.debug(f"[GROUP] tracking error: {e}")
