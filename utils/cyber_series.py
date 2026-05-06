@@ -1,11 +1,11 @@
 """
-cyber_series.py — SMART SUGGESTION ENGINE  (FIXED)
-====================================================
-FIX: _API_CACHE memory leak — was unbounded (grew forever, one entry per unique
-title lookup).  Now capped at _API_CACHE_MAX = 2048 entries using an OrderedDict
-as an LRU cache.  Oldest entries are evicted when the cap is hit.
-
-All other logic (SQL → fuzzy → TMDB/OMDB enrichment) unchanged.
+cyber_series.py — SMART SUGGESTION ENGINE
+==========================================
+FIXES:
+  1. _normalize_title — now collapses "Ss Lucifer", "Lucifer S05", "Lucifer"
+     all down to "Lucifer" via a single ordered strip pipeline.
+  2. _API_CACHE bounded LRU (OrderedDict, cap = 2048) — no memory leak.
+  3. Minor: deduplicated imports, tightened regex literals.
 """
 
 import re
@@ -28,39 +28,106 @@ except ImportError:
 
 
 # ─────────────────────────────────────────────────────────────
-# SERIES REGEX
+# SERIES / EPISODE REGEX  (shared, compiled once)
 # ─────────────────────────────────────────────────────────────
 
+# Matches any season/episode token we want to REMOVE from a display title.
+# Order matters: longest/most-specific patterns first.
 SERIES_RE = re.compile(
     r"(?i)\b("
-    r"S\d{1,3}E\d{1,3}"
-    r"|Season\s?\d+\s?[-]?\s?Episode\s?\d+"
-    r"|\d{1,2}x\d{1,2}"
-    r"|E\d{1,3}(-E\d{1,3})?"
-    r"|EP\d{1,3}"
-    r"|(19|20)\d{2}.*S\d{1,3}E\d{1,3}"
+    r"(19|20)\d{2}[\s._-]*S\d{1,3}E\d{1,3}"   # 2023.S01E01
+    r"|S\d{1,3}E\d{1,3}E\d{1,3}"               # S01E01E02
+    r"|S\d{1,3}\s?E\d{1,3}"                    # S01 E01
+    r"|S\d{1,3}\s?EP\d{1,3}"                   # S01 EP01
+    r"|Season\s?\d+\s?[-]?\s?Episode\s?\d+"    # Season 1 Episode 2
+    r"|Season\s?\d+"                            # Season 1
+    r"|\d{1,2}x\d{1,2}"                        # 1x02
+    r"|EP\d{1,3}"                               # EP03
+    r"|E\d{1,3}(-E\d{1,3})?"                   # E01 / E01-E03
+    r"|S\d{1,3}"                               # S01  ← keep LAST (shortest)
     r"|Combined"
-    r"|S\d{1,3}\s?EP\d{1,3}"
-    r"|S\d{1,3}E\d{1,3}E\d{1,3}"
-    r"|S\d{1,3}"
-    r"|Season\s?\d+"
-    r")\b"
+    r")\b",
+    re.IGNORECASE,
 )
 
+# Lone "S" or "SS" that are left over after the above strips (e.g. "Ss Lucifer")
+_LONE_S_RE = re.compile(r"(?<!\w)[Ss]{1,2}(?!\w)")
+
+# Video quality / codec / release-group noise
+_JUNK_RE = re.compile(
+    r"\b(4K|2160P|1080P|720P|480P|360P|HDRIP|WEBRIP|WEB[-]?DL|BLURAY|BDRIP"
+    r"|X264|X265|HEVC|AVC|AAC|AC3|DDP5\.1|DTS|REPACK|PROPER|COMPLETE|BATCH"
+    r"|NF|AMZN|DSNP|HMAX|HDTV|PDTV|DVDRip)\b",
+    re.IGNORECASE,
+)
+
+_YEAR_RE  = re.compile(r"\b(19|20)\d{2}\b")
+_SPACE_RE = re.compile(r"\s{2,}")
+
 
 # ─────────────────────────────────────────────────────────────
-# TMDB / OMDB LOOKUP  — LRU bounded cache
-# FIX: was unbounded dict → now OrderedDict capped at _API_CACHE_MAX
+# TITLE NORMALIZER  ← main fix
 # ─────────────────────────────────────────────────────────────
 
-_API_CACHE_MAX = 2048   # max entries before eviction
+def _normalize_title(name: str) -> str:
+    """
+    Strips separators, brackets, episode codes, quality tags, and stray
+    season-letter remnants so that all of these collapse to "Lucifer":
+        Lucifer.S05E01.1080p
+        Ss Lucifer
+        LUCIFER S05
+        lucifer.complete
+    """
+    # 1. Replace common separators with spaces
+    text = re.sub(r"[._\-]+", " ", name)
+
+    # 2. Drop bracketed/parenthesised blocks  [720p]  (Hindi)
+    text = re.sub(r"\[.*?\]|\(.*?\)", "", text)
+
+    # 3. Remove full season+episode tokens (S01E02, Season 1 Episode 2, …)
+    text = SERIES_RE.sub(" ", text)
+
+    # 4. Remove lone "S" / "SS" that SERIES_RE leaves behind
+    #    e.g. "Ss Lucifer" → " Lucifer",  "Lucifer S" → "Lucifer "
+    text = _LONE_S_RE.sub(" ", text)
+
+    # 5. Strip quality / codec noise
+    text = _JUNK_RE.sub(" ", text)
+
+    # 6. Strip bare years
+    text = _YEAR_RE.sub(" ", text)
+
+    # 7. Collapse whitespace and title-case
+    text = _SPACE_RE.sub(" ", text).strip()
+    return text.title() if text else ""
+
+
+# ─────────────────────────────────────────────────────────────
+# QUERY CLEANER
+# ─────────────────────────────────────────────────────────────
+
+def clean_query(q: str) -> str:
+    if not q:
+        return ""
+    q = q.lower()
+    q = re.sub(r"[^a-z0-9\s]", " ", q)
+    q = SERIES_RE.sub("", q)
+    q = _LONE_S_RE.sub("", q)
+    q = _SPACE_RE.sub(" ", q).strip()
+    return q
+
+
+# ─────────────────────────────────────────────────────────────
+# LRU CACHE FOR API LOOKUPS
+# ─────────────────────────────────────────────────────────────
+
+_API_CACHE_MAX = 2048
 _API_CACHE_TTL = 6 * 3600
-_API_CACHE: OrderedDict[str, dict] = OrderedDict()   # key → {year, found, ts}
+_API_CACHE: OrderedDict[str, dict] = OrderedDict()
 _API_SEM   = asyncio.Semaphore(3)
 
 
 def _cache_get(key: str) -> dict | None:
-    """LRU get — TTL checked here; evicts expired entry if stale."""
     entry = _API_CACHE.get(key)
     if entry is None:
         return None
@@ -71,20 +138,19 @@ def _cache_get(key: str) -> dict | None:
     return entry
 
 
-def _cache_set(key: str, value: dict):
-    """LRU set — evicts oldest when cap is hit."""
+def _cache_set(key: str, value: dict) -> None:
     if key in _API_CACHE:
         _API_CACHE.move_to_end(key)
     _API_CACHE[key] = value
     if len(_API_CACHE) > _API_CACHE_MAX:
-        _API_CACHE.popitem(last=False)  # remove LRU entry
+        _API_CACHE.popitem(last=False)
 
+
+# ─────────────────────────────────────────────────────────────
+# TMDB / OMDB ENRICHMENT
+# ─────────────────────────────────────────────────────────────
 
 async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
-    """
-    Check TMDB then OMDB for the given title.
-    Returns (year, found).
-    """
     key   = title.lower().strip()
     entry = _cache_get(key)
     if entry is not None:
@@ -94,7 +160,6 @@ async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
     found = False
 
     async with _API_SEM:
-        # ── TMDB ─────────────────────────────────────────────
         try:
             import aiohttp
             from config import TMDB_API_KEY
@@ -113,7 +178,6 @@ async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
         except Exception:
             pass
 
-        # ── OMDB fallback ────────────────────────────────────
         if not found:
             try:
                 import aiohttp
@@ -137,21 +201,7 @@ async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
 
 
 # ─────────────────────────────────────────────────────────────
-# QUERY CLEANER
-# ─────────────────────────────────────────────────────────────
-
-def clean_query(q: str) -> str:
-    if not q:
-        return ""
-    q = q.lower()
-    q = re.sub(r"[^a-z0-9\s]", " ", q)
-    q = SERIES_RE.sub("", q)
-    q = re.sub(r"\s+", " ", q).strip()
-    return q
-
-
-# ─────────────────────────────────────────────────────────────
-# STEP 1 — SQL candidates
+# STEP 1 — SQL CANDIDATES
 # ─────────────────────────────────────────────────────────────
 
 async def _sql_candidates(query: str, limit: int = 8) -> List[str]:
@@ -169,19 +219,17 @@ async def _sql_candidates(query: str, limit: int = 8) -> List[str]:
 
 
 # ─────────────────────────────────────────────────────────────
-# STEP 2 — FUZZY fallback
+# STEP 2 — FUZZY FALLBACK
 # ─────────────────────────────────────────────────────────────
 
 async def _fuzzy_candidates(query: str, limit: int = 6) -> List[str]:
     if not HAVE_RAPIDFUZZ:
         return []
-
     try:
         all_series = await get_all_series()
         all_titles = [n for n, _ in all_series] if all_series else []
     except Exception:
         return []
-
     if not all_titles:
         return []
 
@@ -197,7 +245,7 @@ async def _fuzzy_candidates(query: str, limit: int = 6) -> List[str]:
 
 
 # ─────────────────────────────────────────────────────────────
-# STEP 3 — TMDB/OMDB enrichment
+# STEP 3 — TMDB/OMDB ENRICHMENT
 # ─────────────────────────────────────────────────────────────
 
 async def _validate_and_enrich(
@@ -207,20 +255,14 @@ async def _validate_and_enrich(
         *[_lookup_title(t) for t in candidates],
         return_exceptions=True,
     )
-
-    enriched = []
-    for title, result in zip(candidates, lookups):
-        if isinstance(result, Exception):
-            enriched.append((title, None))
-            continue
-        year, _found = result
-        enriched.append((title, year))
-
-    return enriched
+    return [
+        (title, result[0] if not isinstance(result, Exception) else None)
+        for title, result in zip(candidates, lookups)
+    ]
 
 
 # ─────────────────────────────────────────────────────────────
-# PUBLIC: suggest_series_with_year
+# PUBLIC API
 # ─────────────────────────────────────────────────────────────
 
 async def suggest_series_with_year(
@@ -231,36 +273,31 @@ async def suggest_series_with_year(
         return []
 
     candidates = await _sql_candidates(q, limit=limit * 3)
-
     if not candidates:
         candidates = await _fuzzy_candidates(q, limit=limit * 2)
-
     if not candidates:
         return []
 
-    seen, unique = set(), []
+    # Normalize every raw DB title BEFORE dedup.
+    # This collapses "Lucifer", "Lucifer S05", "Ss Lucifer" → "Lucifer"
+    # so the user sees one clean button instead of three noisy ones.
+    seen: set[str] = set()
+    unique: List[str] = []
     for c in candidates:
-        k = c.lower().strip()
+        normalized = _normalize_title(c)   # ← THE FIX
+        k = normalized.lower()
         if k not in seen:
             seen.add(k)
-            unique.append(c)
+            unique.append(normalized)      # store the clean title, not raw
 
     validated = await _validate_and_enrich(unique)
     return validated[:limit]
 
 
-# ─────────────────────────────────────────────────────────────
-# PUBLIC: suggest_series (backward-compat)
-# ─────────────────────────────────────────────────────────────
-
 async def suggest_series(query: str, limit: int = 4) -> List[str]:
     results = await suggest_series_with_year(query, limit=limit)
     return [title for title, _ in results]
 
-
-# ─────────────────────────────────────────────────────────────
-# PUBLIC: format_suggestion_label
-# ─────────────────────────────────────────────────────────────
 
 def format_suggestion_label(title: str, year: Optional[str]) -> str:
     display = title.title() if title == title.lower() else title
@@ -268,28 +305,17 @@ def format_suggestion_label(title: str, year: Optional[str]) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# TITLE NORMALIZER
-# ─────────────────────────────────────────────────────────────
-
-def _normalize_title(name: str) -> str:
-    clean = re.sub(r"[._\-]", " ", name)
-    clean = re.sub(r"\[.*?\]|\(.*?\)", "", clean)
-    match = SERIES_RE.search(clean)
-    if match:
-        clean = clean[:match.start()]
-    clean = re.sub(
-        r"\b(4K|1080P|720P|480P|360P|HDRIP|WEBRIP|WEB|BLURAY|X264|X265"
-        r"|HEVC|AAC|DDP5\.1|REPACK|COMPLETE|BATCH)\b",
-        "", clean, flags=re.IGNORECASE,
-    )
-    clean = re.sub(r"\b(19|20)\d{2}\b", "", clean)
-    clean = re.sub(r"\s+", " ", clean).strip()
-    return clean.title()
-
-
-# ─────────────────────────────────────────────────────────────
 # PARSE SERIES INFO
 # ─────────────────────────────────────────────────────────────
+
+_LANG_KW = {
+    "HINDI": "Hindi", "ENGLISH": "English", "TAMIL": "Tamil",
+    "TELUGU": "Telugu", "MALAYALAM": "Malayalam", "KANNADA": "Kannada",
+}
+_LANG_PAT = {
+    r"\bHIN\b": "Hindi",  r"\bENG\b": "English", r"\bTAM\b": "Tamil",
+    r"\bTEL\b": "Telugu", r"\bMAL\b": "Malayalam", r"\bKAN\b": "Kannada",
+}
 
 def parse_series_info(file_name: str):
     if not file_name:
@@ -299,46 +325,36 @@ def parse_series_info(file_name: str):
     upper = name.upper()
     season = episode = 0
 
-    m = re.search(r"(?i)S(\d{1,3})[^\d]?(?:EP|E)(\d{1,3})", name)
-    if m:
-        season, episode = int(m.group(1)), int(m.group(2))
-    else:
-        m = re.search(r"(?i)Season\s?(\d+)\s?[-]?\s?Episode\s?(\d+)", name)
+    # Season + Episode
+    for pattern, s_grp, e_grp in [
+        (r"(?i)S(\d{1,3})[^\d]?(?:EP|E)(\d{1,3})", 1, 2),
+        (r"(?i)Season\s?(\d+)\s?[-]?\s?Episode\s?(\d+)", 1, 2),
+        (r"(?i)\b(\d{1,2})x(\d{1,2})\b", 1, 2),
+    ]:
+        m = re.search(pattern, name)
         if m:
-            season, episode = int(m.group(1)), int(m.group(2))
-        else:
-            m = re.search(r"(?i)\b(\d{1,2})x(\d{1,2})\b", name)
-            if m:
-                season, episode = int(m.group(1)), int(m.group(2))
-            else:
-                m = re.search(r"(?i)\bS(\d{1,3})\b", name)
-                if m: season = int(m.group(1))
-                m = re.search(r"(?i)\b(?:EP|E)(\d{1,3})\b", name)
-                if m: episode = int(m.group(1))
-
-    quality = "UNKNOWN"
-    for q in ["4K", "1080P", "720P", "480P", "360P"]:
-        if q in upper:
-            quality = q
+            season, episode = int(m.group(s_grp)), int(m.group(e_grp))
             break
+    else:
+        m = re.search(r"(?i)\bS(\d{1,3})\b", name)
+        if m: season = int(m.group(1))
+        m = re.search(r"(?i)\b(?:EP|E)(\d{1,3})\b", name)
+        if m: episode = int(m.group(1))
 
-    langs = set()
-    for kw, lang in {
-        "HINDI": "Hindi", "ENGLISH": "English", "TAMIL": "Tamil",
-        "TELUGU": "Telugu", "MALAYALAM": "Malayalam", "KANNADA": "Kannada",
-    }.items():
-        if kw in upper: langs.add(lang)
+    # Quality
+    quality = next(
+        (q for q in ("4K", "2160P", "1080P", "720P", "480P", "360P") if q in upper),
+        "UNKNOWN",
+    )
 
-    for pat, lang in {
-        r"\bHIN\b": "Hindi",  r"\bENG\b": "English", r"\bTAM\b": "Tamil",
-        r"\bTEL\b": "Telugu", r"\bMAL\b": "Malayalam", r"\bKAN\b": "Kannada",
-    }.items():
-        if re.search(pat, upper): langs.add(lang)
-
+    # Language
     if "DUAL" in upper or "MULTI" in upper:
         return _normalize_title(name), season, episode, quality, "Multi Audio"
 
-    if len(langs) == 1:   language = next(iter(langs))
+    langs = {lang for kw, lang in _LANG_KW.items() if kw in upper}
+    langs |= {lang for pat, lang in _LANG_PAT.items() if re.search(pat, upper)}
+
+    if   len(langs) == 1: language = next(iter(langs))
     elif len(langs) > 1:  language = " + ".join(sorted(langs))
     else:                 language = "Unknown"
 
@@ -349,7 +365,7 @@ def parse_series_info(file_name: str):
 # BUTTON OWNER CHECK
 # ─────────────────────────────────────────────────────────────
 
-async def check_owner(q, uid: int):
+async def check_owner(q, uid: int) -> bool:
     if q.from_user.id != int(uid):
         name = q.from_user.first_name or "User"
         await q.answer(f"Hey {name}, this button is not for you.", show_alert=True)
