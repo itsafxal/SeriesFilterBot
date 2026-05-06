@@ -1,34 +1,19 @@
 """
-utils/cyber_index.py — FIXED EDITION
-======================================
+utils/cyber_index.py — FIXED EDITION WITH FULL PATTERN LIBRARY
+==============================================================
 
 FIXES IN THIS VERSION:
 
-  1. FALSE DUPLICATE BUG FIXED — batch_dedup_check now checks existence
-     using BOTH the full key (name+season+ep+quality+lang) AND a language-
-     agnostic key (name+season+ep+quality). If the language-agnostic key
-     matches, we treat it as a duplicate regardless of what language the
-     parser detected this run.
-
-     Root cause: _get_language_from_api() can return "Unknown" if the TMDB
-     API is slow/down, while the same file was previously stored as "Hindi".
-     The full key doesn't match → dedup misses it → second row inserted with
-     language="Unknown" → users see duplicates in search results.
-
-  2. API CALLS NO LONGER BLOCK BATCH PROCESSING — _get_language_from_api()
-     is now capped by a semaphore (max 3 concurrent HTTP calls). During bulk
-     index, if the semaphore would block, we return "Unknown" immediately
-     and let the existing language (from the DB, via dedup logic) win.
-     The TMDB cache still fills up over time so repeat lookups are instant.
-
-  3. CAPTION_LANG CACHED — unchanged from previous version.
-     set_caption_lang_cache() stores the flag once at index start.
-     Eliminates one MongoDB round-trip per document.
-
-  4. batch_dedup_check() — SINGLE SQLite IN() query for the whole batch
-     PLUS language-agnostic secondary check. Returns correct duplicate count.
-
-All existing public functions are fully backward-compatible.
+  1. FALSE DUPLICATE BUG FIXED – batch_dedup_check now uses both exact and
+     language‑agnostic keys.
+  2. API CALLS NO LONGER BLOCK BATCH PROCESSING – TMDB/OMDB semaphore-limited.
+  3. CAPTION_LANG CACHED – eliminates one MongoDB round‑trip per document.
+  4. SEASON/EPISODE PARSING NOW USES THE COMPREHENSIVE PATTERNS LIBRARY.
+     All patterns from the full PATTERNS dict are tested in a strict priority
+     order, drastically improving detection of unusual formats (anime, multi‑ep,
+     Roman numerals, date‑based, etc.).
+  5. _is_series_file() now checks against the same comprehensive patterns,
+     accepting a much wider range of series indicators.
 """
 
 import re
@@ -66,16 +51,249 @@ def _apply_clean(text: str, keywords: list) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# REGEX PATTERNS
+# FULL PATTERN LIBRARY
 # ─────────────────────────────────────────────────────────────
 
-_SE_RE = re.compile(r"[sS](\d{1,3})[._\-\s]*[eE](\d{1,3})", re.IGNORECASE)
-_SEASON_ONLY_RE = re.compile(
-    r"(?:season[\s._\-]*(\d{1,3})|[sS](\d{1,3})(?![eE]))", re.IGNORECASE
-)
-_EP_ONLY_RE = re.compile(
-    r"(?:[eE][pP]?|[eE]pisode[\s._\-]*)(\d{1,3})", re.IGNORECASE
-)
+PATTERNS = {
+    # --------------------------------------------------
+    # STANDARD
+    # --------------------------------------------------
+    "S01E01": re.compile(
+        r"\b[sS](\d{1,3})[.\-_\s]?[eE](\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    "01x01": re.compile(
+        r"\b(\d{1,3})[xX](\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    "Season Episode": re.compile(
+        r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*episode[.\-_\s]*(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    "Season Ep": re.compile(
+        r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*(?:ep|e)[.\-_\s]*(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    "S01 EP01": re.compile(
+        r"\b[sS](\d{1,3})[.\-_\s]*(?:ep|e)[.\-_\s]*(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    # --------------------------------------------------
+    # SEPARATORS
+    # --------------------------------------------------
+    "S01-E01": re.compile(
+        r"\b[sS](\d{1,3})-(?:[eE])(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    "S01.E01": re.compile(
+        r"\b[sS](\d{1,3})\.(?:[eE])(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    "S01_E01": re.compile(
+        r"\b[sS](\d{1,3})_(?:[eE])(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    "S01 E01": re.compile(
+        r"\b[sS](\d{1,3})\s+(?:[eE])(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    # --------------------------------------------------
+    # MULTI EPISODES
+    # --------------------------------------------------
+    "S01E01E02": re.compile(
+        r"\b[sS](\d{1,3})[.\-_\s]*[eE](\d{1,3})(?:[eE](\d{1,3}))+",
+        re.IGNORECASE
+    ),
+    "S01E01-E05": re.compile(
+        r"\b[sS](\d{1,3})[.\-_\s]*[eE](\d{1,3})[\-~to]+(?:[eE])?(\d{1,3})",
+        re.IGNORECASE
+    ),
+    "01x01-01x05": re.compile(
+        r"\b(\d{1,3})[xX](\d{1,3})[\-~](\d{1,3})[xX](\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    # --------------------------------------------------
+    # THREE / FOUR DIGIT
+    # --------------------------------------------------
+    "101": re.compile(
+        r"\b([1-9])(\d{2})\b"
+    ),
+    "1001": re.compile(
+        r"\b(\d{2})(\d{2})\b"
+    ),
+    "0101": re.compile(
+        r"\b(\d{2})(\d{2})\b"
+    ),
+    # --------------------------------------------------
+    # EPISODE ONLY
+    # --------------------------------------------------
+    "Episode 01": re.compile(
+        r"\bepisode[.\-_\s]*(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    "Ep01": re.compile(
+        r"\bep[.\-_\s]*(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    "E01": re.compile(
+        r"\b[eE](\d{1,3})\b"
+    ),
+    # --------------------------------------------------
+    # SEASON ONLY
+    # --------------------------------------------------
+    "Season 01": re.compile(
+        r"\bseason[.\-_\s]*(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    "S01": re.compile(
+        r"\b[sS](\d{1,3})(?![eE])\b",
+        re.IGNORECASE
+    ),
+    # --------------------------------------------------
+    # COMPLETE / PACK
+    # --------------------------------------------------
+    "Complete Season": re.compile(
+        r"\b(?:complete|full)[.\-_\s]*season[.\-_\s]*(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    "Season Pack": re.compile(
+        r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*(?:pack|collection)\b",
+        re.IGNORECASE
+    ),
+    "Batch": re.compile(
+        r"\bbatch[.\-_\s]*(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    # --------------------------------------------------
+    # ANIME
+    # --------------------------------------------------
+    "Anime 01v2": re.compile(
+        r"\b(\d{1,3})v\d+\b",
+        re.IGNORECASE
+    ),
+    "S01E01v2": re.compile(
+        r"\b[sS](\d{1,3})[eE](\d{1,3})v\d+\b",
+        re.IGNORECASE
+    ),
+    "Episode 01v2": re.compile(
+        r"\b(?:ep|episode)[.\-_\s]*(\d{1,3})v\d+\b",
+        re.IGNORECASE
+    ),
+    "OVA": re.compile(
+        r"\bOVA[.\-_\s]*(\d{1,3})?\b",
+        re.IGNORECASE
+    ),
+    "ONA": re.compile(
+        r"\bONA[.\-_\s]*(\d{1,3})?\b",
+        re.IGNORECASE
+    ),
+    "Special": re.compile(
+        r"\bspecial[.\-_\s]*(\d{1,3})?\b",
+        re.IGNORECASE
+    ),
+    # --------------------------------------------------
+    # PART / CHAPTER
+    # --------------------------------------------------
+    "Part 01": re.compile(
+        r"\b(?:part|pt)[.\-_\s]*(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    "Chapter 01": re.compile(
+        r"\b(?:chapter|chap)[.\-_\s]*(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    "Volume": re.compile(
+        r"\b(?:vol|volume)[.\-_\s]*(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    # --------------------------------------------------
+    # DATE BASED SHOWS
+    # --------------------------------------------------
+    "2024.01.15": re.compile(
+        r"\b(20\d{2})[.\-_](\d{2})[.\-_](\d{2})\b"
+    ),
+    "2024-01-15": re.compile(
+        r"\b(20\d{2})-(\d{2})-(\d{2})\b"
+    ),
+    # --------------------------------------------------
+    # MINI SERIES
+    # --------------------------------------------------
+    "Mini Series Part": re.compile(
+        r"\bmini[.\-_\s]*series[.\-_\s]*(?:part)?[.\-_\s]*(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    # --------------------------------------------------
+    # ROMAN NUMBERS
+    # --------------------------------------------------
+    "Season Roman": re.compile(
+        r"\bseason[.\-_\s]*(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b",
+        re.IGNORECASE
+    ),
+    # --------------------------------------------------
+    # WEB FORMAT
+    # --------------------------------------------------
+    "WEB Episode": re.compile(
+        r"\bweb[.\-_\s]*dl[.\-_\s]*ep[.\-_\s]*(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    # --------------------------------------------------
+    # KOREAN / JAPANESE STYLE
+    # --------------------------------------------------
+    "EP 01 END": re.compile(
+        r"\bep?[.\-_\s]*(\d{1,3})[.\-_\s]*(?:end|finale)\b",
+        re.IGNORECASE
+    ),
+    # --------------------------------------------------
+    # DISC / CD
+    # --------------------------------------------------
+    "Disc 1": re.compile(
+        r"\bdisc[.\-_\s]*(\d{1,2})\b",
+        re.IGNORECASE
+    ),
+    "CD1": re.compile(
+        r"\bcd[.\-_\s]*(\d{1,2})\b",
+        re.IGNORECASE
+    ),
+    # --------------------------------------------------
+    # ABSOLUTE ANIME NUMBERING
+    # --------------------------------------------------
+    "Naruto 220": re.compile(
+        r"\b(0?\d{1,4})\b"
+    ),
+    # --------------------------------------------------
+    # RANGE
+    # --------------------------------------------------
+    "Episodes 1-10": re.compile(
+        r"\bepisodes?[.\-_\s]*(\d{1,3})[\-~to]+(\d{1,3})\b",
+        re.IGNORECASE
+    ),
+    # --------------------------------------------------
+    # SPECIAL EDITIONS
+    # --------------------------------------------------
+    "Director Cut": re.compile(
+        r"\bdirector'?s?[.\-_\s]*cut\b",
+        re.IGNORECASE
+    ),
+    "Extended": re.compile(
+        r"\bextended\b",
+        re.IGNORECASE
+    ),
+    "Uncut": re.compile(
+        r"\buncut\b",
+        re.IGNORECASE
+    ),
+}
+
+# Roman numeral conversion helper
+ROMAN_TO_INT = {
+    "i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5,
+    "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10
+}
+
+
+# ─────────────────────────────────────────────────────────────
+# LEGACY REGEX (kept for quality/codec etc.)
+# ─────────────────────────────────────────────────────────────
 
 _QUALITY_MAP = [
     (re.compile(r"\b4[kK]\b"),      "4K"),
@@ -188,63 +406,133 @@ async def _get_caption_lang_flag() -> bool:
 
 
 # ─────────────────────────────────────────────────────────────
-# PARSERS
+# PARSERS  (using the comprehensive PATTERNS)
 # ─────────────────────────────────────────────────────────────
 
 def _parse_season_episode(name: str) -> tuple[int, int]:
-    m = _SE_RE.search(name)
-    if m:
-        return int(m.group(1)), int(m.group(2))
+    """
+    Extract season & episode using the full PATTERNS library.
+    Returns (season, episode). Unused dimension defaults to 0.
+    """
+    text = name
 
-    season  = 0
-    episode = 0
+    # Priority order – most specific first
+    ORDER = [
+        # Multi-episode (store first episode only)
+        "S01E01E02", "S01E01-E05", "01x01-01x05",
+        # Standard S/E with all separators
+        "S01E01", "S01-E01", "S01.E01", "S01_E01", "S01 E01",
+        "S01 EP01",
+        # Season/Episode spelled out
+        "Season Episode", "Season Ep",
+        # 01x01
+        "01x01",
+        # Episode only (keep season if already found)
+        "Episode 01", "Ep01", "E01",
+        # Season only
+        "Season 01", "S01",
+        "Complete Season", "Season Pack", "Batch",
+        # Anime / specials (often episode only)
+        "Anime 01v2", "S01E01v2", "Episode 01v2",
+        "OVA", "ONA", "Special",
+        # Part / chapter
+        "Part 01", "Chapter 01", "Volume",
+        # Date based (ignored here, not mapped to season/ep)
+        "2024.01.15", "2024-01-15",
+        # Mini series
+        "Mini Series Part",
+        # Roman numerals for season
+        "Season Roman",
+        # WEB, disc, etc.
+        "WEB Episode", "EP 01 END", "Disc 1", "CD1",
+        # Ranges
+        "Episodes 1-10",
+        # Ambiguous numeric patterns – last resort
+        "101", "1001", "0101",
+        # "Naruto 220" – uncomment only if you want absolute numbering fallback
+        # "Naruto 220",
+    ]
 
-    ms = _SEASON_ONLY_RE.search(name)
-    if ms:
-        season = int(ms.group(1) or ms.group(2))
+    season = episode = 0
 
-    me = _EP_ONLY_RE.search(name)
-    if me:
-        episode = int(me.group(1))
+    for key in ORDER:
+        pat = PATTERNS.get(key)
+        if not pat:
+            continue
+        m = pat.search(text)
+        if m:
+            groups = m.groups()
+            # Extraction logic based on pattern name
+            if key in ("S01E01", "S01-E01", "S01.E01", "S01_E01", "S01 E01",
+                       "S01 EP01", "Season Episode", "Season Ep", "01x01",
+                       "S01E01v2"):
+                season = int(groups[0])
+                episode = int(groups[1])
+                break
+            elif key == "S01E01E02":
+                season = int(groups[0])
+                episode = int(groups[1])
+                break
+            elif key == "S01E01-E05":
+                season = int(groups[0])
+                episode = int(groups[1])
+                break
+            elif key == "01x01-01x05":
+                season = int(groups[0])
+                episode = int(groups[1])
+                break
+            elif key in ("Episode 01", "Ep01", "E01",
+                         "Anime 01v2", "Episode 01v2",
+                         "Part 01", "Chapter 01", "Volume",
+                         "Mini Series Part", "WEB Episode",
+                         "EP 01 END", "Disc 1", "CD1"):
+                if not season:  # keep existing season if already set
+                    season = 0
+                episode = int(groups[0])
+                break
+            elif key in ("Season 01", "S01", "Complete Season",
+                         "Season Pack", "Batch"):
+                season = int(groups[0])
+                break
+            elif key in ("OVA", "ONA", "Special"):
+                ova_num = groups[0] if groups[0] else None
+                if ova_num:
+                    episode = int(ova_num)
+                break
+            elif key in ("2024.01.15", "2024-01-15"):
+                # date-based; ignore for season/ep mapping
+                pass
+            elif key == "Season Roman":
+                roman = groups[0].lower()
+                season = ROMAN_TO_INT.get(roman, 0)
+                break
+            elif key == "Episodes 1-10":
+                episode = int(groups[0])
+                break
+            elif key in ("101", "1001", "0101"):
+                digits = groups[0] + groups[1]
+                if len(digits) == 3:
+                    season = int(digits[0])
+                    episode = int(digits[1:])
+                else:
+                    season = int(digits[:2])
+                    episode = int(digits[2:])
+                break
+            # else ignore
 
     return season, episode
 
 
-# ─────────────────────────────────────────────────────────────
-# SERIES GUARD — accepts any file that looks like a TV series.
-# Rejects only plain movies / music / random docs with no season marker.
-#
-# Accepted:
-#   S01E01, S01EP01, S01E01E02, Season 1 Episode 1, 1x01  — episode files
-#   S01, S1, Season 1, Season01                            — season-only packs
-#   Show.S02.Complete.mkv, Season 3 Batch                  — full-season packs
-#
-# Rejected: bare filenames with zero season/episode markers
-# ─────────────────────────────────────────────────────────────
-
-_SERIES_GUARD_RE = re.compile(
-    r"""
-    (?:
-        [sS]\d{1,3}[\s._\-]*[eE][pP]?\d{1,3}          # S01E01 / S01EP01 / S01 E01
-      | [sS]\d{1,3}[eE]\d{1,3}[eE]\d{1,3}              # S01E01E02 (multi-ep)
-      | Season[\s._\-]*\d+[\s._\-]*Episode[\s._\-]*\d+ # Season 1 Episode 1
-      | \d{1,2}x\d{1,2}                                 # 1x01
-      | [sS]\d{1,3}\b                                   # S01 / S1 alone (season pack)
-      | Season[\s._\-]*\d+\b                            # Season 1 / Season01 alone
-    )
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
-
 def _is_series_file(file_name: str, caption: str = "") -> bool:
     """
-    Returns True if the file contains any season or episode marker —
-    including season-only packs like S01, Season 2, Show.S02.Complete.mkv.
-    Returns False only for files with NO season/episode indicator at all.
+    Returns True if the file contains any known season/episode marker
+    according to the comprehensive PATTERNS library.
     """
     combined = f"{file_name} {caption}"
-    return bool(_SERIES_GUARD_RE.search(combined))
+    for pat in PATTERNS.values():
+        if pat.search(combined):
+            return True
+    return False
 
 
 def _parse_quality(name: str, caption: str = "") -> str:
@@ -300,44 +588,6 @@ def _parse_language(name: str, caption: str = "") -> str:
     if len(found) == 1:
         return found[0]
     return " + ".join(found)
-
-
-# ─────────────────────────────────────────────────────────────
-# TMDB / OMDB LANGUAGE FALLBACK
-# FIX: semaphore limits concurrent HTTP calls to prevent blocking
-# ─────────────────────────────────────────────────────────────
-
-async def _resolve_language(file_name: str, caption: str, normalized_name: str) -> str:
-    """
-    Language resolution — strict priority chain:
-
-    CAPTION_LANG ENABLED:
-      1. Search caption alone → found → use it
-      2. Search file_name alone → found → use it
-      3. TMDB / OMDB → found → use it
-      4. Return "Unknown"
-
-    CAPTION_LANG DISABLED:
-      1. Search file_name alone → found → use it
-      2. TMDB / OMDB → found → use it
-      3. Return "Unknown"
-    """
-    use_caption_lang = await _get_caption_lang_flag()
-
-    if use_caption_lang:
-        # Step 1 — caption only
-        if caption and caption.strip():
-            lang = _parse_language(caption, "")
-            if lang != "Unknown":
-                return lang
-
-    # Step 2 — filename only
-    lang = _parse_language(file_name, "")
-    if lang != "Unknown":
-        return lang
-
-    # Step 3 — TMDB / OMDB
-    return await _get_language_from_api(normalized_name)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -414,6 +664,40 @@ async def _get_language_from_api(normalized_name: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
+# LANGUAGE RESOLVER
+# ─────────────────────────────────────────────────────────────
+
+async def _resolve_language(file_name: str, caption: str, normalized_name: str) -> str:
+    """
+    Language resolution — strict priority chain.
+
+    CAPTION_LANG ENABLED:
+      1. Search caption alone → found → use it
+      2. Search file_name alone → found → use it
+      3. TMDB / OMDB → found → use it
+      4. Return "Unknown"
+
+    CAPTION_LANG DISABLED:
+      1. Search file_name alone → found → use it
+      2. TMDB / OMDB → found → use it
+      3. Return "Unknown"
+    """
+    use_caption_lang = await _get_caption_lang_flag()
+
+    if use_caption_lang:
+        if caption and caption.strip():
+            lang = _parse_language(caption, "")
+            if lang != "Unknown":
+                return lang
+
+    lang = _parse_language(file_name, "")
+    if lang != "Unknown":
+        return lang
+
+    return await _get_language_from_api(normalized_name)
+
+
+# ─────────────────────────────────────────────────────────────
 # SERIES NAME NORMALIZER
 # ─────────────────────────────────────────────────────────────
 
@@ -425,11 +709,29 @@ def _normalized_series_name(file_name: str) -> str:
     name = re.sub(r"\.(mkv|mp4|avi|mov|wmv|flv|webm)$", "", name, flags=re.IGNORECASE)
     name = _MENTION_RE.sub(" ", name)
 
-    cut_match = (
-        _SE_RE.search(name)
-        or _SEASON_ONLY_RE.search(name)
-        or _EP_ONLY_RE.search(name)
-    )
+    # Use the first matched pattern to cut off season/episode part, like before.
+    # We'll search for any pattern from ORDER priority list that catches a season/ep token.
+    cut_match = None
+    for key in [
+        "S01E01E02", "S01E01-E05", "01x01-01x05",
+        "S01E01", "S01-E01", "S01.E01", "S01_E01", "S01 E01",
+        "S01 EP01", "Season Episode", "Season Ep", "01x01",
+        "Episode 01", "Ep01", "E01",
+        "Season 01", "S01", "Complete Season", "Season Pack", "Batch",
+        "Anime 01v2", "S01E01v2", "Episode 01v2",
+        "OVA", "ONA", "Special",
+        "Part 01", "Chapter 01", "Volume",
+        "2024.01.15", "2024-01-15", "Mini Series Part",
+        "Season Roman", "WEB Episode", "EP 01 END", "Disc 1", "CD1",
+        "Episodes 1-10", "101", "1001", "0101"
+    ]:
+        pat = PATTERNS.get(key)
+        if pat:
+            m = pat.search(name)
+            if m:
+                cut_match = m
+                break
+
     base = name[: cut_match.start()] if cut_match else name
 
     base = _BRACKET_RE.sub(" ", base)
@@ -521,28 +823,18 @@ async def _episode_exists_with_codec_check(
 
 
 # ─────────────────────────────────────────────────────────────
-# BATCH DEDUP CHECK — FIXED
+# BATCH DEDUP CHECK  (unchanged from fixed version)
 # ─────────────────────────────────────────────────────────────
 
 async def batch_dedup_check(docs: list[dict]) -> tuple[list[dict], int]:
     """
     Check an entire batch of docs for duplicates using SQL IN() queries.
-
-    FIX: Two-level dedup check:
-      1. EXACT match: (normalized_name, season, episode, quality, language)
-         → straightforward duplicate.
-      2. LANGUAGE-AGNOSTIC match: (normalized_name, season, episode, quality)
-         → same episode already stored with a DIFFERENT language label
-         (e.g. stored as "Hindi" but now parsed as "Unknown" because TMDB was slow).
-         Without this check, the same episode gets inserted again as a separate row
-         with language="Unknown", causing duplicate results in search.
-
-    Returns (to_save_list, n_duplicates).
+    Two-level: exact match + language‑agnostic match.
     """
     if not docs:
         return [], 0
 
-    # ── Step 1: in-batch dedup (keep last occurrence per identity key) ──
+    # in-batch dedup
     seen: dict[tuple, dict] = {}
     for doc in docs:
         key = (
@@ -558,33 +850,26 @@ async def batch_dedup_check(docs: list[dict]) -> tuple[list[dict], int]:
     if not deduped:
         return [], len(docs)
 
-    # ── Step 2: bulk existence checks via SQLite ───────────────────────
     from DB.sqlite_db import _get_conn, sql_db_lock
 
     full_keys = [
         (d["normalized_name"], d["season"], d["episode"], d["quality"], d["language"])
         for d in deduped
     ]
-    # Language-agnostic keys (4-tuple): catches same ep stored with diff language
     lang_agnostic_keys = [
         (d["normalized_name"], d["season"], d["episode"], d["quality"])
         for d in deduped
     ]
 
     def _bulk_exists_check() -> tuple[dict, set]:
-        """
-        Returns:
-          full_map: {(name,season,ep,quality,lang) → existing_codec}  — exact matches
-          lang_agnostic_set: {(name,season,ep,quality)}  — any-language matches
-        """
         conn   = _get_conn()
         cursor = conn.cursor()
-        CHUNK  = 190  # SQLite 999-var limit; 5 vars/row → max 199 rows
+        CHUNK  = 190
 
         full_map: dict[tuple, str] = {}
         lang_agnostic_set: set[tuple] = set()
 
-        # ── Exact-match check ─────────────────────────────────
+        # Exact match
         for i in range(0, len(full_keys), CHUNK):
             chunk        = full_keys[i : i + CHUNK]
             placeholders = ",".join(["(?,?,?,?,?)"] * len(chunk))
@@ -599,9 +884,7 @@ async def batch_dedup_check(docs: list[dict]) -> tuple[list[dict], int]:
                 k = (row[0], row[1], row[2], row[3], row[4])
                 full_map[k] = row[5] or ""
 
-        # ── Language-agnostic check ───────────────────────────
-        # Only query for docs NOT already found in exact match
-        # (no need to re-check those).
+        # Language-agnostic
         remaining_lang_agnostic = [
             la_key
             for la_key, full_key in zip(lang_agnostic_keys, full_keys)
@@ -627,7 +910,6 @@ async def batch_dedup_check(docs: list[dict]) -> tuple[list[dict], int]:
     async with sql_db_lock:
         full_map, lang_agnostic_set = await asyncio.to_thread(_bulk_exists_check)
 
-    # ── Step 3: classify each deduped doc ─────────────────────────────
     to_save = []
     n_dup   = 0
 
@@ -641,7 +923,6 @@ async def batch_dedup_check(docs: list[dict]) -> tuple[list[dict], int]:
         )
 
         if full_key in full_map:
-            # Exact match — check codec backfill
             existing_codec = full_map[full_key]
             new_codec      = doc.get("codec") or ""
             if new_codec and not existing_codec:
@@ -655,9 +936,6 @@ async def batch_dedup_check(docs: list[dict]) -> tuple[list[dict], int]:
                 n_dup += 1
 
         elif la_key in lang_agnostic_set:
-            # FIX: same episode already exists with a different language label.
-            # This happens when TMDB returns "Unknown" on this run but stored
-            # as "Hindi" previously. Do NOT insert a second row — mark as dup.
             logger.debug(
                 f"[DEDUP] Lang-agnostic dup: {doc['normalized_name']!r} "
                 f"S{doc['season']:02d}E{doc['episode']:02d} {doc['quality']} "
@@ -666,7 +944,6 @@ async def batch_dedup_check(docs: list[dict]) -> tuple[list[dict], int]:
             n_dup += 1
 
         else:
-            # Brand new doc — save it
             to_save.append(doc)
 
     in_batch_dups = len(docs) - len(deduped)
@@ -674,7 +951,7 @@ async def batch_dedup_check(docs: list[dict]) -> tuple[list[dict], int]:
 
 
 # ─────────────────────────────────────────────────────────────
-# MAIN PUBLIC FUNCTION  (RTI — real-time index, single file)
+# MAIN PUBLIC FUNCTION  (RTI — real-time index)
 # ─────────────────────────────────────────────────────────────
 
 async def save_series_file_for_bulk_index(
@@ -687,14 +964,9 @@ async def save_series_file_for_bulk_index(
             return False, 0
 
         file_name = getattr(file_obj, "file_name", None)
-        if not file_name:
+        if not file_name or not file_name.strip():
             return False, 0
 
-        file_name = file_name.strip()
-        if not file_name:
-            return False, 0
-
-        # ── SERIES GUARD — skip non-series files (movies, music, etc.) ──
         caption_raw = getattr(msg, "caption", None) or ""
         if not isinstance(caption_raw, str):
             caption_raw = str(caption_raw)
@@ -728,8 +1000,7 @@ async def save_series_file_for_bulk_index(
             if width or height:
                 quality = _quality_from_resolution(width, height)
 
-        use_caption_lang = await _get_caption_lang_flag()
-        language         = await _resolve_language(file_name, caption, normalized_name)
+        language = await _resolve_language(file_name, caption, normalized_name)
 
         norm_lower = normalized_name.lower()
         is_dup = await _episode_exists_with_codec_check(
@@ -777,7 +1048,7 @@ async def save_series_file_for_bulk_index(
 
 
 # ─────────────────────────────────────────────────────────────
-# BATCH API — used by index.py batch engine
+# BATCH API
 # ─────────────────────────────────────────────────────────────
 
 async def parse_message_to_doc(msg) -> dict | None:
@@ -794,7 +1065,13 @@ async def parse_message_to_doc(msg) -> dict | None:
         if not file_name or not file_name.strip():
             return None
 
-        file_name  = file_name.strip()
+        caption_raw = getattr(msg, "caption", None) or ""
+        if not isinstance(caption_raw, str):
+            caption_raw = str(caption_raw)
+        if not _is_series_file(file_name, caption_raw):
+            logger.debug(f"[cyber_index] ⏭ Not a series file (no S/E marker): {file_name}")
+            return None
+
         channel_id = msg.chat.id if msg.chat else None
         message_id = msg.id
 
@@ -804,11 +1081,6 @@ async def parse_message_to_doc(msg) -> dict | None:
         caption = getattr(msg, "caption", None) or ""
         if not isinstance(caption, str):
             caption = str(caption)
-
-        # ── SERIES GUARD — skip non-series files (movies, music, etc.) ──
-        if not _is_series_file(file_name, caption):
-            logger.debug(f"[cyber_index] ⏭ Not a series file (no S/E marker): {file_name}")
-            return None
 
         season, episode = _parse_season_episode(file_name)
         quality         = _parse_quality(file_name, caption)
@@ -825,8 +1097,7 @@ async def parse_message_to_doc(msg) -> dict | None:
         if not normalized_name:
             return None
 
-        use_caption_lang = await _get_caption_lang_flag()
-        language         = await _resolve_language(file_name, caption, normalized_name)
+        language = await _resolve_language(file_name, caption, normalized_name)
 
         clean_kw = await _get_clean_keywords()
 
@@ -861,7 +1132,6 @@ async def batch_save_file_docs(docs: list[dict], target: str = "both") -> int:
     if not docs:
         return 0
 
-    # In-batch dedup (fast, pure Python)
     seen_keys: dict[tuple, dict] = {}
     for doc in docs:
         key = (
