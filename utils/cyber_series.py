@@ -6,6 +6,9 @@ FIXES:
      all down to "Lucifer" via a single ordered strip pipeline.
   2. _API_CACHE bounded LRU (OrderedDict, cap = 2048) — no memory leak.
   3. Minor: deduplicated imports, tightened regex literals.
+  4. SERIES_RE is now built from the same comprehensive PATTERNS library
+     used by the indexer, ensuring every known season/episode token is
+     stripped during title normalisation.
 """
 
 import re
@@ -28,29 +31,104 @@ except ImportError:
 
 
 # ─────────────────────────────────────────────────────────────
-# SERIES / EPISODE REGEX  (shared, compiled once)
+# COMPREHENSIVE SEASON/EPISODE PATTERNS  (shared with indexer)
 # ─────────────────────────────────────────────────────────────
 
-# Matches any season/episode token we want to REMOVE from a display title.
-# Order matters: longest/most-specific patterns first.
-SERIES_RE = re.compile(
-    r"(?i)\b("
-    r"(19|20)\d{2}[\s._-]*S\d{1,3}E\d{1,3}"   # 2023.S01E01
-    r"|S\d{1,3}E\d{1,3}E\d{1,3}"               # S01E01E02
-    r"|S\d{1,3}\s?E\d{1,3}"                    # S01 E01
-    r"|S\d{1,3}\s?EP\d{1,3}"                   # S01 EP01
-    r"|Season\s?\d+\s?[-]?\s?Episode\s?\d+"    # Season 1 Episode 2
-    r"|Season\s?\d+"                            # Season 1
-    r"|\d{1,2}x\d{1,2}"                        # 1x02
-    r"|EP\d{1,3}"                               # EP03
-    r"|E\d{1,3}(-E\d{1,3})?"                   # E01 / E01-E03
-    r"|S\d{1,3}"                               # S01  ← keep LAST (shortest)
-    r"|Combined"
-    r")\b",
-    re.IGNORECASE,
-)
+PATTERNS = {
+    # Standard
+    "S01E01": re.compile(r"\b[sS](\d{1,3})[.\-_\s]?[eE](\d{1,3})\b"),
+    "01x01": re.compile(r"\b(\d{1,3})[xX](\d{1,3})\b"),
+    "Season Episode": re.compile(r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*episode[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
+    "Season Ep": re.compile(r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*(?:ep|e)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
+    "S01 EP01": re.compile(r"\b[sS](\d{1,3})[.\-_\s]*(?:ep|e)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
+    "S01-E01": re.compile(r"\b[sS](\d{1,3})-(?:[eE])(\d{1,3})\b"),
+    "S01.E01": re.compile(r"\b[sS](\d{1,3})\.(?:[eE])(\d{1,3})\b"),
+    "S01_E01": re.compile(r"\b[sS](\d{1,3})_(?:[eE])(\d{1,3})\b"),
+    "S01 E01": re.compile(r"\b[sS](\d{1,3})\s+(?:[eE])(\d{1,3})\b"),
 
-# Lone "S" or "SS" that are left over after the above strips (e.g. "Ss Lucifer")
+    # Multi episodes
+    "S01E01E02": re.compile(r"\b[sS](\d{1,3})[.\-_\s]*[eE](\d{1,3})(?:[eE](\d{1,3}))+"),
+    "S01E01-E05": re.compile(r"\b[sS](\d{1,3})[.\-_\s]*[eE](\d{1,3})[\-~to]+(?:[eE])?(\d{1,3})"),
+    "01x01-01x05": re.compile(r"\b(\d{1,3})[xX](\d{1,3})[\-~](\d{1,3})[xX](\d{1,3})\b"),
+
+    # Three / four digit
+    "101": re.compile(r"\b([1-9])(\d{2})\b"),          # season 1, episode 01
+    "1001": re.compile(r"\b(\d{2})(\d{2})\b"),         # season 10, episode 01
+    "0101": re.compile(r"\b(\d{2})(\d{2})\b"),         # same as above – last resort
+
+    # Episode only
+    "Episode 01": re.compile(r"\bepisode[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
+    "Ep01": re.compile(r"\bep[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
+    "E01": re.compile(r"\b[eE](\d{1,3})\b"),
+
+    # Season only
+    "Season 01": re.compile(r"\bseason[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
+    "S01": re.compile(r"\b[sS](\d{1,3})(?![eE])\b"),
+
+    # Complete / pack
+    "Complete Season": re.compile(r"\b(?:complete|full)[.\-_\s]*season[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
+    "Season Pack": re.compile(r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*(?:pack|collection)\b", re.IGNORECASE),
+    "Batch": re.compile(r"\bbatch[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
+
+    # Anime
+    "Anime 01v2": re.compile(r"\b(\d{1,3})v\d+\b", re.IGNORECASE),
+    "S01E01v2": re.compile(r"\b[sS](\d{1,3})[eE](\d{1,3})v\d+\b", re.IGNORECASE),
+    "Episode 01v2": re.compile(r"\b(?:ep|episode)[.\-_\s]*(\d{1,3})v\d+\b", re.IGNORECASE),
+    "OVA": re.compile(r"\bOVA[.\-_\s]*(\d{1,3})?\b", re.IGNORECASE),
+    "ONA": re.compile(r"\bONA[.\-_\s]*(\d{1,3})?\b", re.IGNORECASE),
+    "Special": re.compile(r"\bspecial[.\-_\s]*(\d{1,3})?\b", re.IGNORECASE),
+
+    # Part / Chapter
+    "Part 01": re.compile(r"\b(?:part|pt)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
+    "Chapter 01": re.compile(r"\b(?:chapter|chap)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
+    "Volume": re.compile(r"\b(?:vol|volume)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
+
+    # Date based (stripping them but not parsing)
+    "2024.01.15": re.compile(r"\b(20\d{2})[.\-_](\d{2})[.\-_](\d{2})\b"),
+    "2024-01-15": re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b"),
+
+    # Mini series
+    "Mini Series Part": re.compile(r"\bmini[.\-_\s]*series[.\-_\s]*(?:part)?[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
+
+    # Roman numerals
+    "Season Roman": re.compile(r"\bseason[.\-_\s]*(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b", re.IGNORECASE),
+
+    # WEB
+    "WEB Episode": re.compile(r"\bweb[.\-_\s]*dl[.\-_\s]*ep[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
+
+    # Korean/Japanese
+    "EP 01 END": re.compile(r"\bep?[.\-_\s]*(\d{1,3})[.\-_\s]*(?:end|finale)\b", re.IGNORECASE),
+
+    # Disc / CD
+    "Disc 1": re.compile(r"\bdisc[.\-_\s]*(\d{1,2})\b", re.IGNORECASE),
+    "CD1": re.compile(r"\bcd[.\-_\s]*(\d{1,2})\b", re.IGNORECASE),
+
+    # Absolute numbering (dangerous – used as last resort)
+    "Naruto 220": re.compile(r"\b(0?\d{1,4})\b"),
+
+    # Range
+    "Episodes 1-10": re.compile(r"\bepisodes?[.\-_\s]*(\d{1,3})[\-~to]+(\d{1,3})\b", re.IGNORECASE),
+
+    # Special editions (no numbers)
+    "Director Cut": re.compile(r"\bdirector'?s?[.\-_\s]*cut\b", re.IGNORECASE),
+    "Extended": re.compile(r"\bextended\b", re.IGNORECASE),
+    "Uncut": re.compile(r"\buncut\b", re.IGNORECASE),
+}
+
+
+def _build_series_stripper() -> re.Pattern:
+    """Combine all PATTERNS into a single regex for stripping."""
+    parts = []
+    for pat in PATTERNS.values():
+        parts.append(pat.pattern)
+    # Join patterns with | to create one giant alternation
+    return re.compile("|".join(parts), re.IGNORECASE)
+
+# Replace the old monolithic SERIES_RE with the dynamically built one
+SERIES_RE = _build_series_stripper()
+
+
+# Lone "S" or "SS" remnants (kept from original)
 _LONE_S_RE = re.compile(r"(?<!\w)[Ss]{1,2}(?!\w)")
 
 # Video quality / codec / release-group noise
@@ -84,11 +162,10 @@ def _normalize_title(name: str) -> str:
     # 2. Drop bracketed/parenthesised blocks  [720p]  (Hindi)
     text = re.sub(r"\[.*?\]|\(.*?\)", "", text)
 
-    # 3. Remove full season+episode tokens (S01E02, Season 1 Episode 2, …)
+    # 3. Remove full season+episode tokens (now uses the comprehensive patterns)
     text = SERIES_RE.sub(" ", text)
 
     # 4. Remove lone "S" / "SS" that SERIES_RE leaves behind
-    #    e.g. "Ss Lucifer" → " Lucifer",  "Lucifer S" → "Lucifer "
     text = _LONE_S_RE.sub(" ", text)
 
     # 5. Strip quality / codec noise
@@ -278,17 +355,14 @@ async def suggest_series_with_year(
     if not candidates:
         return []
 
-    # Normalize every raw DB title BEFORE dedup.
-    # This collapses "Lucifer", "Lucifer S05", "Ss Lucifer" → "Lucifer"
-    # so the user sees one clean button instead of three noisy ones.
     seen: set[str] = set()
     unique: List[str] = []
     for c in candidates:
-        normalized = _normalize_title(c)   # ← THE FIX
+        normalized = _normalize_title(c)
         k = normalized.lower()
         if k not in seen:
             seen.add(k)
-            unique.append(normalized)      # store the clean title, not raw
+            unique.append(normalized)
 
     validated = await _validate_and_enrich(unique)
     return validated[:limit]
@@ -305,7 +379,7 @@ def format_suggestion_label(title: str, year: Optional[str]) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# PARSE SERIES INFO
+# PARSE SERIES INFO  (kept as a convenience – now uses the patterns too)
 # ─────────────────────────────────────────────────────────────
 
 _LANG_KW = {
@@ -317,6 +391,12 @@ _LANG_PAT = {
     r"\bTEL\b": "Telugu", r"\bMAL\b": "Malayalam", r"\bKAN\b": "Kannada",
 }
 
+# Roman numeral helper (same as indexer)
+ROMAN_TO_INT = {
+    "i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5,
+    "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10
+}
+
 def parse_series_info(file_name: str):
     if not file_name:
         return "", 0, 0, "UNKNOWN", "Unknown"
@@ -325,29 +405,96 @@ def parse_series_info(file_name: str):
     upper = name.upper()
     season = episode = 0
 
-    # Season + Episode
-    for pattern, s_grp, e_grp in [
-        (r"(?i)S(\d{1,3})[^\d]?(?:EP|E)(\d{1,3})", 1, 2),
-        (r"(?i)Season\s?(\d+)\s?[-]?\s?Episode\s?(\d+)", 1, 2),
-        (r"(?i)\b(\d{1,2})x(\d{1,2})\b", 1, 2),
-    ]:
-        m = re.search(pattern, name)
-        if m:
-            season, episode = int(m.group(s_grp)), int(m.group(e_grp))
-            break
-    else:
-        m = re.search(r"(?i)\bS(\d{1,3})\b", name)
-        if m: season = int(m.group(1))
-        m = re.search(r"(?i)\b(?:EP|E)(\d{1,3})\b", name)
-        if m: episode = int(m.group(1))
+    # Use the same priority order as the indexer
+    ORDER = [
+        "S01E01E02", "S01E01-E05", "01x01-01x05",
+        "S01E01", "S01-E01", "S01.E01", "S01_E01", "S01 E01",
+        "S01 EP01",
+        "Season Episode", "Season Ep",
+        "01x01",
+        "Episode 01", "Ep01", "E01",
+        "Season 01", "S01",
+        "Complete Season", "Season Pack", "Batch",
+        "Anime 01v2", "S01E01v2", "Episode 01v2",
+        "OVA", "ONA", "Special",
+        "Part 01", "Chapter 01", "Volume",
+        "2024.01.15", "2024-01-15",
+        "Mini Series Part",
+        "Season Roman",
+        "WEB Episode", "EP 01 END", "Disc 1", "CD1",
+        "Episodes 1-10",
+        "101", "1001", "0101",
+    ]
 
-    # Quality
+    for key in ORDER:
+        pat = PATTERNS.get(key)
+        if not pat:
+            continue
+        m = pat.search(name)
+        if m:
+            groups = m.groups()
+            if key in ("S01E01", "S01-E01", "S01.E01", "S01_E01", "S01 E01",
+                       "S01 EP01", "Season Episode", "Season Ep", "01x01",
+                       "S01E01v2"):
+                season = int(groups[0])
+                episode = int(groups[1])
+                break
+            elif key == "S01E01E02":
+                season = int(groups[0])
+                episode = int(groups[1])
+                break
+            elif key == "S01E01-E05":
+                season = int(groups[0])
+                episode = int(groups[1])
+                break
+            elif key == "01x01-01x05":
+                season = int(groups[0])
+                episode = int(groups[1])
+                break
+            elif key in ("Episode 01", "Ep01", "E01",
+                         "Anime 01v2", "Episode 01v2",
+                         "Part 01", "Chapter 01", "Volume",
+                         "Mini Series Part", "WEB Episode",
+                         "EP 01 END", "Disc 1", "CD1"):
+                if not season:
+                    season = 0
+                episode = int(groups[0])
+                break
+            elif key in ("Season 01", "S01", "Complete Season",
+                         "Season Pack", "Batch"):
+                season = int(groups[0])
+                break
+            elif key in ("OVA", "ONA", "Special"):
+                ova_num = groups[0] if groups[0] else None
+                if ova_num:
+                    episode = int(ova_num)
+                break
+            elif key in ("2024.01.15", "2024-01-15"):
+                pass
+            elif key == "Season Roman":
+                roman = groups[0].lower()
+                season = ROMAN_TO_INT.get(roman, 0)
+                break
+            elif key == "Episodes 1-10":
+                episode = int(groups[0])
+                break
+            elif key in ("101", "1001", "0101"):
+                digits = groups[0] + groups[1]
+                if len(digits) == 3:
+                    season = int(digits[0])
+                    episode = int(digits[1:])
+                else:
+                    season = int(digits[:2])
+                    episode = int(digits[2:])
+                break
+
+    # Quality (unchanged)
     quality = next(
         (q for q in ("4K", "2160P", "1080P", "720P", "480P", "360P") if q in upper),
         "UNKNOWN",
     )
 
-    # Language
+    # Language (unchanged)
     if "DUAL" in upper or "MULTI" in upper:
         return _normalize_title(name), season, episode, quality, "Multi Audio"
 
