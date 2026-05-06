@@ -278,13 +278,17 @@ async def suggest_series_with_year(
     if not candidates:
         return []
 
+    # Normalize every raw DB title BEFORE dedup.
+    # This collapses "Lucifer", "Lucifer S05", "Ss Lucifer" → "Lucifer"
+    # so the user sees one clean button instead of three noisy ones.
     seen: set[str] = set()
     unique: List[str] = []
     for c in candidates:
-        k = c.lower().strip()
+        normalized = _normalize_title(c)   # ← THE FIX
+        k = normalized.lower()
         if k not in seen:
             seen.add(k)
-            unique.append(c)
+            unique.append(normalized)      # store the clean title, not raw
 
     validated = await _validate_and_enrich(unique)
     return validated[:limit]
