@@ -353,7 +353,21 @@ async def resolve_series_with_suggestions(text: str):
             pass
         return None, []
 
-    unique      = list(dict.fromkeys(results))[:4]
+    # ── FIX: normalize every raw DB title, then deduplicate ──────────────
+    # Raw DB results can include "Lucifer", "Lucifer S05", "Ss Lucifer" as
+    # separate rows. _normalize_title() collapses all of them to "Lucifer".
+    from utils.cyber_series import _normalize_title as _nt
+    seen_norm: set[str] = set()
+    unique: list[str] = []
+    for raw in results:
+        norm = _nt(raw)          # e.g. "Lucifer S05" → "Lucifer"
+        k    = norm.lower()
+        if norm and k not in seen_norm:
+            seen_norm.add(k)
+            unique.append(norm)
+    unique = unique[:4]
+    # ─────────────────────────────────────────────────────────────────────
+
     query_words = query.split()
 
     if len(unique) == 1:
