@@ -49,7 +49,6 @@ index_task: Optional[asyncio.Task] = None
 lock = asyncio.Lock()
 
 # ── FIX: _last_text capped at 1000 entries (was unbounded) ─────
-# Uses OrderedDict so oldest entry is evicted when full.
 _LAST_TEXT_MAX = 1000
 _last_text: OrderedDict[int, str] = OrderedDict()
 
@@ -253,13 +252,18 @@ async def index_files_task(
     except Exception:
         skip_id = 0
 
-    candidates = [start_id, skip_id + 1]
-    if last_cp:
-        try:
-            candidates.append(int(last_cp))
-        except Exception:
-            pass
-    start_from = max(candidates)
+    # ── FIX: if a skip was explicitly set, it always overrides checkpoint & start_id
+    if skip_id > 0:
+        start_from = max(start_id, skip_id + 1)
+        logger.info(f"[INDEX] Skip active: forcing start from {start_from} (skip={skip_id})")
+    else:
+        candidates = [start_id, skip_id + 1]
+        if last_cp:
+            try:
+                candidates.append(int(last_cp))
+            except Exception:
+                pass
+        start_from = max(candidates)
 
     await set_global_setting(INDEX_STATUS_KEY, f"RUNNING|{chat_id}|{start_id}|{last_id}|{target}")
 
@@ -636,7 +640,7 @@ def register_index_handlers(cyber: Client):
         except Exception:
             return await message.reply("Invalid ID.")
         await set_global_setting(INDEX_SKIP_KEY, val)
-        await message.reply(f"Skip set - index starts from `{val + 1}`", parse_mode=enums.ParseMode.MARKDOWN)
+        await message.reply(f"Skip set — index will start from `{val + 1}`", parse_mode=enums.ParseMode.MARKDOWN)
 
     @cyber.on_message(filters.private & filters.user(ADMIN_USERS) & filters.command("getskip"))
     async def getskip(bot, message):
