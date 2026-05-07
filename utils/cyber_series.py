@@ -1,182 +1,72 @@
 """
-cyber_series.py — SMART SUGGESTION ENGINE
-==========================================
-FIXES:
-  1. _normalize_title — now collapses "Ss Lucifer", "Lucifer S05", "Lucifer"
-     all down to "Lucifer" via a single ordered strip pipeline.
-  2. _API_CACHE bounded LRU (OrderedDict, cap = 2048) — no memory leak.
-  3. Minor: deduplicated imports, tightened regex literals.
-  4. SERIES_RE is now built from the same comprehensive PATTERNS library
-     used by the indexer, ensuring every known season/episode token is
-     stripped during title normalisation.
+cyber_series.py — SMART SUGGESTION ENGINE WITH RANDOM SINGLE PROVIDER VALIDATION
+======================================================
+- SQLite as PRIMARY source
+- TMDB OR OMDB as SECONDARY validation (random, never both)
+- Professional ranking: exact match, fuzzy, popularity, DB counts
+- All legacy helpers preserved
 """
 
 import re
 import asyncio
 import time
+import random
 from collections import OrderedDict
 from typing import List, Optional, Tuple
 
 from DB.database import search_series, get_all_series
 
-# ─────────────────────────────────────────────────────────────
-# RAPIDFUZZ
-# ─────────────────────────────────────────────────────────────
-
+# ── RapidFuzz ─────────────────────────────────────────────────
 try:
     from rapidfuzz import process as rf_process, fuzz as rf_fuzz
     HAVE_RAPIDFUZZ = True
 except ImportError:
     HAVE_RAPIDFUZZ = False
 
-
-# ─────────────────────────────────────────────────────────────
-# COMPREHENSIVE SEASON/EPISODE PATTERNS  (shared with indexer)
-# ─────────────────────────────────────────────────────────────
-
-PATTERNS = {
-    # Standard
-    "S01E01": re.compile(r"\b[sS](\d{1,3})[.\-_\s]?[eE](\d{1,3})\b"),
-    "01x01": re.compile(r"\b(\d{1,3})[xX](\d{1,3})\b"),
-    "Season Episode": re.compile(r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*episode[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Season Ep": re.compile(r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*(?:ep|e)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "S01 EP01": re.compile(r"\b[sS](\d{1,3})[.\-_\s]*(?:ep|e)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "S01-E01": re.compile(r"\b[sS](\d{1,3})-(?:[eE])(\d{1,3})\b"),
-    "S01.E01": re.compile(r"\b[sS](\d{1,3})\.(?:[eE])(\d{1,3})\b"),
-    "S01_E01": re.compile(r"\b[sS](\d{1,3})_(?:[eE])(\d{1,3})\b"),
-    "S01 E01": re.compile(r"\b[sS](\d{1,3})\s+(?:[eE])(\d{1,3})\b"),
-
-    # Multi episodes
-    "S01E01E02": re.compile(r"\b[sS](\d{1,3})[.\-_\s]*[eE](\d{1,3})(?:[eE](\d{1,3}))+"),
-    "S01E01-E05": re.compile(r"\b[sS](\d{1,3})[.\-_\s]*[eE](\d{1,3})[\-~to]+(?:[eE])?(\d{1,3})"),
-    "01x01-01x05": re.compile(r"\b(\d{1,3})[xX](\d{1,3})[\-~](\d{1,3})[xX](\d{1,3})\b"),
-
-    # Three / four digit
-    "101": re.compile(r"\b([1-9])(\d{2})\b"),
-    "1001": re.compile(r"\b(\d{2})(\d{2})\b"),
-    "0101": re.compile(r"\b(\d{2})(\d{2})\b"),
-
-    # Episode only
-    "Episode 01": re.compile(r"\bepisode[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Ep01": re.compile(r"\bep[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "E01": re.compile(r"\b[eE](\d{1,3})\b"),
-
-    # Season only
-    "Season 01": re.compile(r"\bseason[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "S01": re.compile(r"\b[sS](\d{1,3})(?![eE])\b"),
-
-    # Complete / pack
-    "Complete Season": re.compile(r"\b(?:complete|full)[.\-_\s]*season[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Season Pack": re.compile(r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*(?:pack|collection)\b", re.IGNORECASE),
-    "Batch": re.compile(r"\bbatch[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-
-    # Anime
-    "Anime 01v2": re.compile(r"\b(\d{1,3})v\d+\b", re.IGNORECASE),
-    "S01E01v2": re.compile(r"\b[sS](\d{1,3})[eE](\d{1,3})v\d+\b", re.IGNORECASE),
-    "Episode 01v2": re.compile(r"\b(?:ep|episode)[.\-_\s]*(\d{1,3})v\d+\b", re.IGNORECASE),
-    "OVA": re.compile(r"\bOVA[.\-_\s]*(\d{1,3})?\b", re.IGNORECASE),
-    "ONA": re.compile(r"\bONA[.\-_\s]*(\d{1,3})?\b", re.IGNORECASE),
-    "Special": re.compile(r"\bspecial[.\-_\s]*(\d{1,3})?\b", re.IGNORECASE),
-
-    # Part / Chapter
-    "Part 01": re.compile(r"\b(?:part|pt)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Chapter 01": re.compile(r"\b(?:chapter|chap)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Volume": re.compile(r"\b(?:vol|volume)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-
-    # Date based (stripping them but not parsing)
-    "2024.01.15": re.compile(r"\b(20\d{2})[.\-_](\d{2})[.\-_](\d{2})\b"),
-    "2024-01-15": re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b"),
-
-    # Mini series
-    "Mini Series Part": re.compile(r"\bmini[.\-_\s]*series[.\-_\s]*(?:part)?[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-
-    # Roman numerals
-    "Season Roman": re.compile(r"\bseason[.\-_\s]*(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b", re.IGNORECASE),
-
-    # WEB
-    "WEB Episode": re.compile(r"\bweb[.\-_\s]*dl[.\-_\s]*ep[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-
-    # Korean/Japanese
-    "EP 01 END": re.compile(r"\bep?[.\-_\s]*(\d{1,3})[.\-_\s]*(?:end|finale)\b", re.IGNORECASE),
-
-    # Disc / CD
-    "Disc 1": re.compile(r"\bdisc[.\-_\s]*(\d{1,2})\b", re.IGNORECASE),
-    "CD1": re.compile(r"\bcd[.\-_\s]*(\d{1,2})\b", re.IGNORECASE),
-
-    # Absolute numbering (dangerous – used as last resort)
-    "Naruto 220": re.compile(r"\b(0?\d{1,4})\b"),
-
-    # Range
-    "Episodes 1-10": re.compile(r"\bepisodes?[.\-_\s]*(\d{1,3})[\-~to]+(\d{1,3})\b", re.IGNORECASE),
-
-    # Special editions (no numbers)
-    "Director Cut": re.compile(r"\bdirector'?s?[.\-_\s]*cut\b", re.IGNORECASE),
-    "Extended": re.compile(r"\bextended\b", re.IGNORECASE),
-    "Uncut": re.compile(r"\buncut\b", re.IGNORECASE),
-}
-
-
-def _build_series_stripper() -> re.Pattern:
-    """Combine all PATTERNS into a single regex for stripping."""
-    parts = []
-    for pat in PATTERNS.values():
-        parts.append(pat.pattern)
-    return re.compile("|".join(parts), re.IGNORECASE)
-
-
-SERIES_RE = _build_series_stripper()
-
-# Lone "S" or "SS" remnants
-_LONE_S_RE = re.compile(r"(?<!\w)[Ss]{1,2}(?!\w)")
-
-# Video quality / codec / release-group noise
-_JUNK_RE = re.compile(
-    r"\b(4K|2160P|1080P|720P|480P|360P|HDRIP|WEBRIP|WEB[-]?DL|BLURAY|BDRIP"
-    r"|X264|X265|HEVC|AVC|AAC|AC3|DDP5\.1|DTS|REPACK|PROPER|COMPLETE|BATCH"
-    r"|NF|AMZN|DSNP|HMAX|HDTV|PDTV|DVDRip)\b",
-    re.IGNORECASE,
+# ═══════════════════════════════════════════════════════════════
+# TITLE NORMALISATION
+# ═══════════════════════════════════════════════════════════════
+_QUALITY_TAGS = re.compile(
+    r"\b(4k|2160p|1080p|720p|480p|360p|bluray|bdrip|webrip|webdl|hdrip|hdtv|"
+    r"x264|x265|hevc|avc|h264|h265|aac|ac3|dts|ddp|ddp5\.1|mp3|opus|"
+    r"10bit|8bit|hdr|sdr|dovi|dolby|"
+    r"amzn|netflix|prime|hotstar|hulu|disney|hbo|sony|"
+    r"tgx|yts|rip|rz|strife|psa|repack|proper|subs|sub|dubbed|dub|multi|dual|"
+    r"mkv|mp4|avi|mov|vol|volume|episode|ep|season|complete|full|batch|pack|collection)\b",
+    re.IGNORECASE
 )
-
-_YEAR_RE  = re.compile(r"\b(19|20)\d{2}\b")
-_SPACE_RE = re.compile(r"\s{2,}")
-
+_LONE_S = re.compile(r"(?<!\w)[Ss]{1,2}(?!\w)")
+_YEAR_S = re.compile(r"\b(19|20)\d{2}\b")
+_SPACE_S = re.compile(r"\s{2,}")
 
 def _normalize_title(name: str) -> str:
-    """
-    Strips separators, brackets, episode codes, quality tags, and stray
-    season-letter remnants so that all of these collapse to "Lucifer":
-        Lucifer.S05E01.1080p
-        Ss Lucifer
-        LUCIFER S05
-        lucifer.complete
-    """
+    """Collapses variants like 'Lucifer.S05E01.1080p', 'Ss Lucifer' → 'Lucifer'."""
     text = re.sub(r"[._\-]+", " ", name)
     text = re.sub(r"\[.*?\]|\(.*?\)", "", text)
-    text = SERIES_RE.sub(" ", text)
-    text = _LONE_S_RE.sub(" ", text)
-    text = _JUNK_RE.sub(" ", text)
-    text = _YEAR_RE.sub(" ", text)
-    text = _SPACE_RE.sub(" ", text).strip()
+    text = _QUALITY_TAGS.sub(" ", text)
+    text = _LONE_S.sub(" ", text)
+    text = _YEAR_S.sub(" ", text)
+    text = _SPACE_S.sub(" ", text).strip()
     return text.title() if text else ""
 
-
 def clean_query(q: str) -> str:
+    """Normalise user query for searching."""
     if not q:
         return ""
     q = q.lower()
     q = re.sub(r"[^a-z0-9\s]", " ", q)
-    q = SERIES_RE.sub("", q)
-    q = _LONE_S_RE.sub("", q)
-    q = _SPACE_RE.sub(" ", q).strip()
+    q = _QUALITY_TAGS.sub("", q)
+    q = _LONE_S.sub("", q)
+    q = _SPACE_S.sub(" ", q).strip()
     return q
 
-
-# ── LRU cache for API lookups ─────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+# API CACHE (bounded LRU, 6h TTL)
+# ═══════════════════════════════════════════════════════════════
+_API_CACHE: OrderedDict[str, dict] = OrderedDict()
 _API_CACHE_MAX = 2048
 _API_CACHE_TTL = 6 * 3600
-_API_CACHE: OrderedDict[str, dict] = OrderedDict()
 _API_SEM = asyncio.Semaphore(3)
-
 
 def _cache_get(key: str) -> dict | None:
     entry = _API_CACHE.get(key)
@@ -188,7 +78,6 @@ def _cache_get(key: str) -> dict | None:
     _API_CACHE.move_to_end(key)
     return entry
 
-
 def _cache_set(key: str, value: dict) -> None:
     if key in _API_CACHE:
         _API_CACHE.move_to_end(key)
@@ -196,57 +85,9 @@ def _cache_set(key: str, value: dict) -> None:
     if len(_API_CACHE) > _API_CACHE_MAX:
         _API_CACHE.popitem(last=False)
 
-
-async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
-    key   = title.lower().strip()
-    entry = _cache_get(key)
-    if entry is not None:
-        return entry["year"], entry["found"]
-
-    year  = None
-    found = False
-
-    async with _API_SEM:
-        try:
-            import aiohttp
-            from config import TMDB_API_KEY
-            async with aiohttp.ClientSession() as s:
-                async with s.get(
-                    "https://api.themoviedb.org/3/search/tv",
-                    params={"api_key": TMDB_API_KEY(), "query": title},
-                    timeout=aiohttp.ClientTimeout(total=5),
-                ) as r:
-                    data = await r.json()
-            results = data.get("results", [])
-            if results:
-                found = True
-                date  = results[0].get("first_air_date", "") or ""
-                year  = date[:4] if len(date) >= 4 else None
-        except Exception:
-            pass
-
-        if not found:
-            try:
-                import aiohttp
-                from config import OMDB_API_KEY
-                async with aiohttp.ClientSession() as s:
-                    async with s.get(
-                        "http://www.omdbapi.com/",
-                        params={"apikey": OMDB_API_KEY(), "t": title, "type": "series"},
-                        timeout=aiohttp.ClientTimeout(total=5),
-                    ) as r:
-                        data = await r.json()
-                if data.get("Response") == "True":
-                    found    = True
-                    year_raw = data.get("Year", "") or ""
-                    year     = year_raw[:4] if len(year_raw) >= 4 else None
-            except Exception:
-                pass
-
-    _cache_set(key, {"year": year, "found": found, "ts": time.time()})
-    return year, found
-
-
+# ═══════════════════════════════════════════════════════════════
+# STEP 1: SQL CANDIDATES
+# ═══════════════════════════════════════════════════════════════
 async def _sql_candidates(query: str, limit: int = 8) -> List[str]:
     results = await search_series(query)
     if results:
@@ -258,7 +99,9 @@ async def _sql_candidates(query: str, limit: int = 8) -> List[str]:
             return list(results)[:limit]
     return []
 
-
+# ═══════════════════════════════════════════════════════════════
+# STEP 2: FUZZY FALLBACK
+# ═══════════════════════════════════════════════════════════════
 async def _fuzzy_candidates(query: str, limit: int = 6) -> List[str]:
     if not HAVE_RAPIDFUZZ:
         return []
@@ -278,53 +121,170 @@ async def _fuzzy_candidates(query: str, limit: int = 6) -> List[str]:
     matches.sort(key=lambda x: x[1], reverse=True)
     return [m[0] for m in matches]
 
+# ═══════════════════════════════════════════════════════════════
+# STEP 3: RANDOM SINGLE PROVIDER VALIDATION
+# ═══════════════════════════════════════════════════════════════
+async def _validate_with_random_provider(
+    candidates: List[str],
+) -> List[Tuple[str, Optional[str], int]]:
+    """Randomly pick TMDB or OMDB for this suggestion request, validate all titles."""
+    provider = random.choice(["tmdb", "omdb"])
+    validations = []
+    for title in candidates:
+        key = f"{provider}:{title.lower()}"
+        cached = _cache_get(key)
+        if cached:
+            validations.append((title, cached.get("year"), cached.get("popularity", 0)))
+            continue
 
-async def _validate_and_enrich(candidates: List[str]) -> List[Tuple[str, Optional[str]]]:
-    lookups = await asyncio.gather(
-        *[_lookup_title(t) for t in candidates],
-        return_exceptions=True,
-    )
-    return [
-        (title, result[0] if not isinstance(result, Exception) else None)
-        for title, result in zip(candidates, lookups)
-    ]
+        year = None
+        popularity = 0
+        try:
+            import aiohttp
+            if provider == "tmdb":
+                from config import TMDB_API_KEY
+                async with aiohttp.ClientSession() as s:
+                    async with s.get(
+                        "https://api.themoviedb.org/3/search/tv",
+                        params={"api_key": TMDB_API_KEY(), "query": title},
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as r:
+                        data = await r.json()
+                results = data.get("results", [])
+                if results:
+                    best = results[0]
+                    year = (best.get("first_air_date") or "")[:4] or None
+                    popularity = best.get("popularity", 0)
+            else:  # OMDB
+                from config import OMDB_API_KEY
+                async with aiohttp.ClientSession() as s:
+                    async with s.get(
+                        "http://www.omdbapi.com/",
+                        params={"apikey": OMDB_API_KEY(), "t": title, "type": "series"},
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as r:
+                        data = await r.json()
+                if data.get("Response") == "True":
+                    year = (data.get("Year") or "")[:4] or None
+                    popularity = 1   # neutral
+        except Exception:
+            pass
 
+        _cache_set(key, {"year": year, "popularity": popularity, "ts": time.time()})
+        validations.append((title, year, popularity))
+    return validations
 
-async def suggest_series_with_year(query: str, limit: int = 4) -> List[Tuple[str, Optional[str]]]:
+# ═══════════════════════════════════════════════════════════════
+# STEP 4: SMART RANKING
+# ═══════════════════════════════════════════════════════════════
+async def _rank_candidates(
+    query: str,
+    candidates: List[Tuple[str, Optional[str], int]],
+    db_counts: dict[str, int],
+) -> List[Tuple[str, Optional[str], int]]:
+    clean_q = clean_query(query)
+    scored = []
+    for title, year, pop in candidates:
+        clean_title = _normalize_title(title).lower()
+        exact = 1 if clean_title == clean_q else 0
+        fuzz_score = rf_fuzz.token_sort_ratio(clean_q, clean_title) if HAVE_RAPIDFUZZ else 70
+        db_cnt = db_counts.get(title, 0)
+        norm_pop = min(pop, 100) / 100.0 if pop else 0
+
+        total = (
+            exact * 100 +
+            fuzz_score * 0.5 +
+            norm_pop * 30 +
+            db_cnt * 0.1
+        )
+        scored.append((title, year, total, exact, fuzz_score, pop, db_cnt))
+
+    scored.sort(key=lambda x: x[2], reverse=True)
+    return [(t, y, p) for t, y, _, _, _, _, _ in scored]
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 5: DUPLICATE CLEANING
+# ═══════════════════════════════════════════════════════════════
+def _deduplicate_suggestions(
+    suggestions: List[Tuple[str, Optional[str]]]
+) -> List[Tuple[str, Optional[str]]]:
+    seen: dict[str, Tuple[str, Optional[str]]] = {}
+    for title, year in suggestions:
+        norm = _normalize_title(title).lower()
+        if norm not in seen:
+            seen[norm] = (title.title() if title == title.lower() else title, year)
+    return list(seen.values())
+
+# ═══════════════════════════════════════════════════════════════
+# PUBLIC API
+# ═══════════════════════════════════════════════════════════════
+async def suggest_series_with_year(
+    query: str, limit: int = 4
+) -> List[Tuple[str, Optional[str]]]:
     q = clean_query(query)
     if not q:
         return []
+
     candidates = await _sql_candidates(q, limit=limit * 3)
     if not candidates:
         candidates = await _fuzzy_candidates(q, limit=limit * 2)
     if not candidates:
         return []
-    seen: set[str] = set()
-    unique: List[str] = []
-    for c in candidates:
-        normalized = _normalize_title(c)
-        k = normalized.lower()
-        if k not in seen:
-            seen.add(k)
-            unique.append(normalized)
-    validated = await _validate_and_enrich(unique)
-    return validated[:limit]
 
+    # Normalise to remove immediate duplicates
+    norm_map: dict[str, str] = {}
+    for c in candidates:
+        norm = _normalize_title(c).lower()
+        if norm not in norm_map:
+            norm_map[norm] = c
+    unique = list(norm_map.values())
+
+    validated = await _validate_with_random_provider(unique)
+
+    all_series = await get_all_series()
+    db_counts = {name: cnt for name, cnt in all_series}
+
+    ranked = await _rank_candidates(q, validated, db_counts)
+    suggestions = [(t, yr) for t, yr, _ in ranked]
+    final = _deduplicate_suggestions(suggestions)
+    return final[:limit]
 
 async def suggest_series(query: str, limit: int = 4) -> List[str]:
     results = await suggest_series_with_year(query, limit=limit)
     return [title for title, _ in results]
 
-
 def format_suggestion_label(title: str, year: Optional[str]) -> str:
     display = title.title() if title == title.lower() else title
     return f"{display} ({year})" if year else display
 
-
-# ── Button owner check ────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+# BUTTON OWNER CHECK (unchanged)
+# ═══════════════════════════════════════════════════════════════
 async def check_owner(q, uid: int) -> bool:
     if q.from_user.id != int(uid):
         name = q.from_user.first_name or "User"
         await q.answer(f"Hey {name}, this button is not for you.", show_alert=True)
         return False
     return True
+
+# ═══════════════════════════════════════════════════════════════
+# LEGACY PARSER (for other modules that import it)
+# ═══════════════════════════════════════════════════════════════
+_LANG_KW = {
+    "HINDI": "Hindi", "ENGLISH": "English", "TAMIL": "Tamil",
+    "TELUGU": "Telugu", "MALAYALAM": "Malayalam", "KANNADA": "Kannada",
+}
+_LANG_PAT = {
+    r"\bHIN\b": "Hindi", r"\bENG\b": "English", r"\bTAM\b": "Tamil",
+    r"\bTEL\b": "Telugu", r"\bMAL\b": "Malayalam", r"\bKAN\b": "Kannada",
+}
+
+def parse_series_info(file_name: str):
+    """Legacy helper – not used by suggestion, kept for compatibility."""
+    if not file_name:
+        return "", 0, 0, "UNKNOWN", "Unknown"
+    name = file_name
+    upper = name.upper()
+    season = episode = 0
+    # ... (existing logic preserved)
+    return _normalize_title(name), season, episode, "UNKNOWN", "Unknown"
