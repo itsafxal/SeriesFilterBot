@@ -1,827 +1,661 @@
-"""
-utils/cyber_index.py — FIXED: year pattern no longer treated as season/episode
-"""
-
-import re
 import asyncio
-from DB.database import save_file_to_db, episode_exists, get_global_setting, get_caption_clean_keywords
-from config import logger
+import gc
+import time
+from collections import OrderedDict
+from typing import Optional
 
-# ── Caption clean cache ──────────────────────────────────────
-_CLEAN_KW_CACHE: list | None = None
+from pyrogram import Client, filters, enums
+from pyrogram.errors import FloodWait, ChannelPrivate
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
-def set_clean_keywords_cache(keywords: list | None):
-    global _CLEAN_KW_CACHE
-    _CLEAN_KW_CACHE = keywords
+from config import logger, ADMIN_USERS
+from DB.database import (
+    get_bot_state, save_bot_state,
+    get_global_setting, set_global_setting,
+    delete_all_index_states, get_index_channels,
+)
+from utils.cyber_index import (
+    parse_message_to_doc, batch_save_file_docs,
+    save_series_file_for_bulk_index,
+    set_caption_lang_cache, batch_dedup_check,
+    set_clean_keywords_cache,
+)
+from utils.cyber_filter import extract_links
 
-async def _get_clean_keywords() -> list:
-    if _CLEAN_KW_CACHE is not None:
-        return _CLEAN_KW_CACHE
-    return await get_caption_clean_keywords()
+# ---------------------------------------------------------------
+# TUNING — Bot-only, medium-fast flood-free indexing
+# ---------------------------------------------------------------
+FETCH_BATCH        = 50
+CONCURRENT_FETCHES = 1
+SAVE_BATCH_SIZE    = 500
+CHECKPOINT_EVERY   = 20
+PROGRESS_EVERY     = 15
 
-def _apply_clean(text: str, keywords: list) -> str:
-    if not text or not keywords:
-        return text
-    for kw in keywords:
-        if kw:
-            text = text.replace(kw, "")
-    return text.strip()
+_COOLDOWN_BASE      = 3.0
+_COOLDOWN_MAX       = 45.0
+_COOLDOWN_STEP_UP   = 4.0
+_COOLDOWN_STEP_DOWN = 0.15
+_round_cooldown     = _COOLDOWN_BASE
 
-# ── Full pattern library ─────────────────────────────────────
-PATTERNS = {
-    "S01E01": re.compile(r"\b[sS](\d{1,3})[.\-_\s]?[eE](\d{1,3})\b", re.IGNORECASE),
-    "01x01": re.compile(r"\b(\d{1,3})[xX](\d{1,3})\b", re.IGNORECASE),
-    "Season Episode": re.compile(r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*episode[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Season Ep": re.compile(r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*(?:ep|e)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "S01 EP01": re.compile(r"\b[sS](\d{1,3})[.\-_\s]*(?:ep|e)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "S01-E01": re.compile(r"\b[sS](\d{1,3})-(?:[eE])(\d{1,3})\b", re.IGNORECASE),
-    "S01.E01": re.compile(r"\b[sS](\d{1,3})\.(?:[eE])(\d{1,3})\b", re.IGNORECASE),
-    "S01_E01": re.compile(r"\b[sS](\d{1,3})_(?:[eE])(\d{1,3})\b", re.IGNORECASE),
-    "S01 E01": re.compile(r"\b[sS](\d{1,3})\s+(?:[eE])(\d{1,3})\b", re.IGNORECASE),
-    "S01E01E02": re.compile(r"\b[sS](\d{1,3})[.\-_\s]*[eE](\d{1,3})(?:[eE](\d{1,3}))+"),
-    "S01E01-E05": re.compile(r"\b[sS](\d{1,3})[.\-_\s]*[eE](\d{1,3})[\-~to]+(?:[eE])?(\d{1,3})"),
-    "01x01-01x05": re.compile(r"\b(\d{1,3})[xX](\d{1,3})[\-~](\d{1,3})[xX](\d{1,3})\b"),
-    "101": re.compile(r"\b([1-9])(\d{2})\b"),
-    "1001": re.compile(r"\b(\d{2})(\d{2})\b"),
-    "0101": re.compile(r"\b(\d{2})(\d{2})\b"),
-    "Episode 01": re.compile(r"\bepisode[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Ep01": re.compile(r"\bep[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "E01": re.compile(r"\b[eE](\d{1,3})\b"),
-    "Season 01": re.compile(r"\bseason[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "S01": re.compile(r"\b[sS](\d{1,3})(?![eE])\b", re.IGNORECASE),
-    "Complete Season": re.compile(r"\b(?:complete|full)[.\-_\s]*season[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Season Pack": re.compile(r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*(?:pack|collection)\b", re.IGNORECASE),
-    "Batch": re.compile(r"\bbatch[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Anime 01v2": re.compile(r"\b(\d{1,3})v\d+\b", re.IGNORECASE),
-    "S01E01v2": re.compile(r"\b[sS](\d{1,3})[eE](\d{1,3})v\d+\b", re.IGNORECASE),
-    "Episode 01v2": re.compile(r"\b(?:ep|episode)[.\-_\s]*(\d{1,3})v\d+\b", re.IGNORECASE),
-    "OVA": re.compile(r"\bOVA[.\-_\s]*(\d{1,3})?\b", re.IGNORECASE),
-    "ONA": re.compile(r"\bONA[.\-_\s]*(\d{1,3})?\b", re.IGNORECASE),
-    "Special": re.compile(r"\bspecial[.\-_\s]*(\d{1,3})?\b", re.IGNORECASE),
-    "Part 01": re.compile(r"\b(?:part|pt)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Chapter 01": re.compile(r"\b(?:chapter|chap)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Volume": re.compile(r"\b(?:vol|volume)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "2024.01.15": re.compile(r"\b(20\d{2})[.\-_](\d{2})[.\-_](\d{2})\b"),
-    "2024-01-15": re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b"),
-    "Mini Series Part": re.compile(r"\bmini[.\-_\s]*series[.\-_\s]*(?:part)?[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Season Roman": re.compile(r"\bseason[.\-_\s]*(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b", re.IGNORECASE),
-    "WEB Episode": re.compile(r"\bweb[.\-_\s]*dl[.\-_\s]*ep[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "EP 01 END": re.compile(r"\bep?[.\-_\s]*(\d{1,3})[.\-_\s]*(?:end|finale)\b", re.IGNORECASE),
-    "Disc 1": re.compile(r"\bdisc[.\-_\s]*(\d{1,2})\b", re.IGNORECASE),
-    "CD1": re.compile(r"\bcd[.\-_\s]*(\d{1,2})\b", re.IGNORECASE),
-    "Naruto 220": re.compile(r"\b(0?\d{1,4})\b"),
-    "Episodes 1-10": re.compile(r"\bepisodes?[.\-_\s]*(\d{1,3})[\-~to]+(\d{1,3})\b", re.IGNORECASE),
-    "Director Cut": re.compile(r"\bdirector'?s?[.\-_\s]*cut\b", re.IGNORECASE),
-    "Extended": re.compile(r"\bextended\b", re.IGNORECASE),
-    "Uncut": re.compile(r"\buncut\b", re.IGNORECASE),
-}
+_BUCKET_CALLS  = 20
+_BUCKET_WINDOW = 60.0
+_bucket_log    = []
 
-ROMAN_TO_INT = {
-    "i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5,
-    "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10,
-}
+INDEX_SKIP_KEY   = "INDEX_SKIP_ID"
+INDEX_STATUS_KEY = "CURRENT_INDEX_TASK"
 
-# ── Quality, codec, language regex ───────────────────────────
-_QUALITY_MAP = [
-    (re.compile(r"\b4[kK]\b"),      "4K"),
-    (re.compile(r"\b2160[pP]\b"),   "4K"),
-    (re.compile(r"\b1080[pP]\b"),   "1080P"),
-    (re.compile(r"\b720[pP]\b"),    "720P"),
-    (re.compile(r"\b480[pP]\b"),    "480P"),
-    (re.compile(r"\b360[pP]\b"),    "360P"),
-]
+media_filter = filters.document | filters.video | filters.audio
+index_task: Optional[asyncio.Task] = None
+lock = asyncio.Lock()
 
-_CODEC_MAP = [
-    (re.compile(r"H\.?265|\bHEVC\b|\bx265\b",         re.IGNORECASE), "H.265"),
-    (re.compile(r"H\.?264|\bAVC\b|\bx264\b",          re.IGNORECASE), "H.264"),
-    (re.compile(r"\bAV1\b",                            re.IGNORECASE), "AV1"),
-    (re.compile(r"\bVP9\b",                            re.IGNORECASE), "VP9"),
-    (re.compile(r"\bHDR\b|\bDOVI\b|Dolby.?Vision",    re.IGNORECASE), "HDR"),
-]
-
-_LANG_MAP = [
-    (re.compile(r"\bHINDI\b"),      "Hindi"),
-    (re.compile(r"\bENGLISH\b"),    "English"),
-    (re.compile(r"\bTAMIL\b"),      "Tamil"),
-    (re.compile(r"\bTELUGU\b"),     "Telugu"),
-    (re.compile(r"\bMALAYALAM\b"),  "Malayalam"),
-    (re.compile(r"\bKANNADA\b"),    "Kannada"),
-    (re.compile(r"\bBENGALI\b"),    "Bengali"),
-    (re.compile(r"\bMARATHI\b"),    "Marathi"),
-    (re.compile(r"\bPUNJABI\b"),    "Punjabi"),
-    (re.compile(r"\bKOREAN\b"),     "Korean"),
-    (re.compile(r"\bJAPANESE\b"),   "Japanese"),
-    (re.compile(r"\bCHINESE\b"),    "Chinese"),
-    (re.compile(r"\bMANDARIN\b"),   "Chinese"),
-    (re.compile(r"\bSPANISH\b"),    "Spanish"),
-    (re.compile(r"\bFRENCH\b"),     "French"),
-    (re.compile(r"\bGERMAN\b"),     "German"),
-    (re.compile(r"\bARABIC\b"),     "Arabic"),
-    (re.compile(r"\bTURKISH\b"),    "Turkish"),
-    (re.compile(r"\bITALIAN\b"),    "Italian"),
-    (re.compile(r"\bPORTUGUESE\b"), "Portuguese"),
-    (re.compile(r"\bRUSSIAN\b"),    "Russian"),
-    (re.compile(r"\bTHAI\b"),       "Thai"),
-    (re.compile(r"\bHIN\b"),        "Hindi"),
-    (re.compile(r"\bENG\b"),        "English"),
-    (re.compile(r"\bTAM\b"),        "Tamil"),
-    (re.compile(r"\bTEL\b"),        "Telugu"),
-    (re.compile(r"\bMAL\b"),        "Malayalam"),
-    (re.compile(r"\bKAN\b"),        "Kannada"),
-    (re.compile(r"\bBEN\b"),        "Bengali"),
-    (re.compile(r"\bMAR\b"),        "Marathi"),
-    (re.compile(r"\bPUN\b"),        "Punjabi"),
-    (re.compile(r"\bKOR\b"),        "Korean"),
-    (re.compile(r"\bJPN\b"),        "Japanese"),
-    (re.compile(r"\bJAP\b"),        "Japanese"),
-    (re.compile(r"\bCHN\b"),        "Chinese"),
-    (re.compile(r"\bCHI\b"),        "Chinese"),
-    (re.compile(r"\bESP\b"),        "Spanish"),
-    (re.compile(r"\bFRE\b"),        "French"),
-    (re.compile(r"\bGER\b"),        "German"),
-    (re.compile(r"\bARA\b"),        "Arabic"),
-    (re.compile(r"\bTUR\b"),        "Turkish"),
-    (re.compile(r"\bITA\b"),        "Italian"),
-    (re.compile(r"\bPOR\b"),        "Portuguese"),
-    (re.compile(r"\bRUS\b"),        "Russian"),
-]
-
-_JUNK_RE = re.compile(r"""
-    \b(
-    4k|2160p|1080p|720p|480p|360p|
-    bluray|blu\-ray|bdrip|bdremux|
-    webrip|webdl|web\-dl|web|hdrip|hq|hdtv|
-    x264|x265|hevc|avc|h264|h265|
-    aac|ac3|dts|ddp|ddp5\.1|mp3|opus|
-    10bit|8bit|hdr|sdr|dovi|dolby|
-    amzn|netflix|prime|hotstar|hulu|disney|hbo|sony|
-    tgx|yts|rip|rz|strife|psa|repack|proper|
-    subs|sub|dubbed|dub|multi|dual|
-    complete|full|batch|pack|collection|set|
-    vol|volume|episode|ep|season|
-    mkv|mp4|avi|mov
-    )\b
-""", re.IGNORECASE | re.VERBOSE)
-
-_CLEAN_SEP_RE = re.compile(r"[._\-]+")
-_BRACKET_RE   = re.compile(r"\[.*?\]|\(.*?\)|{.*?}")
-_MENTION_RE   = re.compile(r"@\S+")
-_YEAR_RE      = re.compile(r"\b(19|20)\d{2}\b")
-_NON_WORD_RE  = re.compile(r"[^a-zA-Z0-9\s]")
-_MULTI_SPC_RE = re.compile(r"\s+")
-_PART_RE      = re.compile(r"\b(?:part|pt)[\s._\-]*\d+\b", re.IGNORECASE)
-_BARE_NUM_RE  = re.compile(r"\b\d+\b")
-
-# ── CAPTION_LANG CACHE ──────────────────────────────────────
-_CAPTION_LANG_CACHE: bool | None = None
-
-def set_caption_lang_cache(value: bool | None):
-    global _CAPTION_LANG_CACHE
-    _CAPTION_LANG_CACHE = value
-
-async def _get_caption_lang_flag() -> bool:
-    if _CAPTION_LANG_CACHE is not None:
-        return _CAPTION_LANG_CACHE
-    flag = await get_global_setting("CAPTION_LANG", False)
-    return bool(flag)
+# ── _last_text capped at 1000 entries ─────
+_LAST_TEXT_MAX = 1000
+_last_text: OrderedDict[int, str] = OrderedDict()
 
 
-# ══════════════════════════════════════════════════════════════
-# PARSERS (using the comprehensive PATTERNS)
-# ══════════════════════════════════════════════════════════════
+def _set_last_text(msg_id: int, text: str):
+    if msg_id in _last_text:
+        _last_text.move_to_end(msg_id)
+    _last_text[msg_id] = text
+    while len(_last_text) > _LAST_TEXT_MAX:
+        _last_text.popitem(last=False)
 
-def _parse_season_episode(name: str) -> tuple[int, int]:
-    """
-    Extract season & episode using the full PATTERNS library.
-    Returns (season, episode). Unused dimension defaults to 0.
-    Year‑like numbers (1900‑2099) are ignored for patterns 1001/0101.
-    """
-    text = name
-    ORDER = [
-        "S01E01E02", "S01E01-E05", "01x01-01x05",
-        "S01E01", "S01-E01", "S01.E01", "S01_E01", "S01 E01",
-        "S01 EP01", "Season Episode", "Season Ep", "01x01",
-        "Episode 01", "Ep01", "E01",
-        "Season 01", "S01", "Complete Season", "Season Pack", "Batch",
-        "Anime 01v2", "S01E01v2", "Episode 01v2",
-        "OVA", "ONA", "Special",
-        "Part 01", "Chapter 01", "Volume",
-        "2024.01.15", "2024-01-15", "Mini Series Part",
-        "Season Roman", "WEB Episode", "EP 01 END", "Disc 1", "CD1",
-        "Episodes 1-10",
-        "101", "1001", "0101",
-    ]
 
-    season = episode = 0
+def _clear_last_text():
+    _last_text.clear()
 
-    for key in ORDER:
-        pat = PATTERNS.get(key)
-        if not pat:
-            continue
-        m = pat.search(text)
-        if not m:
-            continue
 
-        groups = m.groups()
+# ---------------------------------------------------------------
+# TELEGRAM WRAPPERS
+# ---------------------------------------------------------------
 
-        # ── YEAR CHECK for ambiguous 4‑digit patterns ─
-        if key in ("1001", "0101"):
-            try:
-                full_num = int(m.group(0))
-                if 1900 <= full_num <= 2099:
-                    continue   # looks like a year → skip
-            except:
-                pass
+async def _fw_sleep(exc: FloodWait):
+    wait = max(int(getattr(exc, "value", 10)), 5)
+    logger.warning(f"[INDEX] FloodWait {wait}s - sleeping")
+    await asyncio.sleep(wait + 2)
 
-        # Extract based on pattern
-        if key in ("S01E01", "S01-E01", "S01.E01", "S01_E01", "S01 E01",
-                   "S01 EP01", "Season Episode", "Season Ep", "01x01",
-                   "S01E01v2"):
-            season, episode = int(groups[0]), int(groups[1])
-            break
-        elif key == "S01E01E02":
-            season, episode = int(groups[0]), int(groups[1])
-            break
-        elif key == "S01E01-E05":
-            season, episode = int(groups[0]), int(groups[1])
-            break
-        elif key == "01x01-01x05":
-            season, episode = int(groups[0]), int(groups[1])
-            break
-        elif key in ("Episode 01", "Ep01", "E01",
-                     "Anime 01v2", "Episode 01v2",
-                     "Part 01", "Chapter 01", "Volume",
-                     "Mini Series Part", "WEB Episode",
-                     "EP 01 END", "Disc 1", "CD1"):
-            if not season:
-                season = 0
-            episode = int(groups[0])
-            break
-        elif key in ("Season 01", "S01", "Complete Season",
-                     "Season Pack", "Batch"):
-            season = int(groups[0])
-            break
-        elif key in ("OVA", "ONA", "Special"):
-            ova_num = groups[0] if groups[0] else None
-            if ova_num:
-                episode = int(ova_num)
-            break
-        elif key in ("2024.01.15", "2024-01-15"):
-            # date-based; ignore
+
+async def safe_send(bot: Client, uid: int, text: str, **kw) -> Optional[Message]:
+    while True:
+        try:
+            return await bot.send_message(uid, text, **kw)
+        except FloodWait as f:
+            await _fw_sleep(f)
+        except Exception as e:
+            logger.error(f"[INDEX] safe_send: {e}")
+            return None
+
+
+async def safe_edit(msg: Message, text: str, **kw):
+    if msg is None or _last_text.get(msg.id) == text:
+        return
+    try:
+        await msg.edit_text(text, **kw)
+        _set_last_text(msg.id, text)
+    except FloodWait as f:
+        await _fw_sleep(f)
+        try:
+            await msg.edit_text(text, **kw)
+            _set_last_text(msg.id, text)
+        except Exception:
             pass
-        elif key == "Season Roman":
-            roman = groups[0].lower()
-            season = ROMAN_TO_INT.get(roman, 0)
-            break
-        elif key == "Episodes 1-10":
-            episode = int(groups[0])
-            break
-        elif key in ("101", "1001", "0101"):
-            digits = groups[0] + groups[1]
-            if len(digits) == 3:
-                season = int(digits[0])
-                episode = int(digits[1:])
-            else:
-                season = int(digits[:2])
-                episode = int(digits[2:])
-            break
-
-    return season, episode
-
-
-def _is_series_file(file_name: str, caption: str = "") -> bool:
-    """A file is a series file only if a season or episode number is detected."""
-    s, e = _parse_season_episode(file_name)
-    if s > 0 or e > 0:
-        return True
-    if caption:
-        s2, e2 = _parse_season_episode(caption)
-        if s2 > 0 or e2 > 0:
-            return True
-    return False
-
-
-def _parse_quality(name: str, caption: str = "") -> str:
-    combined = f"{name} {caption}"
-    for pattern, label in _QUALITY_MAP:
-        if pattern.search(combined):
-            return label
-    return "Unknown"
-
-
-def _quality_from_resolution(width: int, height: int) -> str:
-    long_side = max(width or 0, height or 0)
-    if long_side >= 2160: return "4K"
-    if long_side >= 1080: return "1080P"
-    if long_side >= 720:  return "720P"
-    if long_side >= 480:  return "480P"
-    if long_side > 0:     return "360P"
-    return "Unknown"
-
-
-def _parse_codec(name: str, caption: str = "") -> str:
-    combined = f"{name} {caption}"
-    for pattern, label in _CODEC_MAP:
-        if pattern.search(combined):
-            return label
-    return ""
-
-
-def _parse_language(name: str, caption: str = "") -> str:
-    combined     = f"{name} {caption}"
-    upper        = combined.upper()
-    upper_norm   = re.sub(r"[._\-+&/\\,]+", " ", upper)
-    bracket_raw  = " ".join(re.findall(r"[\[\({]([^\]\){}]+)[\]\){}]", upper))
-    bracket_norm = re.sub(r"[._\-+&/\\,]+", " ", bracket_raw)
-    search       = f"{bracket_norm} {upper_norm}"
-
-    found = []
-    seen  = set()
-    for pattern, label in _LANG_MAP:
-        if label not in seen and pattern.search(search):
-            found.append(label)
-            seen.add(label)
-
-    is_multi = bool(re.search(r"\b(DUAL|MULTI)\b", search))
-
-    if is_multi:
-        if len(found) >= 2:
-            return " + ".join(found)
-        return "Multi Audio"
-
-    if not found:
-        return "Unknown"
-    if len(found) == 1:
-        return found[0]
-    return " + ".join(found)
-
-
-# ══════════════════════════════════════════════════════════════
-# TMDB / OMDB LANGUAGE FALLBACK
-# ══════════════════════════════════════════════════════════════
-
-_LANG_CACHE: dict[str, str] = {}
-_LANG_API_SEM = asyncio.Semaphore(3)
-
-
-async def _get_language_from_api(normalized_name: str) -> str:
-    if not normalized_name:
-        return "Unknown"
-    key = normalized_name.lower().strip()
-    if key in _LANG_CACHE:
-        return _LANG_CACHE[key]
-
-    try:
-        from utils.cyber_poster import get_cached
-        cached = await asyncio.to_thread(get_cached, key)
-        if cached:
-            lang = cached[5] if cached[5] else None
-            if lang and lang not in ("Original Language", "Unknown", ""):
-                _LANG_CACHE[key] = lang
-                return lang
     except Exception as e:
-        logger.debug(f"[LANG] SQLite lookup failed for {key!r}: {e}")
-
-    acquired = _LANG_API_SEM.locked()
-    if acquired and _CAPTION_LANG_CACHE is not None:
-        _LANG_CACHE[key] = "Unknown"
-        return "Unknown"
-
-    try:
-        async with _LANG_API_SEM:
-            from CyberTG.poster import fetch_tmdb, fetch_omdb
-            from utils.cyber_poster import save_cache
-
-            tmdb = await fetch_tmdb(key)
-            if tmdb:
-                poster, year, genre, rating, lang = tmdb
-                if lang and lang not in ("Original Language", "Unknown", ""):
-                    await asyncio.to_thread(save_cache, key, poster, year, genre, rating, "tmdb", lang)
-                    _LANG_CACHE[key] = lang
-                    return lang
-
-            omdb = await fetch_omdb(key)
-            if omdb:
-                poster, year, genre, rating, lang = omdb
-                if lang and lang not in ("Original Language", "Unknown", ""):
-                    await asyncio.to_thread(save_cache, key, poster, year, genre, rating, "omdb", lang)
-                    _LANG_CACHE[key] = lang
-                    return lang
-    except Exception as e:
-        logger.debug(f"[LANG] API lookup failed for {key!r}: {e}")
-
-    _LANG_CACHE[key] = "Unknown"
-    return "Unknown"
+        logger.debug(f"[INDEX] safe_edit: {e}")
 
 
-async def _resolve_language(file_name: str, caption: str, normalized_name: str) -> str:
-    use_caption_lang = await _get_caption_lang_flag()
-    if use_caption_lang and caption and caption.strip():
-        lang = _parse_language(caption, "")
-        if lang != "Unknown":
-            return lang
-    lang = _parse_language(file_name, "")
-    if lang != "Unknown":
-        return lang
-    return await _get_language_from_api(normalized_name)
+def _cancel_kb():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Stop Indexing", callback_data="cancel_index")
+    ]])
 
 
-# ══════════════════════════════════════════════════════════════
-# SERIES NAME NORMALIZER
-# ══════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------
+# PROGRESS
+# ---------------------------------------------------------------
 
-def _normalized_series_name(file_name: str) -> str:
-    if not file_name:
-        return ""
-    name = file_name
-    name = re.sub(r"\.(mkv|mp4|avi|mov|wmv|flv|webm)$", "", name, flags=re.IGNORECASE)
-    name = _MENTION_RE.sub(" ", name)
+def _progress(*, cid, start_id, last_id, checked, saved, skipped, dup,
+               calls, fw_count, mps, status="Indexing...") -> str:
+    span   = max(last_id - start_id, 1)
+    id_pct = min((cid - start_id) / span * 100, 100.0)
+    bar    = chr(9608) * int(id_pct / 5) + chr(9617) * (20 - int(id_pct / 5))
 
-    cut_match = None
-    for key in [
-        "S01E01E02", "S01E01-E05", "01x01-01x05",
-        "S01E01", "S01-E01", "S01.E01", "S01_E01", "S01 E01",
-        "S01 EP01", "Season Episode", "Season Ep", "01x01",
-        "Episode 01", "Ep01", "E01",
-        "Season 01", "S01", "Complete Season", "Season Pack", "Batch",
-        "Anime 01v2", "S01E01v2", "Episode 01v2",
-        "OVA", "ONA", "Special",
-        "Part 01", "Chapter 01", "Volume",
-        "2024.01.15", "2024-01-15", "Mini Series Part",
-        "Season Roman", "WEB Episode", "EP 01 END", "Disc 1", "CD1",
-        "Episodes 1-10", "101", "1001", "0101"
-    ]:
-        pat = PATTERNS.get(key)
-        if pat:
-            m = pat.search(name)
-            if m:
-                cut_match = m
-                break
-
-    base = name[: cut_match.start()] if cut_match else name
-
-    base = _BRACKET_RE.sub(" ", base)
-    base = _CLEAN_SEP_RE.sub(" ", base)
-    base = _YEAR_RE.sub(" ", base)
-    base = _PART_RE.sub(" ", base)
-    base = _JUNK_RE.sub(" ", base)
-    base = _NON_WORD_RE.sub(" ", base)
-    base = _BARE_NUM_RE.sub(" ", base)
-    base = _MULTI_SPC_RE.sub(" ", base).strip()
-
-    words = base.split()
-    while words and re.fullmatch(r"[A-Z]{1,4}", words[0]):
-        words.pop(0)
-    base = " ".jsonify()  # ?! 
-    base = " ".join(words)
-    base = re.sub(r"\b[a-zA-Z]{1,2}$", "", base).strip()
-    parts = base.split()
-    if len(parts) > 4:
-        parts = parts[:4]
-    return " ".join(parts).title()
-
-
-# ══════════════════════════════════════════════════════════════
-# MEDIA TYPE DETECTOR
-# ══════════════════════════════════════════════════════════════
-
-def _get_media_info(msg):
-    if msg.video:
-        return msg.video, "video"
-    if msg.audio:
-        return msg.audio, "audio"
-    if msg.document:
-        return msg.document, "document"
-    return None, None
-
-
-# ══════════════════════════════════════════════════════════════
-# CODEC-AWARE DUPLICATE CHECK (single-doc — RTI only)
-# ══════════════════════════════════════════════════════════════
-
-async def _episode_exists_with_codec_check(
-    normalized_name: str, season: int, episode: int,
-    quality: str, language: str, new_codec: str,
-) -> bool:
-    from DB.sqlite_db import sql_db_lock as _sql_lock
-
-    exists = await episode_exists(normalized_name, season, episode, quality, language)
-    if not exists:
-        return False
-    if not new_codec:
-        return True
-
-    from DB.sqlite_db import _get_conn
-    import asyncio as _asyncio
-
-    def _check_existing_codec():
-        conn   = _get_conn()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT codec FROM files
-            WHERE normalized_name = ? AND season = ? AND episode = ? AND quality = ? AND language = ?
-            LIMIT 1
-        """, (normalized_name.lower(), season, episode, quality, language))
-        row = cursor.fetchone()
-        if row is None:
-            return ""
-        return row[0] or ""
-
-    from DB.sqlite_db import sql_db_lock
-    async with sql_db_lock:
-        existing_codec = await _asyncio.to_thread(_check_existing_codec)
-    if not existing_codec:
-        return False
-    return True
-
-
-# ══════════════════════════════════════════════════════════════
-# BATCH DEDUP CHECK
-# ══════════════════════════════════════════════════════════════
-
-async def batch_dedup_check(docs: list[dict]) -> tuple[list[dict], int]:
-    if not docs:
-        return [], 0
-
-    seen: dict[tuple, dict] = {}
-    for doc in docs:
-        key = (doc["normalized_name"], doc["season"], doc["episode"], doc["quality"], doc["language"])
-        seen[key] = doc
-    deduped = list(seen.values())
-    if not deduped:
-        return [], len(docs)
-
-    from DB.sqlite_db import _get_conn, sql_db_lock
-
-    full_keys = [
-        (d["normalized_name"], d["season"], d["episode"], d["quality"], d["language"])
-        for d in deduped
-    ]
-    lang_agnostic_keys = [
-        (d["normalized_name"], d["season"], d["episode"], d["quality"])
-        for d in deduped
-    ]
-
-    def _bulk_exists_check() -> tuple[dict, set]:
-        conn   = _get_conn()
-        cursor = conn.cursor()
-        CHUNK  = 190
-
-        full_map: dict[tuple, str] = {}
-        lang_agnostic_set: set[tuple] = set()
-
-        # Exact match
-        for i in range(0, len(full_keys), CHUNK):
-            chunk        = full_keys[i : i + CHUNK]
-            placeholders = ",".join(["(?,?,?,?,?)"] * len(chunk))
-            flat_params  = [v for k in chunk for v in k]
-            cursor.execute(f"""
-                SELECT normalized_name, season, episode, quality, language, codec
-                FROM files
-                WHERE (normalized_name, season, episode, quality, language)
-                      IN ({placeholders})
-            """, flat_params)
-            for row in cursor.fetchall():
-                k = (row[0], row[1], row[2], row[3], row[4])
-                full_map[k] = row[5] or ""
-
-        # Language-agnostic
-        remaining = [
-            la_key for la_key, full_key in zip(lang_agnostic_keys, full_keys)
-            if full_key not in full_map
-        ]
-        for i in range(0, len(remaining), CHUNK):
-            chunk        = remaining[i : i + CHUNK]
-            placeholders = ",".join(["(?,?,?,?)"] * len(chunk))
-            flat_params  = [v for k in chunk for v in k]
-            cursor.execute(f"""
-                SELECT normalized_name, season, episode, quality
-                FROM files
-                WHERE (normalized_name, season, episode, quality)
-                      IN ({placeholders})
-                LIMIT {len(chunk) * 10}
-            """, flat_params)
-            for row in cursor.fetchall():
-                lang_agnostic_set.add((row[0], row[1], row[2], row[3]))
-
-        return full_map, lang_agnostic_set
-
-    async with sql_db_lock:
-        full_map, lang_agnostic_set = await asyncio.to_thread(_bulk_exists_check)
-
-    to_save = []
-    n_dup   = 0
-
-    for doc, la_key in zip(deduped, lang_agnostic_keys):
-        full_key = (doc["normalized_name"], doc["season"], doc["episode"], doc["quality"], doc["language"])
-        if full_key in full_map:
-            existing_codec = full_map[full_key]
-            new_codec = doc.get("codec") or ""
-            if new_codec and not existing_codec:
-                logger.debug(
-                    f"[DEDUP] Codec backfill: {doc['normalized_name']!r} "
-                    f"S{doc['season']:02d}E{doc['episode']:02d} {doc['quality']} "
-                    f"[{doc['language']}] codec={new_codec!r}"
-                )
-                to_save.append(doc)
-            else:
-                n_dup += 1
-        elif la_key in lang_agnostic_set:
-            logger.debug(
-                f"[DEDUP] Lang-agnostic dup: {doc['normalized_name']!r} "
-                f"S{doc['season']:02d}E{doc['episode']:02d} {doc['quality']} "
-                f"(stored language differs from parsed '{doc['language']}')"
-            )
-            n_dup += 1
+    eta = ""
+    remaining_ids = max(last_id - cid, 0)
+    if mps > 0 and remaining_ids > 0 and checked > 0:
+        ids_covered    = max(cid - start_id, 1)
+        density        = ids_covered / max(checked, 1)
+        remaining_msgs = remaining_ids / density
+        s = int(remaining_msgs / mps)
+        if s < 60:
+            eta = f"  ETA ~{s}s"
+        elif s < 3600:
+            eta = f"  ETA ~{s // 60}m {s % 60}s"
         else:
-            to_save.append(doc)
+            eta = f"  ETA ~{s // 3600}h {s % 3600 // 60}m"
 
-    in_batch_dups = len(docs) - len(deduped)
-    return to_save, n_dup + in_batch_dups
+    lines = [
+        f"{status}", "",
+        f"[{bar}] **{id_pct:.1f}%**{eta}",
+        f"ID `{cid:,}` / `{last_id:,}`", "",
+        f"Checked   : `{checked:,}`  (`{calls:,}` calls)",
+        f"Saved     : `{saved:,}`",
+        f"Skipped   : `{skipped:,}`",
+        f"Duplicate : `{dup:,}`",
+        f"Speed     : `{mps:.0f}` msg/s",
+        f"Fetching  : `{FETCH_BATCH}` IDs/call | cooldown=`{_round_cooldown:.1f}s` | bucket=`{len(_bucket_log)}/{_BUCKET_CALLS}`",
+    ]
+    if fw_count:
+        lines.append(f"FloodWait : `{fw_count}` times")
+    return "\n".join(lines)
 
 
-# ══════════════════════════════════════════════════════════════
-# MAIN PUBLIC FUNCTION (RTI — real-time index)
-# ══════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------
+# FETCH
+# ---------------------------------------------------------------
 
-async def save_series_file_for_bulk_index(msg, target: str = "both") -> tuple[bool, int]:
+async def _bucket_wait():
+    global _bucket_log
+    while True:
+        now    = time.monotonic()
+        cutoff = now - _BUCKET_WINDOW
+        _bucket_log = [t for t in _bucket_log if t > cutoff]
+        if len(_bucket_log) < _BUCKET_CALLS:
+            _bucket_log.append(now)
+            return
+        oldest    = _bucket_log[0]
+        sleep_for = (_BUCKET_WINDOW - (now - oldest)) + 0.5
+        logger.info(f"[BUCKET] Rate limit window full — waiting {sleep_for:.1f}s")
+        await asyncio.sleep(max(sleep_for, 1.0))
+
+
+async def _fetch_one(bot: Client, chat_id: int, id_window: list, fw_count: list) -> list:
+    global _round_cooldown
+    while True:
+        try:
+            await _bucket_wait()
+            msgs = await bot.get_messages(chat_id, id_window)
+            _round_cooldown = max(_COOLDOWN_BASE, _round_cooldown - _COOLDOWN_STEP_DOWN)
+            return msgs if isinstance(msgs, list) else [msgs]
+        except FloodWait as fw:
+            fw_count[0] += 1
+            wait = max(int(getattr(fw, "value", 15)), 15)
+            _round_cooldown = min(_COOLDOWN_MAX, _round_cooldown + _COOLDOWN_STEP_UP)
+            _bucket_log.clear()
+            logger.warning(
+                f"[BOT] FloodWait {wait}s — sleeping {wait + 10}s "
+                f"| cooldown now={_round_cooldown:.1f}s | bucket cleared"
+            )
+            await asyncio.sleep(wait + 10)
+        except ChannelPrivate:
+            logger.error(f"[BOT] Channel {chat_id} is private/inaccessible")
+            return []
+        except Exception as e:
+            logger.error(f"[BOT] get_messages error: {e}")
+            await asyncio.sleep(5)
+            return []
+
+
+async def _fetch_round(
+    bot: Client,
+    chat_id: int,
+    windows: list,
+    fw_count: list,
+) -> list:
+    """Single sequential fetch — bot token cannot safely run parallel get_messages."""
+    flat = []
+    for w in windows:
+        msgs = await _fetch_one(bot, chat_id, w, fw_count)
+        flat.extend(msgs)
+    return flat
+
+
+# ---------------------------------------------------------------
+# DB FLUSH
+# ---------------------------------------------------------------
+
+async def _flush(buf: list, target: str) -> tuple:
+    if not buf:
+        return 0, 0
+    to_save, n_dup = await batch_dedup_check(buf)
+    saved = 0
+    if to_save:
+        saved = await batch_save_file_docs(to_save, target=target)
+        for doc in to_save:
+            logger.info(
+                f"[IDX] {doc['normalized_name']!r} "
+                f"S{doc['season']:02d}E{doc['episode']:02d} "
+                f"{doc['quality']} {doc['language']}"
+            )
+    return saved, n_dup
+
+
+# ---------------------------------------------------------------
+# CORE TASK
+# ---------------------------------------------------------------
+
+async def index_files_task(
+    bot: Client, status_msg: Message,
+    chat_id: int, start_id: int, last_id: int, target: str = "both",
+):
+    global index_task, _round_cooldown
+    _round_cooldown = _COOLDOWN_BASE
+    _bucket_log.clear()
+
+    chat_key     = f"index_{chat_id}"
+    target_label = {"db1": "DB1", "db2": "DB2", "both": "DB1+DB2"}.get(target, target)
+
+    last_cp  = await get_bot_state(chat_key)
+    skip_raw = await get_global_setting(INDEX_SKIP_KEY, 0)
     try:
-        file_obj, media_type = _get_media_info(msg)
-        if not file_obj:
-            return False, 0
+        skip_id = int(skip_raw) if skip_raw else 0
+    except Exception:
+        skip_id = 0
 
-        file_name = getattr(file_obj, "file_name", None)
-        if not file_name or not file_name.strip():
-            return False, 0
+    # ── FIX: if a skip was explicitly set, it always overrides checkpoint & start_id
+    if skip_id > 0:
+        start_from = max(start_id, skip_id + 1)
+        logger.info(f"[INDEX] Skip active: forcing start from {start_from} (skip={skip_id})")
+    else:
+        candidates = [start_id, skip_id + 1]
+        if last_cp:
+            try:
+                candidates.append(int(last_cp))
+            except Exception:
+                pass
+        start_from = max(candidates)
 
-        caption_raw = getattr(msg, "caption", None) or ""
-        if not isinstance(caption_raw, str):
-            caption_raw = str(caption_raw)
-        if not _is_series_file(file_name, caption_raw):
-            logger.debug(f"[cyber_index] ⏭ Not a series file: {file_name}")
-            return False, 0
+    await set_global_setting(INDEX_STATUS_KEY, f"RUNNING|{chat_id}|{start_id}|{last_id}|{target}")
 
-        channel_id = msg.chat.id if msg.chat else None
-        message_id = msg.id
-        if not channel_id:
-            return False, 0
+    cl_flag = await get_global_setting("CAPTION_LANG", True)
+    set_caption_lang_cache(bool(cl_flag))
+    from DB.database import get_caption_clean_keywords as _get_kw
+    set_clean_keywords_cache(await _get_kw())
 
-        caption = getattr(msg, "caption", None) or ""
-        if not isinstance(caption, str):
-            caption = str(caption)
+    logger.info(
+        f"[INDEX] START  chat={chat_id}  {start_from}>{last_id}  "
+        f"target={target}  mode={CONCURRENT_FETCHES}x{FETCH_BATCH}"
+    )
 
-        season, episode = _parse_season_episode(file_name)
-        quality = _parse_quality(file_name, caption)
-        codec   = _parse_codec(file_name, caption)
+    checked = saved = skipped = dup = calls = 0
+    fw_count  = [0]
+    t0        = time.monotonic()
+    last_edit = [0.0]
+    cur_id    = [start_from]
+    current   = start_from
+    buf       = []
+    cp_n      = 0
 
-        normalized_name = _normalized_series_name(file_name)
-        if not normalized_name:
-            logger.debug(f"[cyber_index] Skipped (no series name): {file_name}")
-            return False, 0
+    def mps():
+        return checked / max(time.monotonic() - t0, 0.001)
 
-        if quality == "Unknown" and media_type == "video":
-            width  = getattr(file_obj, "width",  0) or 0
-            height = getattr(file_obj, "height", 0) or 0
-            if width or height:
-                quality = _quality_from_resolution(width, height)
-
-        language = await _resolve_language(file_name, caption, normalized_name)
-
-        norm_lower = normalized_name.lower()
-        is_dup = await _episode_exists_with_codec_check(
-            norm_lower, season, episode, quality, language, codec
+    async def push(force=False, status="Indexing..."):
+        now = time.monotonic()
+        if not force and now - last_edit[0] < PROGRESS_EVERY:
+            return
+        await safe_edit(
+            status_msg,
+            _progress(
+                cid=cur_id[0], start_id=start_id, last_id=last_id,
+                checked=checked, saved=saved, skipped=skipped, dup=dup,
+                calls=calls, fw_count=fw_count[0], mps=mps(), status=status,
+            ),
+            parse_mode=enums.ParseMode.MARKDOWN,
+            reply_markup=_cancel_kb(),
         )
-        if is_dup:
-            logger.debug(
-                f"[cyber_index] ⏭ Already exists: {normalized_name!r} "
-                f"S{season:02d}E{episode:02d} {quality} [{language}] — skipped"
+        last_edit[0] = time.monotonic()
+
+    async def _proc(msg) -> Optional[dict]:
+        if msg is None or msg.empty:
+            return None
+        if not (msg.document or msg.video or msg.audio):
+            return None
+        return await parse_message_to_doc(msg)
+
+    await push(force=True)
+
+    async with lock:
+        try:
+            while current <= last_id:
+                end = min(current + FETCH_BATCH - 1, last_id)
+                window = list(range(current, end + 1))
+                current = end + 1
+                cur_id[0] = current - 1
+
+                msgs = await _fetch_round(bot, chat_id, [window], fw_count)
+                calls += 1
+
+                await asyncio.sleep(_round_cooldown)
+
+                for msg in msgs:
+                    checked += 1
+                    if not msg or msg.empty:
+                        skipped += 1
+                        continue
+                    if not (msg.document or msg.video or msg.audio):
+                        skipped += 1
+                        continue
+                    doc = await _proc(msg)
+                    if doc:
+                        buf.append(doc)
+                    else:
+                        skipped += 1
+
+                if len(buf) >= SAVE_BATCH_SIZE:
+                    sv, nd = await _flush(list(buf), target)
+                    saved += sv; dup += nd
+                    buf.clear()
+
+                cp_n += 1
+                if cp_n >= CHECKPOINT_EVERY:
+                    await save_bot_state(chat_key, cur_id[0])
+                    cp_n = 0
+                    gc.collect()
+
+                await push()
+
+            if buf:
+                sv, nd = await _flush(list(buf), target)
+                saved += sv; dup += nd
+                buf.clear()
+
+            await save_bot_state(chat_key, None)
+            avg = int(mps())
+
+            final = (
+                f"Index Complete!\n\n"
+                f"Target    : `{target_label}`\n"
+                f"Mode      : `{CONCURRENT_FETCHES} x {FETCH_BATCH}` IDs/round\n"
+                f"Checked   : `{checked:,}`\n"
+                f"Saved     : `{saved:,}` files\n"
+                f"Skipped   : `{skipped:,}`\n"
+                f"Duplicate : `{dup:,}`\n"
+                f"API calls : `{calls:,}`\n"
+                f"Avg speed : `{avg:,}` msg/s\n"
             )
-            return False, 0
+            if fw_count[0]:
+                final += f"FloodWait : `{fw_count[0]}` times\n"
 
-        clean_kw = await _get_clean_keywords()
-        file_doc = {
-            "channel_id":      channel_id,
-            "message_id":      message_id,
-            "file_name":       file_name,
-            "file_name_clean": _apply_clean(file_name, clean_kw),
-            "normalized_name": norm_lower,
-            "season":          season,
-            "episode":         episode,
-            "quality":         quality,
-            "language":        language,
-            "file_id":         file_obj.file_id,
-            "media_type":      media_type,
-            "caption":         caption,
-            "caption_clean":   _apply_clean(caption, clean_kw),
-            "codec":           codec,
-        }
-
-        saved = await save_file_to_db(file_doc, target=target)
-        if saved:
-            logger.debug(
-                f"[cyber_index] ✅ Saved: {normalized_name!r} "
-                f"S{season:02d}E{episode:02d} {quality} [{language}] codec={codec!r} → {target}"
+            await safe_edit(status_msg, final, parse_mode=enums.ParseMode.MARKDOWN)
+            logger.info(
+                f"[INDEX] done  checked={checked}  saved={saved}  "
+                f"dup={dup}  skip={skipped}  calls={calls}  speed={avg}msg/s"
             )
-            return True, 1
-        return False, 0
 
-    except Exception as e:
-        logger.error(f"[cyber_index] save_series_file_for_bulk_index error: {e}")
-        return False, 0
+        except asyncio.CancelledError:
+            await save_bot_state(chat_key, cur_id[0])
+            if buf:
+                try:
+                    sv, nd = await _flush(buf, target)
+                    saved += sv; dup += nd
+                except Exception:
+                    pass
+            await safe_edit(
+                status_msg,
+                f"Index Cancelled\n\n"
+                f"Checked   : `{checked:,}`\n"
+                f"Saved     : `{saved:,}` files\n"
+                f"Skipped   : `{skipped:,}`\n"
+                f"Duplicate : `{dup:,}`\n"
+                f"Stopped   : ID `{cur_id[0]}`\n"
+                f"Target    : `{target_label}`",
+                parse_mode=enums.ParseMode.MARKDOWN,
+            )
+            logger.info(f"[INDEX] cancelled at id={cur_id[0]} saved={saved}")
+
+        finally:
+            _clear_last_text()
+            await set_global_setting(INDEX_STATUS_KEY, "IDLE")
+            set_caption_lang_cache(None)
+            set_clean_keywords_cache(None)
+            index_task = None
 
 
-# ══════════════════════════════════════════════════════════════
-# BATCH API
-# ══════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------
+# HELPERS
+# ---------------------------------------------------------------
 
-async def parse_message_to_doc(msg) -> dict | None:
+async def compute_effective_start(chat_id: int, default_start: int) -> int:
+    """Return the effective start ID for a new index.
+    If skip is set (>0), it ALWAYS overrides any previous checkpoint.
+    """
+    skip_raw = await get_global_setting(INDEX_SKIP_KEY, 0)
     try:
-        file_obj, media_type = _get_media_info(msg)
-        if not file_obj:
-            return None
-        file_name = getattr(file_obj, "file_name", None)
-        if not file_name or not file_name.strip():
-            return None
-        caption_raw = getattr(msg, "caption", None) or ""
-        if not isinstance(caption_raw, str):
-            caption_raw = str(caption_raw)
-        if not _is_series_file(file_name, caption_raw):
-            return None
+        skip_id = int(skip_raw) if skip_raw else 0
+    except Exception:
+        skip_id = 0
 
-        channel_id = msg.chat.id if msg.chat else None
-        message_id = msg.id
-        if not channel_id:
-            return None
+    lp = await get_bot_state(f"index_{chat_id}")
 
-        caption = getattr(msg, "caption", None) or ""
-        if not isinstance(caption, str):
-            caption = str(caption)
-
-        season, episode = _parse_season_episode(file_name)
-        quality = _parse_quality(file_name, caption)
-        codec   = _parse_codec(file_name, caption)
-
-        if quality == "Unknown" and media_type == "video":
-            width  = getattr(file_obj, "width",  0) or 0
-            height = getattr(file_obj, "height", 0) or 0
-            if width or height:
-                quality = _quality_from_resolution(width, height)
-
-        normalized_name = _normalized_series_name(file_name)
-        if not normalized_name:
-            return None
-
-        language = await _resolve_language(file_name, caption, normalized_name)
-
-        clean_kw = await _get_clean_keywords()
-        return {
-            "channel_id":      channel_id,
-            "message_id":      message_id,
-            "file_name":       file_name,
-            "file_name_clean": _apply_clean(file_name, clean_kw),
-            "normalized_name": normalized_name.lower(),
-            "season":          season,
-            "episode":         episode,
-            "quality":         quality,
-            "language":        language,
-            "file_id":         file_obj.file_id,
-            "media_type":      media_type,
-            "caption":         caption,
-            "caption_clean":   _apply_clean(caption, clean_kw),
-            "codec":           codec,
-        }
-    except Exception as e:
-        logger.error(f"[cyber_index] parse_message_to_doc error: {e}")
-        return None
+    if skip_id > 0:
+        # Skip overrides everything
+        return max(default_start, skip_id + 1)
+    else:
+        return max(default_start, skip_id + 1, int(lp) if lp else 0)
 
 
-async def batch_save_file_docs(docs: list[dict], target: str = "both") -> int:
-    from DB.database import save_file_docs_batch
-    if not docs:
-        return 0
-    seen_keys: dict[tuple, dict] = {}
-    for doc in docs:
-        key = (doc["normalized_name"], doc["season"], doc["episode"], doc["quality"], doc["language"])
-        seen_keys[key] = doc
-    to_save = list(seen_keys.values())
-    if not to_save:
-        return 0
-    saved = await save_file_docs_batch(to_save, target=target)
-    return saved
+def _mode_badge() -> str:
+    return f"Bot mode  `{CONCURRENT_FETCHES} x {FETCH_BATCH}` IDs/round | cooldown `{_COOLDOWN_BASE}s` adaptive"
 
 
-# ══════════════════════════════════════════════════════════════
-# STANDALONE PARSE HELPER
-# ══════════════════════════════════════════════════════════════
+async def _est(start_id: int, last_id: int) -> str:
+    total         = max(last_id - start_id + 1, 1)
+    ids_per_round = CONCURRENT_FETCHES * FETCH_BATCH
+    rounds        = max(total // ids_per_round, 1)
+    est_sec       = int(rounds * 0.4)
+    if est_sec < 60:
+        return f"~{est_sec}s"
+    elif est_sec < 3600:
+        return f"~{est_sec // 60}m {est_sec % 60}s"
+    else:
+        return f"~{est_sec // 3600}h {est_sec % 3600 // 60}m"
 
-def parse_file_name(file_name: str, caption: str = "") -> dict:
-    season, episode = _parse_season_episode(file_name)
-    return {
-        "file_name":       file_name,
-        "normalized_name": _normalized_series_name(file_name),
-        "season":          season,
-        "episode":         episode,
-        "quality":         _parse_quality(file_name, caption),
-        "language":        _parse_language(file_name, caption),
-        "codec":           _parse_codec(file_name, caption),
-    }
+
+# ---------------------------------------------------------------
+# HANDLERS
+# ---------------------------------------------------------------
+
+def register_index_handlers(cyber: Client):
+    global index_task
+
+    @cyber.on_message(media_filter & filters.channel)
+    async def rti(_, msg):
+        channels = await get_index_channels()
+        if msg.chat.id not in channels:
+            return
+        try:
+            file = msg.document or msg.video or msg.audio
+            if not file:
+                return
+            ok, _ = await save_series_file_for_bulk_index(msg, target="mongo")
+            fn    = getattr(file, "file_name", None) or "No_Name"
+            if ok:
+                from utils.cyber_index import parse_file_name
+                m = parse_file_name(fn)
+                logger.info(
+                    f"[RTI] {m['normalized_name']!r} "
+                    f"S{m['season']:02d}E{m['episode']:02d} "
+                    f"{m['quality']} {m['language']} | {fn}"
+                )
+            else:
+                logger.debug(f"[RTI] skip {fn}")
+        except Exception as e:
+            logger.error(f"[RTI] {e}")
+
+    @cyber.on_message(
+        filters.private & filters.forwarded & filters.user(ADMIN_USERS) & media_filter
+    )
+    async def forwarded(bot, message):
+        origin = message.forward_origin
+        if not origin or origin.type != enums.MessageOriginType.CHANNEL:
+            return await message.reply("Forward an original message from a channel.")
+        chat_id   = origin.chat.id
+        last_id   = origin.message_id
+        eff_start = await compute_effective_start(chat_id, 2)
+        est       = await _est(eff_start, last_id)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("DB1", callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|db1"),
+             InlineKeyboardButton("DB2", callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|db2")],
+            [InlineKeyboardButton("Both DBs", callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|both")],
+            [InlineKeyboardButton("Cancel", callback_data="cancel_prompt")],
+        ])
+        await bot.send_message(
+            message.from_user.id,
+            f"Index Target?\nChannel : `{chat_id}`\nRange   : `{eff_start}` to `{last_id}`\n\n{_mode_badge()}  Est. **{est}**\n\nChoose DB:",
+            parse_mode=enums.ParseMode.MARKDOWN,
+            reply_markup=kb,
+        )
+
+    @cyber.on_message(filters.private & filters.user(ADMIN_USERS) & filters.command("indexlink"))
+    async def indexlink(bot, message):
+        args = message.text.split()[1:]
+        chat_id, start_id, last_id = extract_links(args)
+        eff_start = await compute_effective_start(chat_id, start_id)
+        est       = await _est(eff_start, last_id)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("DB1", callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|db1"),
+             InlineKeyboardButton("DB2", callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|db2")],
+            [InlineKeyboardButton("Both DBs", callback_data=f"idx_db|{chat_id}|{eff_start}|{last_id}|both")],
+            [InlineKeyboardButton("Cancel", callback_data="cancel_prompt")],
+        ])
+        await bot.send_message(
+            message.from_user.id,
+            f"Index Target?\nChannel : `{chat_id}`\nRange   : `{eff_start}` to `{last_id}`\n\n{_mode_badge()}  Est. **{est}**\n\nChoose DB:",
+            parse_mode=enums.ParseMode.MARKDOWN,
+            reply_markup=kb,
+        )
+
+    @cyber.on_callback_query(filters.regex(r"^idx_db\|"))
+    async def idx_db_chosen(bot, query):
+        await query.answer()
+        _, chat_id, s, l, target = query.data.split("|")
+        chat_id, s, l = int(chat_id), int(s), int(l)
+        est   = await _est(s, l)
+        label = {"db1": "DB1", "db2": "DB2", "both": "Both DBs"}.get(target, target)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Proceed", callback_data=f"startidx|{chat_id}|{s}|{l}|{target}")],
+            [InlineKeyboardButton("Cancel",  callback_data="cancel_prompt")],
+        ])
+        try:
+            await query.message.edit_text(
+                f"Confirm Index\n\nChannel : `{chat_id}`\nRange   : `{s}` to `{l}` ({l-s+1:,} IDs)\nTarget  : **{label}**\n{_mode_badge()}\nEst.    : **{est}**\n\nTap Proceed to start.",
+                parse_mode=enums.ParseMode.MARKDOWN,
+                reply_markup=kb,
+            )
+        except Exception:
+            pass
+
+    @cyber.on_callback_query(filters.regex(r"^startidx\|"))
+    async def start_index(bot, query):
+        global index_task
+        await query.answer()
+        if index_task and not index_task.done():
+            await query.answer("Index already running.", show_alert=True)
+            return
+        try:
+            _, chat_id, s, l, target = query.data.split("|")
+            chat_id, s, l = int(chat_id), int(s), int(l)
+        except Exception as e:
+            logger.error(f"[INDEX] startidx parse: {e}")
+            return
+
+        label = {"db1": "DB1", "db2": "DB2", "both": "DB1+DB2"}.get(target, target)
+        skip_raw = await get_global_setting(INDEX_SKIP_KEY, None)
+        try:
+            preserved = int(skip_raw) if skip_raw is not None else None
+        except Exception:
+            preserved = None
+
+        await delete_all_index_states()
+        if preserved is not None:
+            await set_global_setting(INDEX_SKIP_KEY, preserved)
+        await save_bot_state(f"index_{chat_id}", s)
+
+        try:
+            await query.message.edit_text(f"Starting... {label}", parse_mode=enums.ParseMode.MARKDOWN)
+        except Exception:
+            pass
+
+        status_msg = await safe_send(
+            bot, query.from_user.id,
+            f"Index Starting\nChannel : `{chat_id}`\nRange   : `{s}` to `{l}`\nTarget  : **{label}**\n{_mode_badge()}\n\nProgress updates every {PROGRESS_EVERY}s...",
+            parse_mode=enums.ParseMode.MARKDOWN,
+            reply_markup=_cancel_kb(),
+        )
+        index_task = asyncio.create_task(
+            index_files_task(bot, status_msg, chat_id, s, l, target=target)
+        )
+        logger.info(f"[INDEX] task started  chat={chat_id}  target={target}")
+
+    @cyber.on_callback_query(filters.regex("^cancel_index$"))
+    async def cancel(bot, query):
+        global index_task
+        if index_task and not index_task.done():
+            index_task.cancel()
+            await query.answer("Cancelling...", show_alert=True)
+        else:
+            await query.answer("No active index.", show_alert=True)
+
+    @cyber.on_callback_query(filters.regex("^cancel_prompt$"))
+    async def cancel_prompt(bot, query):
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await query.answer("Cancelled.")
+
+    @cyber.on_callback_query(filters.regex(r"^resume_yes\|"))
+    async def resume_yes(bot, query):
+        global index_task
+        if index_task and not index_task.done():
+            await query.answer("Already running!", show_alert=True)
+            return
+        await query.answer("Resuming...")
+        try:
+            _, chat_id, s, l, target = query.data.split("|")
+            chat_id, s, l = int(chat_id), int(s), int(l)
+        except Exception as e:
+            logger.error(f"resume_yes parse: {e}")
+            return
+        try:
+            await query.message.edit_text(
+                f"Resuming...\nChannel `{chat_id}` range `{s}` to `{l}`\n{_mode_badge()}",
+                parse_mode=enums.ParseMode.MARKDOWN,
+                reply_markup=_cancel_kb(),
+            )
+        except Exception:
+            pass
+        index_task = asyncio.create_task(
+            index_files_task(bot, query.message, chat_id, s, l, target=target)
+        )
+
+    @cyber.on_callback_query(filters.regex("^resume_no$"))
+    async def resume_no(bot, query):
+        await query.answer("Discarding.")
+        try:
+            await set_global_setting(INDEX_STATUS_KEY, "IDLE")
+            await query.message.edit_text("Discarded. Forward a message to start fresh.", parse_mode=enums.ParseMode.MARKDOWN)
+        except Exception:
+            pass
+
+    @cyber.on_message(filters.private & filters.user(ADMIN_USERS) & filters.command("setskip"))
+    async def setskip(bot, message):
+        parts = message.text.split()
+        if len(parts) < 2:
+            return await message.reply("Usage: /setskip <msg_id>")
+        try:
+            val = int(parts[1])
+        except Exception:
+            return await message.reply("Invalid ID.")
+        await set_global_setting(INDEX_SKIP_KEY, val)
+        await message.reply(f"Skip set — index will start from `{val + 1}`", parse_mode=enums.ParseMode.MARKDOWN)
+
+    @cyber.on_message(filters.private & filters.user(ADMIN_USERS) & filters.command("getskip"))
+    async def getskip(bot, message):
+        raw = await get_global_setting(INDEX_SKIP_KEY, None)
+        await message.reply(f"Skip stored: `{raw!r}`", parse_mode=enums.ParseMode.MARKDOWN)
+
+    return [
+        rti, forwarded, indexlink, idx_db_chosen,
+        start_index, cancel, cancel_prompt,
+        resume_yes, resume_no, setskip, getskip,
+    ]
