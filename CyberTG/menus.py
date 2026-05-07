@@ -1,15 +1,3 @@
-"""
-menus.py — OPTIMIZED EDITION
-================================
-CHANGES:
-  1. Cancel/Back button on ALL admin input prompts — no more stuck states
-  2. Caption format guide shown when setting file caption
-     (shows all available placeholders: {series}, {file_name}, etc.)
-  3. Admin settings menu shows current caption/autodel values
-  4. All callback routes fixed — no dead-end flows
-  5. Input state cleared on cancel
-"""
-
 import logging
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
@@ -940,7 +928,7 @@ async def admin_input_handler(bot, message: Message):
 
         elif state == "WAITING_CAPTION":
             await set_global_setting("CUSTOM_FILE_CAPTION", message.text)
-            success_text = "Caption updated."
+            success_text = "Caption template updated."
 
         elif state == "WAITING_AUTODEL":
             seconds = int(message.text)
