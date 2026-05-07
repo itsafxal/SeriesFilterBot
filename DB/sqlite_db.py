@@ -922,7 +922,6 @@ def update_file_id_sync(channel_id: int, message_id: int, new_file_id: str):
         logging.getLogger("BOT").error(f"update_file_id_sync error: {e}")
 
 
-
 def delete_one_file_sync(channel_id: int, msg_id: int):
     conn = _get_conn()
     conn.execute(
