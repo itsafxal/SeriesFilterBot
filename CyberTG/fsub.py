@@ -13,7 +13,6 @@ from DB.database import get_global_setting, set_global_setting, mongo_client
 
 _join_reqs_db = mongo_client["JoinReqs"]
 
-# Module‑level config
 FSUB_CHANNEL1: int | None = None
 FSUB_LINK1: str | None = None
 FSUB_MODE1: str = "request"
@@ -43,7 +42,9 @@ def _col(slot: int):
     cid = getattr(_m(), f"FSUB_CHANNEL{slot}", None)
     return _join_reqs_db[str(cid)] if cid else None
 
-# ── Delivery lock with TTL ────────────────────────────────────
+# ----------------------------------------------------------------------
+# Delivery lock with TTL (prevents ghost locks)
+# ----------------------------------------------------------------------
 def acquire_delivery_lock(uid: int) -> bool:
     now = time.monotonic()
     existing = _DELIVERY_LOCK.get(uid)
@@ -60,7 +61,9 @@ def acquire_delivery_lock(uid: int) -> bool:
 def release_delivery_lock(uid: int):
     _DELIVERY_LOCK.pop(uid, None)
 
-# ── DB helpers ─────────────────────────────────────────────────
+# ----------------------------------------------------------------------
+# DB helpers
+# ----------------------------------------------------------------------
 async def _add_req(slot: int, user_id: int, first_name: str = "", username: str = ""):
     col = _col(slot)
     if col is None:
@@ -97,7 +100,9 @@ async def _clear_reqs(slot: int):
         return
     await asyncio.to_thread(lambda: col.delete_many({}))
 
-# ── Settings load / save ───────────────────────────────────────
+# ----------------------------------------------------------------------
+# Load / save settings
+# ----------------------------------------------------------------------
 DB_KEY = "fsub_config_v2"
 
 async def load_fsub_settings():
@@ -143,7 +148,9 @@ async def save_fsub_settings():
     }
     await set_global_setting(DB_KEY, data)
 
-# ── Join state checks ──────────────────────────────────────────
+# ----------------------------------------------------------------------
+# Join state checks
+# ----------------------------------------------------------------------
 async def _is_member_via_api(cyber, channel_id: int, user_id: int) -> bool:
     for attempt in range(2):
         try:
@@ -193,7 +200,9 @@ async def get_slot_statuses(cyber, user_id: int) -> list[dict]:
 def all_slots_passed(statuses: list[dict]) -> bool:
     return all(s["joined"] or s["requested"] for s in statuses) if statuses else True
 
-# ── FSub UI ────────────────────────────────────────────────────
+# ----------------------------------------------------------------------
+# FSub UI
+# ----------------------------------------------------------------------
 def build_fsub_keyboard(
     bot_username: str,
     payload: str,
@@ -223,7 +232,7 @@ def fsub_text(statuses: list[dict] | None = None) -> str:
     satisfied = [s for s in statuses if s["joined"] or s["requested"]]
     lines = [
         "🔒 <b>Members Only</b>",
-        "<b>━━━━━━━━━━━━━━━━━━━━━</b>",
+        "━━━━━━━━━━━━━━━━━━━━━",
         "",
     ]
     if pending:
@@ -235,7 +244,6 @@ def fsub_text(statuses: list[dict] | None = None) -> str:
         lines.append(f"✅  <b>{len(satisfied)}</b> channel{'s' if len(satisfied) > 1 else ''} completed.")
     return "\n".join(lines)
 
-# ── Pending & delivery ─────────────────────────────────────────
 def register_pending_fsub(uid: int, msg: Message, payload: str, via_filebot: bool = False):
     old = _PENDING_FSUB.get(uid)
     if old:
@@ -280,7 +288,6 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
         release_delivery_lock(uid)
         return False
 
-# ── Auto‑deliver after join/request ────────────────────────────
 async def _try_auto_deliver(cyber, uid: int):
     pending = _PENDING_FSUB.get(uid)
     if not pending:
@@ -303,7 +310,6 @@ async def _try_auto_deliver(cyber, uid: int):
         except Exception:
             pass
 
-# ── Rotation logic ────────────────────────────────────────────
 async def _rotate_slot(slot: int):
     m = _m()
     thr = getattr(m, f"COUNT_THRESHOLD{slot}", None)
@@ -324,9 +330,70 @@ async def _rotate_slot(slot: int):
     await _clear_reqs(slot)
     await save_fsub_settings()
 
-# ── Handlers registration ──────────────────────────────────────
-def register_fsub_handlers(cyber: Client):
+# ----------------------------------------------------------------------
+# PUBLIC HELPER FUNCTIONS (used by menus.py)
+# ----------------------------------------------------------------------
+async def set_fsub_slot(slot: int, channel_id: int, link: str, mode: str, secondary: bool = False):
+    m = _m()
+    if secondary:
+        setattr(m, f"FSUB_CHANNEL{slot}_2", channel_id)
+        setattr(m, f"FSUB_LINK{slot}_2", link)
+    else:
+        setattr(m, f"FSUB_CHANNEL{slot}", channel_id)
+        setattr(m, f"FSUB_LINK{slot}", link)
+        setattr(m, f"FSUB_MODE{slot}", mode)
+        setattr(m, f"_req_count{slot}", 0)
+    await save_fsub_settings()
 
+async def del_fsub_slot(slot: int, secondary: bool = False) -> int | None:
+    m = _m()
+    if secondary:
+        old = getattr(m, f"FSUB_CHANNEL{slot}_2", None)
+        setattr(m, f"FSUB_CHANNEL{slot}_2", None)
+        setattr(m, f"FSUB_LINK{slot}_2", None)
+    else:
+        old = getattr(m, f"FSUB_CHANNEL{slot}", None)
+        setattr(m, f"FSUB_CHANNEL{slot}", None)
+        setattr(m, f"FSUB_LINK{slot}", None)
+        setattr(m, f"_req_count{slot}", 0)
+        await _clear_reqs(slot)
+    await save_fsub_settings()
+    return old
+
+async def set_threshold(slot: int, value: int):
+    setattr(_m(), f"COUNT_THRESHOLD{slot}", value)
+    await save_fsub_settings()
+
+async def purge_slot_reqs(slot: int):
+    await _clear_reqs(slot)
+    setattr(_m(), f"_req_count{slot}", 0)
+    await save_fsub_settings()
+
+async def get_slot_info(bot, slot: int) -> dict:
+    m = _m()
+    ch = getattr(m, f"FSUB_CHANNEL{slot}", None)
+    lk = getattr(m, f"FSUB_LINK{slot}", None)
+    mode = getattr(m, f"FSUB_MODE{slot}", "request")
+    ch2 = getattr(m, f"FSUB_CHANNEL{slot}_2", None)
+    thr = getattr(m, f"COUNT_THRESHOLD{slot}", None)
+    cnt = getattr(m, f"_req_count{slot}", 0)
+    title = None
+    if ch:
+        try:
+            title = (await bot.get_chat(ch)).title
+        except Exception:
+            title = "Unknown"
+    db_count = await _count_reqs(slot) if (ch and mode == "request") else None
+    return {
+        "slot": slot, "ch": ch, "title": title, "link": lk,
+        "mode": mode, "ch2": ch2, "threshold": thr,
+        "counter": cnt, "db_count": db_count,
+    }
+
+# ----------------------------------------------------------------------
+# Register event handlers
+# ----------------------------------------------------------------------
+def register_fsub_handlers(cyber: Client):
     @cyber.on_chat_join_request()
     async def _on_join_request(bot, join_req: ChatJoinRequest):
         m = _m()
@@ -393,68 +460,3 @@ def register_fsub_handlers(cyber: Client):
     @cyber.on_callback_query(pyro_filters.regex("^fsub_done_noop$"))
     async def _fsub_noop(_, q):
         await q.answer("Already done!", show_alert=False)
-
-    # Admin helpers
-    async def set_fsub_slot(slot: int, channel_id: int, link: str, mode: str, secondary: bool = False):
-        m = _m()
-        if secondary:
-            setattr(m, f"FSUB_CHANNEL{slot}_2", channel_id)
-            setattr(m, f"FSUB_LINK{slot}_2", link)
-        else:
-            setattr(m, f"FSUB_CHANNEL{slot}", channel_id)
-            setattr(m, f"FSUB_LINK{slot}", link)
-            setattr(m, f"FSUB_MODE{slot}", mode)
-            setattr(m, f"_req_count{slot}", 0)
-        await save_fsub_settings()
-
-    async def del_fsub_slot(slot: int, secondary: bool = False) -> int | None:
-        m = _m()
-        if secondary:
-            old = getattr(m, f"FSUB_CHANNEL{slot}_2", None)
-            setattr(m, f"FSUB_CHANNEL{slot}_2", None)
-            setattr(m, f"FSUB_LINK{slot}_2", None)
-        else:
-            old = getattr(m, f"FSUB_CHANNEL{slot}", None)
-            setattr(m, f"FSUB_CHANNEL{slot}", None)
-            setattr(m, f"FSUB_LINK{slot}", None)
-            setattr(m, f"_req_count{slot}", 0)
-            await _clear_reqs(slot)
-        await save_fsub_settings()
-        return old
-
-    async def set_threshold(slot: int, value: int):
-        setattr(_m(), f"COUNT_THRESHOLD{slot}", value)
-        await save_fsub_settings()
-
-    async def purge_slot_reqs(slot: int):
-        await _clear_reqs(slot)
-        setattr(_m(), f"_req_count{slot}", 0)
-        await save_fsub_settings()
-
-    async def get_slot_info(bot, slot: int) -> dict:
-        m = _m()
-        ch = getattr(m, f"FSUB_CHANNEL{slot}", None)
-        lk = getattr(m, f"FSUB_LINK{slot}", None)
-        mode = getattr(m, f"FSUB_MODE{slot}", "request")
-        ch2 = getattr(m, f"FSUB_CHANNEL{slot}_2", None)
-        thr = getattr(m, f"COUNT_THRESHOLD{slot}", None)
-        cnt = getattr(m, f"_req_count{slot}", 0)
-        title = None
-        if ch:
-            try:
-                title = (await bot.get_chat(ch)).title
-            except Exception:
-                title = "Unknown"
-        db_count = await _count_reqs(slot) if (ch and mode == "request") else None
-        return {
-            "slot": slot, "ch": ch, "title": title, "link": lk,
-            "mode": mode, "ch2": ch2, "threshold": thr,
-            "counter": cnt, "db_count": db_count,
-        }
-
-    # make helpers available to menus.py
-    cyber.set_fsub_slot = set_fsub_slot
-    cyber.del_fsub_slot = del_fsub_slot
-    cyber.set_threshold = set_threshold
-    cyber.purge_slot_reqs = purge_slot_reqs
-    cyber.get_slot_info = get_slot_info
