@@ -4,7 +4,7 @@ cyber_series.py — SMART SUGGESTION ENGINE WITH STRICT PROVIDER VALIDATION
 - SQLite as PRIMARY source
 - TMDB OR OMDB randomly chosen per request (never both)
 - ONLY titles confirmed by the provider as a real series are shown
-- All legacy helpers preserved
+- All legacy helpers preserved in full
 """
 
 import re
@@ -160,9 +160,6 @@ async def _validate_with_random_provider(
                         data = await r.json()
                 results = data.get("results", [])
                 if results:
-                    # Additional check: the returned name should be very similar
-                    # to our candidate (we rely on TMDB's search, which already
-                    # returns only relevant results; we just need any result)
                     best = results[0]
                     year = (best.get("first_air_date") or "")[:4] or None
                     popularity = best.get("popularity", 0)
@@ -178,12 +175,11 @@ async def _validate_with_random_provider(
                         data = await r.json()
                 if data.get("Response") == "True":
                     year = (data.get("Year") or "")[:4] or None
-                    popularity = 1   # neutral
+                    popularity = 1
                     is_valid = True
         except Exception:
             pass
 
-        # Cache the result (even if invalid)
         _cache_set(key, {"is_valid": is_valid, "year": year, "popularity": popularity, "ts": time.time()})
         if is_valid:
             validations.append((title, year, popularity))
@@ -241,14 +237,12 @@ async def suggest_series_with_year(
     if not q:
         return []
 
-    # Step 1 & 2: get candidate titles
     candidates = await _sql_candidates(q, limit=limit * 3)
     if not candidates:
         candidates = await _fuzzy_candidates(q, limit=limit * 2)
     if not candidates:
         return []
 
-    # Normalise to remove immediate duplicates
     norm_map: dict[str, str] = {}
     for c in candidates:
         norm = _normalize_title(c).lower()
@@ -256,21 +250,15 @@ async def suggest_series_with_year(
             norm_map[norm] = c
     unique = list(norm_map.values())
 
-    # Step 3: strict validation – only official titles survive
     validated = await _validate_with_random_provider(unique)
-
-    # If no title could be validated, return empty (don't show garbage)
     if not validated:
         return []
 
-    # Step 4: smart ranking
     all_series = await get_all_series()
     db_counts = {name: cnt for name, cnt in all_series}
+
     ranked = await _rank_candidates(q, validated, db_counts)
-
     suggestions = [(t, yr) for t, yr, _ in ranked]
-
-    # Step 5: final deduplication
     final = _deduplicate_suggestions(suggestions)
     return final[:limit]
 
@@ -305,11 +293,43 @@ _LANG_PAT = {
 }
 
 def parse_series_info(file_name: str):
-    """Legacy helper – not used by suggestion, kept for compatibility."""
+    """Legacy helper – not used by suggestion engine but may be imported elsewhere."""
     if not file_name:
         return "", 0, 0, "UNKNOWN", "Unknown"
+
     name = file_name
     upper = name.upper()
     season = episode = 0
-    # ... (original parsing logic preserved, not shown for brevity)
-    return _normalize_title(name), season, episode, "UNKNOWN", "Unknown"
+
+    # Season / Episode extraction
+    se_match = re.search(r"[sS](\d{1,3})[.\-_\s]?[eE](\d{1,3})", name)
+    if se_match:
+        season = int(se_match.group(1))
+        episode = int(se_match.group(2))
+    else:
+        # fallback to 3‑digit pattern
+        alt_match = re.search(r"\b([1-9])(\d{2})\b", name)
+        if alt_match:
+            season = int(alt_match.group(1))
+            episode = int(alt_match.group(2))
+
+    # Quality detection
+    quality = next(
+        (q for q in ("4K", "2160P", "1080P", "720P", "480P", "360P") if q in upper),
+        "UNKNOWN",
+    )
+
+    # Language detection
+    if "DUAL" in upper or "MULTI" in upper:
+        language = "Multi Audio"
+    else:
+        langs = {lang for kw, lang in _LANG_KW.items() if kw in upper}
+        langs |= {lang for pat, lang in _LANG_PAT.items() if re.search(pat, upper)}
+        if len(langs) == 1:
+            language = next(iter(langs))
+        elif len(langs) > 1:
+            language = " + ".join(sorted(langs))
+        else:
+            language = "Unknown"
+
+    return _normalize_title(name), season, episode, quality, language
