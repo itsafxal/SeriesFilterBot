@@ -48,7 +48,7 @@ media_filter = filters.document | filters.video | filters.audio
 index_task: Optional[asyncio.Task] = None
 lock = asyncio.Lock()
 
-# ── FIX: _last_text capped at 1000 entries (was unbounded) ─────
+# ── _last_text capped at 1000 entries ─────
 _LAST_TEXT_MAX = 1000
 _last_text: OrderedDict[int, str] = OrderedDict()
 
@@ -62,7 +62,6 @@ def _set_last_text(msg_id: int, text: str):
 
 
 def _clear_last_text():
-    """Called after index task completes — frees memory immediately."""
     _last_text.clear()
 
 
@@ -404,7 +403,6 @@ async def index_files_task(
             logger.info(f"[INDEX] cancelled at id={cur_id[0]} saved={saved}")
 
         finally:
-            # FIX: clear _last_text on task completion to free memory
             _clear_last_text()
             await set_global_setting(INDEX_STATUS_KEY, "IDLE")
             set_caption_lang_cache(None)
@@ -417,13 +415,22 @@ async def index_files_task(
 # ---------------------------------------------------------------
 
 async def compute_effective_start(chat_id: int, default_start: int) -> int:
+    """Return the effective start ID for a new index.
+    If skip is set (>0), it ALWAYS overrides any previous checkpoint.
+    """
     skip_raw = await get_global_setting(INDEX_SKIP_KEY, 0)
     try:
         skip_id = int(skip_raw) if skip_raw else 0
     except Exception:
         skip_id = 0
+
     lp = await get_bot_state(f"index_{chat_id}")
-    return max(default_start, skip_id + 1, int(lp) if lp else 0)
+
+    if skip_id > 0:
+        # Skip overrides everything
+        return max(default_start, skip_id + 1)
+    else:
+        return max(default_start, skip_id + 1, int(lp) if lp else 0)
 
 
 def _mode_badge() -> str:
