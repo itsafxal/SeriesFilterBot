@@ -25,7 +25,6 @@ async def delete_message_job(cyber, chat_id, message_id):
 
 
 def delete_message_later(cyber, chat_id, message_id, delay):
-
     if delay <= 0:
         return
 
