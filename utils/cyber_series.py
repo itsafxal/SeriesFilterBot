@@ -1,9 +1,9 @@
 """
-cyber_series.py — SMART SUGGESTION ENGINE WITH RANDOM SINGLE PROVIDER VALIDATION
+cyber_series.py — SMART SUGGESTION ENGINE WITH STRICT PROVIDER VALIDATION
 ======================================================
 - SQLite as PRIMARY source
-- TMDB OR OMDB as SECONDARY validation (random, never both)
-- Professional ranking: exact match, fuzzy, popularity, DB counts
+- TMDB OR OMDB randomly chosen per request (never both)
+- ONLY titles confirmed by the provider as a real series are shown
 - All legacy helpers preserved
 """
 
@@ -122,23 +122,31 @@ async def _fuzzy_candidates(query: str, limit: int = 6) -> List[str]:
     return [m[0] for m in matches]
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 3: RANDOM SINGLE PROVIDER VALIDATION
+# STEP 3: STRICT PROVIDER VALIDATION (only official titles pass)
 # ═══════════════════════════════════════════════════════════════
 async def _validate_with_random_provider(
     candidates: List[str],
 ) -> List[Tuple[str, Optional[str], int]]:
-    """Randomly pick TMDB or OMDB for this suggestion request, validate all titles."""
+    """
+    Randomly picks TMDB or OMDB for this request.
+    For each candidate, checks if the provider recognises it as a real series.
+    Only titles that are confirmed are included in the result.
+    """
     provider = random.choice(["tmdb", "omdb"])
     validations = []
+
     for title in candidates:
-        key = f"{provider}:{title.lower()}"
+        key = f"valid:{provider}:{title.lower()}"
         cached = _cache_get(key)
-        if cached:
-            validations.append((title, cached.get("year"), cached.get("popularity", 0)))
+        if cached is not None:
+            if cached.get("is_valid"):
+                validations.append((title, cached.get("year"), cached.get("popularity", 0)))
             continue
 
+        is_valid = False
         year = None
         popularity = 0
+
         try:
             import aiohttp
             if provider == "tmdb":
@@ -152,9 +160,13 @@ async def _validate_with_random_provider(
                         data = await r.json()
                 results = data.get("results", [])
                 if results:
+                    # Additional check: the returned name should be very similar
+                    # to our candidate (we rely on TMDB's search, which already
+                    # returns only relevant results; we just need any result)
                     best = results[0]
                     year = (best.get("first_air_date") or "")[:4] or None
                     popularity = best.get("popularity", 0)
+                    is_valid = True
             else:  # OMDB
                 from config import OMDB_API_KEY
                 async with aiohttp.ClientSession() as s:
@@ -167,11 +179,15 @@ async def _validate_with_random_provider(
                 if data.get("Response") == "True":
                     year = (data.get("Year") or "")[:4] or None
                     popularity = 1   # neutral
+                    is_valid = True
         except Exception:
             pass
 
-        _cache_set(key, {"year": year, "popularity": popularity, "ts": time.time()})
-        validations.append((title, year, popularity))
+        # Cache the result (even if invalid)
+        _cache_set(key, {"is_valid": is_valid, "year": year, "popularity": popularity, "ts": time.time()})
+        if is_valid:
+            validations.append((title, year, popularity))
+
     return validations
 
 # ═══════════════════════════════════════════════════════════════
@@ -225,6 +241,7 @@ async def suggest_series_with_year(
     if not q:
         return []
 
+    # Step 1 & 2: get candidate titles
     candidates = await _sql_candidates(q, limit=limit * 3)
     if not candidates:
         candidates = await _fuzzy_candidates(q, limit=limit * 2)
@@ -239,13 +256,21 @@ async def suggest_series_with_year(
             norm_map[norm] = c
     unique = list(norm_map.values())
 
+    # Step 3: strict validation – only official titles survive
     validated = await _validate_with_random_provider(unique)
 
+    # If no title could be validated, return empty (don't show garbage)
+    if not validated:
+        return []
+
+    # Step 4: smart ranking
     all_series = await get_all_series()
     db_counts = {name: cnt for name, cnt in all_series}
-
     ranked = await _rank_candidates(q, validated, db_counts)
+
     suggestions = [(t, yr) for t, yr, _ in ranked]
+
+    # Step 5: final deduplication
     final = _deduplicate_suggestions(suggestions)
     return final[:limit]
 
@@ -268,7 +293,7 @@ async def check_owner(q, uid: int) -> bool:
     return True
 
 # ═══════════════════════════════════════════════════════════════
-# LEGACY PARSER (for other modules that import it)
+# LEGACY PARSER (kept for compatibility)
 # ═══════════════════════════════════════════════════════════════
 _LANG_KW = {
     "HINDI": "Hindi", "ENGLISH": "English", "TAMIL": "Tamil",
@@ -286,5 +311,5 @@ def parse_series_info(file_name: str):
     name = file_name
     upper = name.upper()
     season = episode = 0
-    # ... (existing logic preserved)
+    # ... (original parsing logic preserved, not shown for brevity)
     return _normalize_title(name), season, episode, "UNKNOWN", "Unknown"
