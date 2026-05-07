@@ -52,9 +52,9 @@ PATTERNS = {
     "01x01-01x05": re.compile(r"\b(\d{1,3})[xX](\d{1,3})[\-~](\d{1,3})[xX](\d{1,3})\b"),
 
     # Three / four digit
-    "101": re.compile(r"\b([1-9])(\d{2})\b"),          # season 1, episode 01
-    "1001": re.compile(r"\b(\d{2})(\d{2})\b"),         # season 10, episode 01
-    "0101": re.compile(r"\b(\d{2})(\d{2})\b"),         # same as above – last resort
+    "101": re.compile(r"\b([1-9])(\d{2})\b"),
+    "1001": re.compile(r"\b(\d{2})(\d{2})\b"),
+    "0101": re.compile(r"\b(\d{2})(\d{2})\b"),
 
     # Episode only
     "Episode 01": re.compile(r"\bepisode[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
@@ -121,14 +121,12 @@ def _build_series_stripper() -> re.Pattern:
     parts = []
     for pat in PATTERNS.values():
         parts.append(pat.pattern)
-    # Join patterns with | to create one giant alternation
     return re.compile("|".join(parts), re.IGNORECASE)
 
-# Replace the old monolithic SERIES_RE with the dynamically built one
+
 SERIES_RE = _build_series_stripper()
 
-
-# Lone "S" or "SS" remnants (kept from original)
+# Lone "S" or "SS" remnants
 _LONE_S_RE = re.compile(r"(?<!\w)[Ss]{1,2}(?!\w)")
 
 # Video quality / codec / release-group noise
@@ -143,10 +141,6 @@ _YEAR_RE  = re.compile(r"\b(19|20)\d{2}\b")
 _SPACE_RE = re.compile(r"\s{2,}")
 
 
-# ─────────────────────────────────────────────────────────────
-# TITLE NORMALIZER  ← main fix
-# ─────────────────────────────────────────────────────────────
-
 def _normalize_title(name: str) -> str:
     """
     Strips separators, brackets, episode codes, quality tags, and stray
@@ -156,32 +150,15 @@ def _normalize_title(name: str) -> str:
         LUCIFER S05
         lucifer.complete
     """
-    # 1. Replace common separators with spaces
     text = re.sub(r"[._\-]+", " ", name)
-
-    # 2. Drop bracketed/parenthesised blocks  [720p]  (Hindi)
     text = re.sub(r"\[.*?\]|\(.*?\)", "", text)
-
-    # 3. Remove full season+episode tokens (now uses the comprehensive patterns)
     text = SERIES_RE.sub(" ", text)
-
-    # 4. Remove lone "S" / "SS" that SERIES_RE leaves behind
     text = _LONE_S_RE.sub(" ", text)
-
-    # 5. Strip quality / codec noise
     text = _JUNK_RE.sub(" ", text)
-
-    # 6. Strip bare years
     text = _YEAR_RE.sub(" ", text)
-
-    # 7. Collapse whitespace and title-case
     text = _SPACE_RE.sub(" ", text).strip()
     return text.title() if text else ""
 
-
-# ─────────────────────────────────────────────────────────────
-# QUERY CLEANER
-# ─────────────────────────────────────────────────────────────
 
 def clean_query(q: str) -> str:
     if not q:
@@ -194,14 +171,11 @@ def clean_query(q: str) -> str:
     return q
 
 
-# ─────────────────────────────────────────────────────────────
-# LRU CACHE FOR API LOOKUPS
-# ─────────────────────────────────────────────────────────────
-
+# ── LRU cache for API lookups ─────────────────────────────────
 _API_CACHE_MAX = 2048
 _API_CACHE_TTL = 6 * 3600
 _API_CACHE: OrderedDict[str, dict] = OrderedDict()
-_API_SEM   = asyncio.Semaphore(3)
+_API_SEM = asyncio.Semaphore(3)
 
 
 def _cache_get(key: str) -> dict | None:
@@ -222,10 +196,6 @@ def _cache_set(key: str, value: dict) -> None:
     if len(_API_CACHE) > _API_CACHE_MAX:
         _API_CACHE.popitem(last=False)
 
-
-# ─────────────────────────────────────────────────────────────
-# TMDB / OMDB ENRICHMENT
-# ─────────────────────────────────────────────────────────────
 
 async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
     key   = title.lower().strip()
@@ -277,27 +247,17 @@ async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
     return year, found
 
 
-# ─────────────────────────────────────────────────────────────
-# STEP 1 — SQL CANDIDATES
-# ─────────────────────────────────────────────────────────────
-
 async def _sql_candidates(query: str, limit: int = 8) -> List[str]:
     results = await search_series(query)
     if results:
         return list(results)[:limit]
-
     words = query.split()
     if len(words) > 1 and len(words[0]) >= 3:
         results = await search_series(words[0])
         if results:
             return list(results)[:limit]
-
     return []
 
-
-# ─────────────────────────────────────────────────────────────
-# STEP 2 — FUZZY FALLBACK
-# ─────────────────────────────────────────────────────────────
 
 async def _fuzzy_candidates(query: str, limit: int = 6) -> List[str]:
     if not HAVE_RAPIDFUZZ:
@@ -309,10 +269,8 @@ async def _fuzzy_candidates(query: str, limit: int = 6) -> List[str]:
         return []
     if not all_titles:
         return []
-
     matches = rf_process.extract(
-        query,
-        all_titles,
+        query, all_titles,
         scorer=rf_fuzz.token_sort_ratio,
         limit=limit,
         score_cutoff=72,
@@ -321,13 +279,7 @@ async def _fuzzy_candidates(query: str, limit: int = 6) -> List[str]:
     return [m[0] for m in matches]
 
 
-# ─────────────────────────────────────────────────────────────
-# STEP 3 — TMDB/OMDB ENRICHMENT
-# ─────────────────────────────────────────────────────────────
-
-async def _validate_and_enrich(
-    candidates: List[str],
-) -> List[Tuple[str, Optional[str]]]:
+async def _validate_and_enrich(candidates: List[str]) -> List[Tuple[str, Optional[str]]]:
     lookups = await asyncio.gather(
         *[_lookup_title(t) for t in candidates],
         return_exceptions=True,
@@ -338,23 +290,15 @@ async def _validate_and_enrich(
     ]
 
 
-# ─────────────────────────────────────────────────────────────
-# PUBLIC API
-# ─────────────────────────────────────────────────────────────
-
-async def suggest_series_with_year(
-    query: str, limit: int = 4
-) -> List[Tuple[str, Optional[str]]]:
+async def suggest_series_with_year(query: str, limit: int = 4) -> List[Tuple[str, Optional[str]]]:
     q = clean_query(query)
     if not q:
         return []
-
     candidates = await _sql_candidates(q, limit=limit * 3)
     if not candidates:
         candidates = await _fuzzy_candidates(q, limit=limit * 2)
     if not candidates:
         return []
-
     seen: set[str] = set()
     unique: List[str] = []
     for c in candidates:
@@ -363,7 +307,6 @@ async def suggest_series_with_year(
         if k not in seen:
             seen.add(k)
             unique.append(normalized)
-
     validated = await _validate_and_enrich(unique)
     return validated[:limit]
 
@@ -378,140 +321,7 @@ def format_suggestion_label(title: str, year: Optional[str]) -> str:
     return f"{display} ({year})" if year else display
 
 
-# ─────────────────────────────────────────────────────────────
-# PARSE SERIES INFO  (kept as a convenience – now uses the patterns too)
-# ─────────────────────────────────────────────────────────────
-
-_LANG_KW = {
-    "HINDI": "Hindi", "ENGLISH": "English", "TAMIL": "Tamil",
-    "TELUGU": "Telugu", "MALAYALAM": "Malayalam", "KANNADA": "Kannada",
-}
-_LANG_PAT = {
-    r"\bHIN\b": "Hindi",  r"\bENG\b": "English", r"\bTAM\b": "Tamil",
-    r"\bTEL\b": "Telugu", r"\bMAL\b": "Malayalam", r"\bKAN\b": "Kannada",
-}
-
-# Roman numeral helper (same as indexer)
-ROMAN_TO_INT = {
-    "i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5,
-    "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10
-}
-
-def parse_series_info(file_name: str):
-    if not file_name:
-        return "", 0, 0, "UNKNOWN", "Unknown"
-
-    name  = file_name
-    upper = name.upper()
-    season = episode = 0
-
-    # Use the same priority order as the indexer
-    ORDER = [
-        "S01E01E02", "S01E01-E05", "01x01-01x05",
-        "S01E01", "S01-E01", "S01.E01", "S01_E01", "S01 E01",
-        "S01 EP01",
-        "Season Episode", "Season Ep",
-        "01x01",
-        "Episode 01", "Ep01", "E01",
-        "Season 01", "S01",
-        "Complete Season", "Season Pack", "Batch",
-        "Anime 01v2", "S01E01v2", "Episode 01v2",
-        "OVA", "ONA", "Special",
-        "Part 01", "Chapter 01", "Volume",
-        "2024.01.15", "2024-01-15",
-        "Mini Series Part",
-        "Season Roman",
-        "WEB Episode", "EP 01 END", "Disc 1", "CD1",
-        "Episodes 1-10",
-        "101", "1001", "0101",
-    ]
-
-    for key in ORDER:
-        pat = PATTERNS.get(key)
-        if not pat:
-            continue
-        m = pat.search(name)
-        if m:
-            groups = m.groups()
-            if key in ("S01E01", "S01-E01", "S01.E01", "S01_E01", "S01 E01",
-                       "S01 EP01", "Season Episode", "Season Ep", "01x01",
-                       "S01E01v2"):
-                season = int(groups[0])
-                episode = int(groups[1])
-                break
-            elif key == "S01E01E02":
-                season = int(groups[0])
-                episode = int(groups[1])
-                break
-            elif key == "S01E01-E05":
-                season = int(groups[0])
-                episode = int(groups[1])
-                break
-            elif key == "01x01-01x05":
-                season = int(groups[0])
-                episode = int(groups[1])
-                break
-            elif key in ("Episode 01", "Ep01", "E01",
-                         "Anime 01v2", "Episode 01v2",
-                         "Part 01", "Chapter 01", "Volume",
-                         "Mini Series Part", "WEB Episode",
-                         "EP 01 END", "Disc 1", "CD1"):
-                if not season:
-                    season = 0
-                episode = int(groups[0])
-                break
-            elif key in ("Season 01", "S01", "Complete Season",
-                         "Season Pack", "Batch"):
-                season = int(groups[0])
-                break
-            elif key in ("OVA", "ONA", "Special"):
-                ova_num = groups[0] if groups[0] else None
-                if ova_num:
-                    episode = int(ova_num)
-                break
-            elif key in ("2024.01.15", "2024-01-15"):
-                pass
-            elif key == "Season Roman":
-                roman = groups[0].lower()
-                season = ROMAN_TO_INT.get(roman, 0)
-                break
-            elif key == "Episodes 1-10":
-                episode = int(groups[0])
-                break
-            elif key in ("101", "1001", "0101"):
-                digits = groups[0] + groups[1]
-                if len(digits) == 3:
-                    season = int(digits[0])
-                    episode = int(digits[1:])
-                else:
-                    season = int(digits[:2])
-                    episode = int(digits[2:])
-                break
-
-    # Quality (unchanged)
-    quality = next(
-        (q for q in ("4K", "2160P", "1080P", "720P", "480P", "360P") if q in upper),
-        "UNKNOWN",
-    )
-
-    # Language (unchanged)
-    if "DUAL" in upper or "MULTI" in upper:
-        return _normalize_title(name), season, episode, quality, "Multi Audio"
-
-    langs = {lang for kw, lang in _LANG_KW.items() if kw in upper}
-    langs |= {lang for pat, lang in _LANG_PAT.items() if re.search(pat, upper)}
-
-    if   len(langs) == 1: language = next(iter(langs))
-    elif len(langs) > 1:  language = " + ".join(sorted(langs))
-    else:                 language = "Unknown"
-
-    return _normalize_title(name), season, episode, quality, language
-
-
-# ─────────────────────────────────────────────────────────────
-# BUTTON OWNER CHECK
-# ─────────────────────────────────────────────────────────────
-
+# ── Button owner check ────────────────────────────────────────
 async def check_owner(q, uid: int) -> bool:
     if q.from_user.id != int(uid):
         name = q.from_user.first_name or "User"
