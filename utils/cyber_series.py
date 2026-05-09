@@ -129,6 +129,9 @@ SERIES_RE = _build_series_stripper()
 # Lone "S" or "SS" remnants
 _LONE_S_RE = re.compile(r"(?<!\w)[Ss]{1,2}(?!\w)")
 
+# Part/P-number suffixes like S05P2, Part2, Pt1 — strip these early
+_PART_RE = re.compile(r"\b(?:[Ss]\d{1,3})?[Pp](?:art|t)?[\s.\-_]?\d{1,2}\b", re.IGNORECASE)
+
 # Video quality / codec / release-group noise
 _JUNK_RE = re.compile(
     r"\b(4K|2160P|1080P|720P|480P|360P|HDRIP|WEBRIP|WEB[-]?DL|BLURAY|BDRIP"
@@ -152,6 +155,7 @@ def _normalize_title(name: str) -> str:
     """
     text = re.sub(r"[._\-]+", " ", name)
     text = re.sub(r"\[.*?\]|\(.*?\)", "", text)
+    text = _PART_RE.sub(" ", text)
     text = SERIES_RE.sub(" ", text)
     text = _LONE_S_RE.sub(" ", text)
     text = _JUNK_RE.sub(" ", text)
@@ -299,14 +303,37 @@ async def suggest_series_with_year(query: str, limit: int = 4) -> List[Tuple[str
         candidates = await _fuzzy_candidates(q, limit=limit * 2)
     if not candidates:
         return []
+
+    # Normalize and deduplicate — collapse variants like
+    # "Stranger Things S05P2" and "Stranger Things Tales From"
+    # down to their shared base "Stranger Things".
     seen: set[str] = set()
     unique: List[str] = []
     for c in candidates:
         normalized = _normalize_title(c)
         k = normalized.lower()
-        if k not in seen:
-            seen.add(k)
-            unique.append(normalized)
+        if not k:
+            continue
+        # Check if this normalized title is a prefix-duplicate of one already
+        # seen, or vice-versa — keep only the shorter (base) form.
+        dominated = False
+        to_remove = []
+        for existing in list(seen):
+            if existing.startswith(k):
+                # new one is shorter/more-base: remove existing, add new
+                to_remove.append(existing)
+            elif k.startswith(existing):
+                # existing is already shorter: skip new
+                dominated = True
+                break
+        if dominated:
+            continue
+        for r in to_remove:
+            seen.discard(r)
+            unique = [u for u in unique if u.lower() != r]
+        seen.add(k)
+        unique.append(normalized)
+
     validated = await _validate_and_enrich(unique)
     return validated[:limit]
 
