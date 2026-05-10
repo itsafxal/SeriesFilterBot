@@ -163,15 +163,31 @@ async def resolve_series_with_suggestions(text: str):
             return None, list(fuzzy)[:4]
         return None, []
     from utils.cyber_series import _normalize_title
-    seen_norm = set()
-    unique = []
+    # Normalize every DB result and collapse variants that share the same
+    # base title (e.g. "Stranger Things", "Stranger Things S05P2",
+    # "Stranger Things Tales From" → all become "Stranger Things").
+    seen_norm: dict[str, str] = {}   # normalized_lower → shortest raw title
     for raw in results:
         norm = _normalize_title(raw)
         k = norm.lower()
-        if norm and k not in seen_norm:
-            seen_norm.add(k)
-            unique.append(norm)
-    unique = unique[:4]
+        if not k:
+            continue
+        # Keep the shortest normalized form as the canonical one
+        if k not in seen_norm or len(norm) < len(seen_norm[k]):
+            seen_norm[k] = norm
+
+    # Second pass: collapse prefix duplicates (same logic as cyber_series)
+    final_keys: list[str] = []
+    for k in list(seen_norm.keys()):
+        dominated = any(k.startswith(e) and k != e for e in final_keys)
+        if dominated:
+            continue
+        # Replace any existing key that is a longer variant of this one
+        final_keys = [e for e in final_keys if not e.startswith(k)]
+        final_keys.append(k)
+
+    unique = [seen_norm[k] for k in final_keys if k in seen_norm][:4]
+
     if len(unique) == 1:
         return unique[0], []
     return None, [(s, None) for s in unique]
