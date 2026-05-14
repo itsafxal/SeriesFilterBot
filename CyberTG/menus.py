@@ -192,11 +192,13 @@ async def _create_invite_link(bot, chat_id: int, mode: str):
 async def help_menu_handler(cyber, query):
     text = (
         "<b>How to Use</b>\n"
-        "──────────────────────\n\n"
+        "──────────────────────\n"
+        "<blockquote>"
         "1. Type any series name\n"
         "2. Select a season\n"
         "3. Choose language and quality\n"
-        "4. Tap Download to receive your files\n\n"
+        "4. Tap Download to receive your files\n"
+        "</blockquote>\n"
         "<i>Tip: Be specific with series names for best results.</i>"
     )
     keyboard = InlineKeyboardMarkup([
@@ -245,10 +247,12 @@ async def cyber_menu_handler(cyber, query):
 async def about_menu_handler(_, query):
     text = (
         "<b>About</b>\n"
-        "──────────────────────\n\n"
+        "──────────────────────\n"
+        "<blockquote>"
         "Built with  <b>Pyrogram</b>\n"
-        "Powered by  <b>MongoDB + SQLite</b>\n"
-        "Written in  <b>Python</b>\n\n"
+        "Powered by  <b>SQLite FTS5 + MongoDB</b>\n"
+        "Written in  <b>Python</b>\n"
+        "</blockquote>\n"
         "<i>A fast, reliable series delivery bot.</i>"
     )
     keyboard = InlineKeyboardMarkup([

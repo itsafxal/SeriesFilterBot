@@ -138,7 +138,24 @@ async def run_bot_async(cyber: Client):
         except Exception as e:
             logger.error(f"[STARTUP] Admin notification failed: {e}")
     logger.info("[STARTUP] Bot fully running")
-    await asyncio.Future()
+    try:
+        await asyncio.Future()
+    except asyncio.CancelledError:
+        logger.info("[SHUTDOWN] Received stop signal. Shutting down gracefully...")
+    except Exception as e:
+        logger.error(f"[SHUTDOWN] Unexpected error: {e}")
+    finally:
+        logger.info("[SHUTDOWN] Stopping bot...")
+        await cyber.stop()
+        try:
+            from DB.database import config_client, file_client_1, file_client_2
+            config_client.close()
+            file_client_1.close()
+            file_client_2.close()
+            logger.info("[SHUTDOWN] ✅ Database connections closed.")
+        except Exception as e:
+            logger.error(f"[SHUTDOWN] Error closing DBs: {e}")
+        logger.info("[SHUTDOWN] ✅ Graceful shutdown complete.")
 
 def _setup_group_tracking(cyber: Client):
     from pyrogram import filters as _filters
@@ -243,7 +260,14 @@ def main():
     register_index_handlers(cyber)
     _setup_group_tracking(cyber)
     logger.info("[INIT] ✅ All handlers registered.")
-    cyber.run(run_bot_async(cyber))
+    
+    # Run the bot with graceful exit handling
+    try:
+        cyber.run(run_bot_async(cyber))
+    except KeyboardInterrupt:
+        logger.info("[SHUTDOWN] KeyboardInterrupt received. Exiting.")
+    except Exception as e:
+        logger.error(f"[FATAL] Bot crashed: {e}")
 
 if __name__ == "__main__":
     main()

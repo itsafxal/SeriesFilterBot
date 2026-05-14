@@ -17,17 +17,7 @@ import time
 from collections import OrderedDict
 from typing import List, Optional, Tuple
 
-from DB.database import search_series, get_all_series
-
-# ─────────────────────────────────────────────────────────────
-# RAPIDFUZZ
-# ─────────────────────────────────────────────────────────────
-
-try:
-    from rapidfuzz import process as rf_process, fuzz as rf_fuzz
-    HAVE_RAPIDFUZZ = True
-except ImportError:
-    HAVE_RAPIDFUZZ = False
+from DB.database import search_series
 
 
 # ─────────────────────────────────────────────────────────────
@@ -263,24 +253,7 @@ async def _sql_candidates(query: str, limit: int = 8) -> List[str]:
     return []
 
 
-async def _fuzzy_candidates(query: str, limit: int = 6) -> List[str]:
-    if not HAVE_RAPIDFUZZ:
-        return []
-    try:
-        all_series = await get_all_series()
-        all_titles = [n for n, _ in all_series] if all_series else []
-    except Exception:
-        return []
-    if not all_titles:
-        return []
-    matches = rf_process.extract(
-        query, all_titles,
-        scorer=rf_fuzz.token_sort_ratio,
-        limit=limit,
-        score_cutoff=72,
-    )
-    matches.sort(key=lambda x: x[1], reverse=True)
-    return [m[0] for m in matches]
+
 
 
 async def _validate_and_enrich(candidates: List[str]) -> List[Tuple[str, Optional[str]]]:
@@ -298,9 +271,7 @@ async def suggest_series_with_year(query: str, limit: int = 4) -> List[Tuple[str
     q = clean_query(query)
     if not q:
         return []
-    candidates = await _sql_candidates(q, limit=limit * 3)
-    if not candidates:
-        candidates = await _fuzzy_candidates(q, limit=limit * 2)
+    candidates = await _sql_candidates(q, limit=limit * 4)
     if not candidates:
         return []
 

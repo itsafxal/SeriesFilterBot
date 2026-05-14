@@ -197,29 +197,30 @@ def build_caption(series, year, genre, rating, seasons=None, languages=None, qua
     lines = [
         f"🎬 <b>{series}</b>",
         f"<b>━━━━━━━━━━━━━━━━━━━━━</b>",
-        "",
-        f"📅  <b>Year</b>     <code>{year or 'N/A'}</code>",
-        f"🎭  <b>Genre</b>    <code>{genre or 'N/A'}</code>",
-        f"⭐  <b>Rating</b>   <code>{rating or 'N/A'}</code>",
+        f"<blockquote>",
+        f"📅  <b>Year:</b>     <code>{year or 'N/A'}</code>",
+        f"🎭  <b>Genre:</b>    <code>{genre or 'N/A'}</code>",
+        f"⭐  <b>Rating:</b>   <code>{rating or 'N/A'}</code>",
+        f"</blockquote>",
         "",
     ]
     if step == "season":
         if seasons:
-            lines.append(f"📂  <b>Seasons</b>  <code>{' · '.join(f'S{s:02d}' for s in seasons)}</code>")
+            lines.append(f"📂  <b>Seasons:</b>  <code>{' · '.join(f'S{s:02d}' for s in seasons)}</code>")
         lines.append("")
-        lines.append("Select a <b>Season</b> to continue ↓")
+        lines.append("<i>Select a Season to continue ⬇️</i>")
     elif step == "language":
         txt = "  ·  ".join(languages)
-        lines.append(f"🌐  <b>Available</b>  <code>{txt}</code>")
+        lines.append(f"🌐  <b>Available:</b>  <code>{txt}</code>")
         lines.append("")
-        lines.append("Select a <b>Language</b> to continue ↓")
+        lines.append("<i>Select a Language to continue ⬇️</i>")
     elif step == "quality":
         lt = "  ·  ".join(languages)
         qt = "  ·  ".join(qualities)
-        lines.append(f"🌐  <b>Language</b>   <code>{lt}</code>")
-        lines.append(f"🎞  <b>Quality</b>    <code>{qt}</code>")
+        lines.append(f"🌐  <b>Language:</b>   <code>{lt}</code>")
+        lines.append(f"🎞  <b>Quality:</b>    <code>{qt}</code>")
         lines.append("")
-        lines.append("Select a <b>Quality</b> to continue ↓")
+        lines.append("<i>Select a Quality to continue ⬇️</i>")
     return "\n".join(lines)
 
 def build_grid_keyboard(items, cb_builder, per_row=2, back_btn=None):
@@ -350,8 +351,8 @@ def register_filters(cyber: Client):
             return
         msg = await m.reply_text(
             "🔍 <b>No Results Found</b>\n"
-            "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-            f"No series matched <code>{m.text.strip()}</code>\n\n"
+            "<b>━━━━━━━━━━━━━━━━━━━━━</b>\n"
+            f"<blockquote>No series matched <code>{m.text.strip()}</code></blockquote>\n\n"
             "<i>Try a different title or check your spelling.</i>",
             parse_mode=enums.ParseMode.HTML,
         )

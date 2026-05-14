@@ -472,7 +472,7 @@ def _mongo_upsert(col, file_doc: dict):
 
 
 async def save_file_to_db(file_doc: dict, target: str = "both"):
-    def _sync():
+    def _mongo_sync():
         global _batch_counter
         if target in ("both", "mongo"):
             with _batch_counter_lock:
@@ -481,28 +481,32 @@ async def save_file_to_db(file_doc: dict, target: str = "both"):
         else:
             _resolved = target
 
-        mongo_ok = False
         if _resolved == "db1":
-            mongo_ok = _mongo_upsert(files_collection_1, file_doc)
+            _mongo_upsert(files_collection_1, file_doc)
         elif _resolved == "db2":
-            mongo_ok = _mongo_upsert(files_collection_2, file_doc)
+            _mongo_upsert(files_collection_2, file_doc)
 
-        sql_ok = save_file_to_sql_sync(file_doc, logger)
+    def _sql_sync():
+        return save_file_to_sql_sync(file_doc, logger)
 
-        if sql_ok or mongo_ok:
-            clear_all_caches()
-            _invalidate_async_cache()
+    # Fire MongoDB sync in the background
+    asyncio.create_task(asyncio.to_thread(_mongo_sync))
 
-        return sql_ok
+    # Wait only for ultra-fast SQLite
+    sql_ok = await asyncio.to_thread(_sql_sync)
+    
+    if sql_ok:
+        clear_all_caches()
+        _invalidate_async_cache()
 
-    return await asyncio.to_thread(_sync)
+    return sql_ok
 
 
 async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
     if not docs:
         return 0
 
-    def _sync():
+    def _mongo_sync():
         from pymongo import UpdateOne
 
         def _build_ops(docs_list):
@@ -551,13 +555,20 @@ async def save_file_docs_batch(docs: list[dict], target: str = "both") -> int:
             except Exception as e:
                 logger.error(f"[BATCH] Mongo bulk_write DB2 error: {e}")
 
-        saved = save_file_docs_batch_sync(docs, logger)
-        if saved:
-            clear_all_caches()
-            _invalidate_async_cache()
-        return saved
+    def _sql_sync():
+        return save_file_docs_batch_sync(docs, logger)
 
-    return await asyncio.to_thread(_sync)
+    # Fire MongoDB sync in the background
+    asyncio.create_task(asyncio.to_thread(_mongo_sync))
+
+    # Wait only for ultra-fast SQLite
+    saved = await asyncio.to_thread(_sql_sync)
+    
+    if saved:
+        clear_all_caches()
+        _invalidate_async_cache()
+        
+    return saved
 
 
 async def delete_all_files():

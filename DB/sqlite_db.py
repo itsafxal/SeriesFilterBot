@@ -209,6 +209,32 @@ def create_sql_schema(conn):
         CREATE INDEX IF NOT EXISTS idx_channel_msg
         ON files (channel_id, message_id)
     """)
+    
+    # FTS5 Virtual Table for ultra-fast searching
+    cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+            normalized_name,
+            content='files',
+            content_rowid='id'
+        )
+    """)
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
+            INSERT INTO files_fts(rowid, normalized_name) VALUES (new.id, new.normalized_name);
+        END;
+    """)
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
+            INSERT INTO files_fts(files_fts, rowid, normalized_name) VALUES('delete', old.id, old.normalized_name);
+        END;
+    """)
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
+            INSERT INTO files_fts(files_fts, rowid, normalized_name) VALUES('delete', old.id, old.normalized_name);
+            INSERT INTO files_fts(rowid, normalized_name) VALUES (new.id, new.normalized_name);
+        END;
+    """)
+    
     conn.commit()
 
 
@@ -365,6 +391,10 @@ def migrate_data_from_mongo_to_sql_sync(files_collection, create_sql_schema_func
         """, batch)
         conn.commit()
         total += len(batch)
+
+    # Ensure FTS is fully in sync
+    cursor.execute("INSERT INTO files_fts(files_fts) VALUES('rebuild')")
+    conn.commit()
 
     logger.info(f"✅ Migration done: {total}/{doc_count} files.")
     # Save fingerprint so next boot can skip migration if nothing changed
@@ -555,33 +585,23 @@ def search_series_sync(query: str):
     if not q:
         return ()
 
-    unique_results = set()
+    cleaned = re.sub(r'[^a-zA-Z0-9\s]', ' ', q).strip()
+    if not cleaned:
+        return ()
+
+    # FTS5 Match Query: All words must match (prefix)
+    words = cleaned.split()
+    fts_query = " ".join(f'"{w}"*' for w in words)
 
     cursor.execute("""
-        SELECT DISTINCT normalized_name FROM files
-        WHERE normalized_name = ? COLLATE NOCASE
-    """, (q,))
-    for r in cursor.fetchall():
-        unique_results.add(r[0])
-
-    search_words        = q.split()
-    full_phrase_pattern = "%" + "%".join(search_words) + "%"
-    cursor.execute("""
-        SELECT DISTINCT normalized_name FROM files
-        WHERE normalized_name LIKE ? COLLATE NOCASE
-    """, (full_phrase_pattern,))
-    for r in cursor.fetchall():
-        unique_results.add(r[0])
-
-    final = list(unique_results)
-
-    def sort_key(name):
-        n  = name.lower()
-        ql = q.lower()
-        return (not n.startswith(ql), ql not in n, abs(len(n) - len(ql)), len(n))
-
-    final.sort(key=sort_key)
-    return tuple(final)
+        SELECT DISTINCT normalized_name 
+        FROM files_fts 
+        WHERE files_fts MATCH ?
+        ORDER BY rank
+        LIMIT 15
+    """, (fts_query,))
+    
+    return tuple(r[0] for r in cursor.fetchall())
 
 
 @lru_cache(maxsize=1024)
