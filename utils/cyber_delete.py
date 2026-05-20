@@ -20,7 +20,7 @@ def start_scheduler():
 async def delete_message_job(cyber, chat_id, message_id):
     try:
         await cyber.delete_messages(chat_id, message_id)
-    except:
+    except Exception:
         pass
 
 

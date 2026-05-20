@@ -8,8 +8,9 @@ from pyrogram.types import (
     ChatJoinRequest, ChatMemberUpdated,
 )
 from pyrogram.enums import ChatMemberStatus
-from pyrogram.errors import FloodWait
 from DB.database import get_global_setting, set_global_setting, mongo_client
+from utils.cyber_flood import retry_on_flood, safe_answer
+from config import logger, bot_username, bot_id
 
 _join_reqs_db = mongo_client["JoinReqs"]
 
@@ -31,8 +32,15 @@ _req_count1: int = 0
 _req_count2: int = 0
 
 _PENDING_FSUB: dict[int, dict] = {}
+_MAX_PENDING_FSUB = 500
 _DELIVERY_LOCK: dict[int, float] = {}
 _LOCK_TTL = 300
+
+# ---------------------------------------------------------------------------
+# Membership check cache — avoids redundant get_chat_member API calls
+# ---------------------------------------------------------------------------
+_member_cache: dict[tuple, tuple[bool, float]] = {}
+_MEMBER_CACHE_TTL = 30.0  # seconds
 
 def _m():
     import sys
@@ -152,20 +160,33 @@ async def save_fsub_settings():
 # Join state checks
 # ----------------------------------------------------------------------
 async def _is_member_via_api(cyber, channel_id: int, user_id: int) -> bool:
-    for attempt in range(2):
-        try:
-            member = await cyber.get_chat_member(channel_id, user_id)
-            return member.status in (
-                ChatMemberStatus.MEMBER,
-                ChatMemberStatus.ADMINISTRATOR,
-                ChatMemberStatus.OWNER,
-            )
-        except FloodWait as fw:
-            wait = max(int(getattr(fw, "value", 10)), 5)
-            await asyncio.sleep(wait + 1)
-        except Exception:
-            return False
-    return False
+    """Check membership with automatic FloodWait retry (max 2 attempts)."""
+    key = (channel_id, user_id)
+    now = time.monotonic()
+    cached = _member_cache.get(key)
+    if cached is not None:
+        val, ts = cached
+        if now - ts < _MEMBER_CACHE_TTL:
+            return val
+    try:
+        member = await retry_on_flood(
+            lambda: cyber.get_chat_member(channel_id, user_id),
+            label="fsub.check", max_retries=2,
+        )
+        result = member.status in (
+            ChatMemberStatus.MEMBER,
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.OWNER,
+        )
+    except Exception:
+        result = False
+    # Prune stale entries when cache grows too large
+    if len(_member_cache) > 2000:
+        stale = [k for k, (_, ts) in _member_cache.items() if now - ts > _MEMBER_CACHE_TTL]
+        for k in stale:
+            _member_cache.pop(k, None)
+    _member_cache[key] = (result, now)
+    return result
 
 async def get_slot_statuses(cyber, user_id: int) -> list[dict]:
     m = _m()
@@ -245,6 +266,14 @@ def fsub_text(statuses: list[dict] | None = None) -> str:
     return "\n".join(lines)
 
 def register_pending_fsub(uid: int, msg: Message, payload: str, via_filebot: bool = False):
+    # Cap pending entries — evict oldest on overflow
+    if len(_PENDING_FSUB) >= _MAX_PENDING_FSUB and uid not in _PENDING_FSUB:
+        oldest_uid = next(iter(_PENDING_FSUB))
+        try:
+            asyncio.create_task(_PENDING_FSUB[oldest_uid]["msg"].delete())
+        except Exception:
+            pass
+        _PENDING_FSUB.pop(oldest_uid, None)
     old = _PENDING_FSUB.get(uid)
     if old:
         try:
@@ -283,7 +312,6 @@ async def do_deliver(cyber, uid: int, payload: str, source: str = "unknown") -> 
         await deliver_files_direct(cyber, uid, on_complete=_after)
         return True
     except Exception as e:
-        from config import logger
         logger.error(f"[FSUB] do_deliver error: {e}")
         release_delivery_lock(uid)
         return False
@@ -303,8 +331,7 @@ async def _try_auto_deliver(cyber, uid: int):
         clear_pending_fsub(uid)
         await do_deliver(cyber, uid, payload, source="auto_deliver")
     else:
-        bot_id = (await cyber.get_me()).username or ""
-        new_kb = build_fsub_keyboard(bot_id, payload, statuses)
+        new_kb = build_fsub_keyboard(bot_username or "", payload, statuses)
         try:
             await msg.edit_reply_markup(new_kb)
         except Exception:
@@ -324,6 +351,10 @@ async def _rotate_slot(slot: int):
         setattr(m, f"FSUB_CHANNEL{slot}_2", None)
         setattr(m, f"FSUB_LINK{slot}_2", None)
     else:
+        logger.warning(
+            f"[FSUB] Slot {slot} rotated with NO secondary channel — slot disabled! "
+            f"Threshold {thr} reached with {cnt} requests."
+        )
         setattr(m, f"FSUB_CHANNEL{slot}", None)
         setattr(m, f"FSUB_LINK{slot}", None)
     setattr(m, f"_req_count{slot}", 0)
@@ -416,7 +447,6 @@ def register_fsub_handlers(cyber: Client):
                 return
             asyncio.create_task(_try_auto_deliver(cyber, uid))
         except Exception as e:
-            from config import logger
             logger.error(f"[FSUB] JOIN REQUEST ERROR: {e}")
 
     @cyber.on_chat_member_updated()
@@ -439,8 +469,7 @@ def register_fsub_handlers(cyber: Client):
             return
         if not uid or not chat_id:
             return
-        me = await bot.get_me()
-        if uid == me.id:
+        if uid == bot_id:
             return
         ch1 = getattr(m, "FSUB_CHANNEL1", None)
         mode1 = getattr(m, "FSUB_MODE1", "request")
@@ -459,4 +488,4 @@ def register_fsub_handlers(cyber: Client):
 
     @cyber.on_callback_query(pyro_filters.regex("^fsub_done_noop$"))
     async def _fsub_noop(_, q):
-        await q.answer("Already done!", show_alert=False)
+        await safe_answer(q, "Already done!", show_alert=False)

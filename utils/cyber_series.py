@@ -18,92 +18,13 @@ from collections import OrderedDict
 from typing import List, Optional, Tuple
 
 from DB.database import search_series
+from utils.cyber_flood import safe_answer
 
 
 # ─────────────────────────────────────────────────────────────
 # COMPREHENSIVE SEASON/EPISODE PATTERNS  (shared with indexer)
 # ─────────────────────────────────────────────────────────────
-
-PATTERNS = {
-    # Standard
-    "S01E01": re.compile(r"\b[sS](\d{1,3})[.\-_\s]?[eE](\d{1,3})\b"),
-    "01x01": re.compile(r"\b(\d{1,3})[xX](\d{1,3})\b"),
-    "Season Episode": re.compile(r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*episode[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Season Ep": re.compile(r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*(?:ep|e)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "S01 EP01": re.compile(r"\b[sS](\d{1,3})[.\-_\s]*(?:ep|e)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "S01-E01": re.compile(r"\b[sS](\d{1,3})-(?:[eE])(\d{1,3})\b"),
-    "S01.E01": re.compile(r"\b[sS](\d{1,3})\.(?:[eE])(\d{1,3})\b"),
-    "S01_E01": re.compile(r"\b[sS](\d{1,3})_(?:[eE])(\d{1,3})\b"),
-    "S01 E01": re.compile(r"\b[sS](\d{1,3})\s+(?:[eE])(\d{1,3})\b"),
-
-    # Multi episodes
-    "S01E01E02": re.compile(r"\b[sS](\d{1,3})[.\-_\s]*[eE](\d{1,3})(?:[eE](\d{1,3}))+"),
-    "S01E01-E05": re.compile(r"\b[sS](\d{1,3})[.\-_\s]*[eE](\d{1,3})[\-~to]+(?:[eE])?(\d{1,3})"),
-    "01x01-01x05": re.compile(r"\b(\d{1,3})[xX](\d{1,3})[\-~](\d{1,3})[xX](\d{1,3})\b"),
-
-    # Three / four digit
-    "101": re.compile(r"\b([1-9])(\d{2})\b"),
-    "1001": re.compile(r"\b(\d{2})(\d{2})\b"),
-    "0101": re.compile(r"\b(\d{2})(\d{2})\b"),
-
-    # Episode only
-    "Episode 01": re.compile(r"\bepisode[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Ep01": re.compile(r"\bep[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "E01": re.compile(r"\b[eE](\d{1,3})\b"),
-
-    # Season only
-    "Season 01": re.compile(r"\bseason[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "S01": re.compile(r"\b[sS](\d{1,3})(?![eE])\b"),
-
-    # Complete / pack
-    "Complete Season": re.compile(r"\b(?:complete|full)[.\-_\s]*season[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Season Pack": re.compile(r"\bseason[.\-_\s]*(\d{1,3})[.\-_\s]*(?:pack|collection)\b", re.IGNORECASE),
-    "Batch": re.compile(r"\bbatch[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-
-    # Anime
-    "Anime 01v2": re.compile(r"\b(\d{1,3})v\d+\b", re.IGNORECASE),
-    "S01E01v2": re.compile(r"\b[sS](\d{1,3})[eE](\d{1,3})v\d+\b", re.IGNORECASE),
-    "Episode 01v2": re.compile(r"\b(?:ep|episode)[.\-_\s]*(\d{1,3})v\d+\b", re.IGNORECASE),
-    "OVA": re.compile(r"\bOVA[.\-_\s]*(\d{1,3})?\b", re.IGNORECASE),
-    "ONA": re.compile(r"\bONA[.\-_\s]*(\d{1,3})?\b", re.IGNORECASE),
-    "Special": re.compile(r"\bspecial[.\-_\s]*(\d{1,3})?\b", re.IGNORECASE),
-
-    # Part / Chapter
-    "Part 01": re.compile(r"\b(?:part|pt)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Chapter 01": re.compile(r"\b(?:chapter|chap)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-    "Volume": re.compile(r"\b(?:vol|volume)[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-
-    # Date based (stripping them but not parsing)
-    "2024.01.15": re.compile(r"\b(20\d{2})[.\-_](\d{2})[.\-_](\d{2})\b"),
-    "2024-01-15": re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b"),
-
-    # Mini series
-    "Mini Series Part": re.compile(r"\bmini[.\-_\s]*series[.\-_\s]*(?:part)?[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-
-    # Roman numerals
-    "Season Roman": re.compile(r"\bseason[.\-_\s]*(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b", re.IGNORECASE),
-
-    # WEB
-    "WEB Episode": re.compile(r"\bweb[.\-_\s]*dl[.\-_\s]*ep[.\-_\s]*(\d{1,3})\b", re.IGNORECASE),
-
-    # Korean/Japanese
-    "EP 01 END": re.compile(r"\bep?[.\-_\s]*(\d{1,3})[.\-_\s]*(?:end|finale)\b", re.IGNORECASE),
-
-    # Disc / CD
-    "Disc 1": re.compile(r"\bdisc[.\-_\s]*(\d{1,2})\b", re.IGNORECASE),
-    "CD1": re.compile(r"\bcd[.\-_\s]*(\d{1,2})\b", re.IGNORECASE),
-
-    # Absolute numbering (dangerous – used as last resort)
-    "Naruto 220": re.compile(r"\b(0?\d{1,4})\b"),
-
-    # Range
-    "Episodes 1-10": re.compile(r"\bepisodes?[.\-_\s]*(\d{1,3})[\-~to]+(\d{1,3})\b", re.IGNORECASE),
-
-    # Special editions (no numbers)
-    "Director Cut": re.compile(r"\bdirector'?s?[.\-_\s]*cut\b", re.IGNORECASE),
-    "Extended": re.compile(r"\bextended\b", re.IGNORECASE),
-    "Uncut": re.compile(r"\buncut\b", re.IGNORECASE),
-}
+from utils.cyber_index import PATTERNS
 
 
 def _build_series_stripper() -> re.Pattern:
@@ -242,15 +163,9 @@ async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
 
 
 async def _sql_candidates(query: str, limit: int = 8) -> List[str]:
+    """FTS5 search with noise-stripping & smart fallback handled internally."""
     results = await search_series(query)
-    if results:
-        return list(results)[:limit]
-    words = query.split()
-    if len(words) > 1 and len(words[0]) >= 3:
-        results = await search_series(words[0])
-        if results:
-            return list(results)[:limit]
-    return []
+    return list(results)[:limit] if results else []
 
 
 
@@ -323,6 +238,6 @@ def format_suggestion_label(title: str, year: Optional[str]) -> str:
 async def check_owner(q, uid: int) -> bool:
     if q.from_user.id != int(uid):
         name = q.from_user.first_name or "User"
-        await q.answer(f"Hey {name}, this button is not for you.", show_alert=True)
+        await safe_answer(q, f"Hey {name}, this button is not for you.", show_alert=True)
         return False
     return True

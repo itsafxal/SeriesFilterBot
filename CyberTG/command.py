@@ -17,6 +17,7 @@ from DB.database import (
     get_global_setting, set_global_setting, get_db_size_info,
 )
 from utils.cyber_delete import delete_message_later
+from utils.cyber_flood import _bump_cooldown, safe_answer
 from .fsub import (
     get_slot_statuses, all_slots_passed, build_fsub_keyboard,
     fsub_text, register_pending_fsub, clear_pending_fsub,
@@ -33,14 +34,10 @@ def _fmt_bytes(b: int) -> str:
         return f"{mb:.2f} MB"
     return f"{mb * 1024:.1f} KB"
 
-async def _get_bot_identity(_):
+async def _get_bot_identity(_cyber=None) -> tuple[str, str]:
+    """Return cached bot identity from startup — no API call."""
     import config as cfg
-    if cfg.bot_username and cfg.bot_first_name:
-        return cfg.bot_username, cfg.bot_first_name
-    me = await _.get_me()
-    cfg.bot_username = me.username or ""
-    cfg.bot_first_name = me.first_name or ""
-    return cfg.bot_username, cfg.bot_first_name
+    return cfg.bot_username or "", cfg.bot_first_name or ""
 
 def register_command_handlers(cyber: Client):
 
@@ -118,6 +115,7 @@ def register_command_handlers(cyber: Client):
                     sent += 1
                     break
                 except FloodWait as fw:
+                    _bump_cooldown(int(getattr(fw, "value", 10)))
                     await asyncio.sleep(max(int(getattr(fw, "value", 10)), 5) + 1)
                 except Exception as e:
                     if "blocked" in str(e).lower() or "deactivated" in str(e).lower():
@@ -164,6 +162,7 @@ def register_command_handlers(cyber: Client):
                     sent += 1
                     break
                 except FloodWait as fw:
+                    _bump_cooldown(int(getattr(fw, "value", 10)))
                     await asyncio.sleep(max(int(getattr(fw, "value", 10)), 5) + 1)
                 except Exception as e:
                     err = str(e).lower()
@@ -284,7 +283,7 @@ def register_command_handlers(cyber: Client):
 
     @cyber.on_callback_query(filters.regex(r"^serieslist\|") & filters.user(ADMIN_USERS))
     async def serieslist_cb(_, q):
-        await q.answer()  # immediate answer
+        await safe_answer(q)
         action = q.data.split("|")[1]
         if action == "export":
             series_list, total_files = await asyncio.gather(get_all_series(), get_total_files())
@@ -322,7 +321,7 @@ def register_command_handlers(cyber: Client):
         )
     @cyber.on_callback_query(filters.regex("^deleteall_confirm$") & filters.user(ADMIN_USERS))
     async def deleteall_confirm(_, q):
-        await q.answer()
+        await safe_answer(q)
         try:
             await q.message.edit_text("⏳ <b>Deleting all files...</b>", parse_mode=enums.ParseMode.HTML)
         except Exception:
@@ -338,7 +337,7 @@ def register_command_handlers(cyber: Client):
             pass
     @cyber.on_callback_query(filters.regex("^deleteall_cancel$") & filters.user(ADMIN_USERS))
     async def deleteall_cancel(_, q):
-        await q.answer("Cancelled.")
+        await safe_answer(q, "Cancelled.")
         try:
             await q.message.delete()
         except Exception:

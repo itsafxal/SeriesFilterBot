@@ -42,12 +42,12 @@ def _get_conn() -> sqlite3.Connection:
     if conn is None:
         conn = sqlite3.connect(SQLITE_DB_PATH, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        # ── Performance pragmas ──────────────────────────────
+        # ── Performance pragmas (tuned for 256 MB VPS) ──────
         conn.execute("PRAGMA journal_mode=WAL")        # concurrent reads + writes
         conn.execute("PRAGMA synchronous=NORMAL")      # safe + fast (vs FULL)
-        conn.execute("PRAGMA cache_size=-32000")       # 32MB page cache
+        conn.execute("PRAGMA cache_size=-8000")        # 8 MB page cache (was 32 MB)
         conn.execute("PRAGMA temp_store=MEMORY")       # temp tables in RAM
-        conn.execute("PRAGMA mmap_size=268435456")     # 256MB memory-mapped I/O
+        conn.execute("PRAGMA mmap_size=33554432")      # 32 MB memory-mapped I/O (was 256 MB)
         _local.conn = conn
     return conn
 
@@ -576,6 +576,30 @@ def get_series_summary_sync(series_name: str):
     }
 
 
+# ── Regex to strip season/episode/year tokens that pollute FTS5 queries ──
+# Users frequently type "Stranger Things S05", "Breaking Bad Season 1",
+# "Dark (2017)" — these tokens never appear in normalized_name and cause
+# false-negative FTS5 results.
+_SEARCH_NOISE_RE = re.compile(
+    r'\b[sS]\d{1,3}\b'            # S01, s05, S99
+    r'|\b[eE]\d{1,3}\b'           # E01, e05, E99
+    r'|\b\d{3,4}p\b'              # 480p, 720p, 1080p, 2160p
+    r'|\b(19|20)\d{2}\b'          # years: 2017, 1999, 2024
+    r'|\bseason\s*\d*\b'          # Season, Season 1, season5
+    r'|\bepisode\s*\d*\b'         # Episode, Episode 01, episode3
+    r'|\bmulti\b'                 # "multi" common in quality labels
+    r'|\bdual\b'                  # "dual" audio tag
+    r'|\bhd[tv]?\b'               # HDTV, HD
+    r'|\bweb[-]?(dl|rip)\b'       # WEB-DL, WEBRip
+    r'|\bblu[-]?ray\b'            # BluRay, Blu-ray
+    r'|\bhevc\b'                  # HEVC codec
+    r'|\bx\d{2,4}\b'              # x264, x265
+    r'|\bproper\b'                # PROPER scene tag
+    r'|\brepack\b'                # REPACK scene tag
+    r'|\bhdr\b',                  # HDR tag
+    re.IGNORECASE,
+)
+
 @lru_cache(maxsize=1024)
 def search_series_sync(query: str):
     conn   = _get_conn()
@@ -585,7 +609,12 @@ def search_series_sync(query: str):
     if not q:
         return ()
 
+    # Strip punctuation first, then remove season/episode/year noise tokens
     cleaned = re.sub(r'[^a-zA-Z0-9\s]', ' ', q).strip()
+    if not cleaned:
+        return ()
+    cleaned = _SEARCH_NOISE_RE.sub(' ', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     if not cleaned:
         return ()
 
@@ -594,14 +623,34 @@ def search_series_sync(query: str):
     fts_query = " ".join(f'"{w}"*' for w in words)
 
     cursor.execute("""
-        SELECT DISTINCT normalized_name 
-        FROM files_fts 
+        SELECT DISTINCT normalized_name
+        FROM files_fts
         WHERE files_fts MATCH ?
         ORDER BY rank
         LIMIT 15
     """, (fts_query,))
-    
-    return tuple(r[0] for r in cursor.fetchall())
+
+    result = tuple(r[0] for r in cursor.fetchall())
+
+    # Smart fallback: if full AND query fails, try matching the longest
+    # significant word alone (more useful than the fragile first-word-only
+    # logic in _sql_candidates).  "Stranger Things S05" → try "stranger things"
+    if not result and len(words) >= 2:
+        # Keep the 2 longest words (most likely the core series name)
+        sorted_words = sorted(words, key=len, reverse=True)
+        best_words = sorted_words[:2]
+        if set(best_words) != set(words):
+            fallback_query = " ".join(f'"{w}"*' for w in best_words)
+            cursor.execute("""
+                SELECT DISTINCT normalized_name
+                FROM files_fts
+                WHERE files_fts MATCH ?
+                ORDER BY rank
+                LIMIT 12
+            """, (fallback_query,))
+            result = tuple(r[0] for r in cursor.fetchall())
+
+    return result
 
 
 @lru_cache(maxsize=1024)

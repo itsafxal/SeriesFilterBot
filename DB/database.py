@@ -19,7 +19,7 @@ import threading as _threading
 _batch_counter: int = 0
 _batch_counter_lock = _threading.Lock()
 
-from pymongo import MongoClient, TEXT
+from pymongo import MongoClient
 from config import (
     MONGO_URI_CONFIG,
     MONGO_URI_DB1,
@@ -31,7 +31,16 @@ from config import (
 # THREE MONGO CLIENTS
 # ─────────────────────────────────────────────────────────────
 
-config_client = MongoClient(MONGO_URI_CONFIG)
+# ── MongoDB connection pool tuning for low-RAM VPS (256 MB) ──
+_MONGO_POOL_OPTS = dict(
+    maxPoolSize=5,
+    minPoolSize=1,
+    maxIdleTimeMS=30000,
+    serverSelectionTimeoutMS=5000,
+    connectTimeoutMS=5000,
+)
+
+config_client = MongoClient(MONGO_URI_CONFIG, **_MONGO_POOL_OPTS)
 config_db      = config_client["SeriesBotConfig"]
 
 state_collection    = config_db["bot_state"]
@@ -40,11 +49,11 @@ pending_collection  = config_db["pending_delivery"]
 sticker_collection  = config_db["season_stickers"]
 groups_collection   = config_db["groups"]
 
-file_client_1      = MongoClient(MONGO_URI_DB1)
+file_client_1      = MongoClient(MONGO_URI_DB1, **_MONGO_POOL_OPTS)
 file_db_1          = file_client_1["SeriesBotFiles1"]
 files_collection_1 = file_db_1["files"]
 
-file_client_2      = MongoClient(MONGO_URI_DB2)
+file_client_2      = MongoClient(MONGO_URI_DB2, **_MONGO_POOL_OPTS)
 file_db_2          = file_client_2["SeriesBotFiles2"]
 files_collection_2 = file_db_2["files"]
 
@@ -108,17 +117,11 @@ def _safe_create_index(col, keys, **kwargs):
 
 
 def _ensure_file_indexes(col):
+    """Create only essential MongoDB indexes (SQLite FTS5 handles text search)."""
     _safe_create_index(
         col,
         [("normalized_name", 1), ("season", 1)],
         background=True,
-    )
-    _safe_create_index(
-        col,
-        [("normalized_name", TEXT)],
-        name="series_name_text_index",
-        background=True,
-        language_override="text_index_lang",
     )
     _safe_create_index(
         col,

@@ -9,7 +9,7 @@ from pyrogram.types import (
 )
 from pyrogram.errors import MessageNotModified, FloodWait, WebpageMediaEmpty
 from config import (
-    DEFAULT_POSTER, SPELL_IMG, SEASONS_PER_PAGE, ADMIN_USERS,
+    DEFAULT_POSTER, SPELL_IMG, SEASONS_PER_PAGE, ADMIN_USERS, logger,
 )
 from DB.database import (
     search_series, get_series_summary, get_unique_languages_by_season,
@@ -19,6 +19,7 @@ from DB.database import (
 from utils.cyber_series import suggest_series_with_year, check_owner
 from utils.cyber_filter import encode_payload
 from utils.cyber_delete import delete_message_later
+from utils.cyber_flood import safe_answer
 
 # ── Series name registry (SID) ────────────────────────────────
 _SID_MAP: dict[int, str] = {}
@@ -106,16 +107,12 @@ def _stamp_cooldown(uid: int):
 
 # ── Safe reply/edit helpers ───────────────────────────────────
 async def safe_edit(coro, q):
+    from utils.cyber_flood import retry_on_flood, safe_answer
     try:
-        await coro
-    except (MessageNotModified, FloodWait):
+        await retry_on_flood(lambda: coro, label="filters.edit", max_retries=2)
+    except (MessageNotModified, Exception):
         pass
-    except Exception:
-        pass
-    try:
-        await q.answer()
-    except Exception:
-        pass
+    await safe_answer(q)
 
 async def _safe_reply_photo(m, photo, caption, parse_mode, reply_markup):
     if photo:
@@ -269,21 +266,10 @@ def _quality_label(quality: str, codec: str) -> str:
     disp = QUALITY_DISPLAY.get((quality or "").upper().strip(), quality)
     return f"{codec.strip()} {disp}" if codec and codec.strip() else disp
 
-# ── Bot identity cache ────────────────────────────────────────
-_bot_id_cache = None
-_bot_username_cache = None
-
-async def _get_bot_info(cyber):
-    global _bot_id_cache, _bot_username_cache
-    if _bot_id_cache is not None:
-        return _bot_id_cache, _bot_username_cache
-    try:
-        me = await cyber.get_me()
-        _bot_id_cache = me.id
-        _bot_username_cache = me.username
-        return _bot_id_cache, _bot_username_cache
-    except Exception:
-        return None, None
+async def _get_bot_info(_cyber=None) -> tuple[int | None, str | None]:
+    """Return cached bot identity from startup — no API call."""
+    import config as cfg
+    return cfg.bot_id, cfg.bot_username
 
 # ── Register all filter handlers ──────────────────────────────
 def register_filters(cyber: Client):
@@ -364,7 +350,7 @@ def register_filters(cyber: Client):
     async def sug(_, q):
         settings = await _get_settings()
         if q.from_user.id not in ADMIN_USERS and settings["maintenance"]:
-            return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
+            return await safe_answer(q, "🔧 Bot is under maintenance. Try later.", show_alert=True)
         parts = q.data.split("|", 2)
         if len(parts) == 3:
             _, uid_str, raw_series = parts
@@ -372,7 +358,7 @@ def register_filters(cyber: Client):
                 return
         else:
             raw_series = parts[1]
-        await q.answer()
+        await safe_answer(q)
         series = _strip_year(raw_series)
         auto_del = settings["auto_delete_delay"]
         poster, year, genre, rating = await _get_poster(series, settings)
@@ -392,18 +378,18 @@ def register_filters(cyber: Client):
         try:
             await q.message.delete()
         except Exception:
-            await q.answer()
+            await safe_answer(q)
 
     @cyber.on_callback_query(filters.regex("^spg\\|"))
     async def spg(_, q):
         _, uid, sid_or_series, page = q.data.split("|", 3)
         series = _sid_to_series(sid_or_series)
         if not series:
-            return await q.answer("Session expired. Please search again.", show_alert=True)
+            return await safe_answer(q, "Session expired. Please search again.", show_alert=True)
         series = _strip_year(series)
         if not await check_owner(q, uid):
             return
-        await q.answer()
+        await safe_answer(q)
         seasons = list((await get_series_summary(series))["seasons"])
         kb = build_season_pages(seasons, uid, series, int(page))
         try:
@@ -415,21 +401,21 @@ def register_filters(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^noop$"))
     async def noop(_, q):
-        await q.answer()
+        await safe_answer(q)
 
     @cyber.on_callback_query(filters.regex("^gss\\|"))
     async def gss(_, q):
         _, uid, sid_or_series, season = q.data.split("|", 3)
         series = _sid_to_series(sid_or_series)
         if not series:
-            return await q.answer("Session expired. Please search again.", show_alert=True)
+            return await safe_answer(q, "Session expired. Please search again.", show_alert=True)
         series = _strip_year(series)
         settings = await _get_settings()
         if q.from_user.id not in ADMIN_USERS and settings["maintenance"]:
-            return await q.answer("🔧 Bot is under maintenance. Try later.", show_alert=True)
+            return await safe_answer(q, "🔧 Bot is under maintenance. Try later.", show_alert=True)
         if not await check_owner(q, uid):
             return
-        await q.answer()
+        await safe_answer(q)
         langs, poster_r = await asyncio.gather(
             get_unique_languages_by_season(series, int(season)),
             _get_poster(series, settings),
@@ -444,8 +430,7 @@ def register_filters(cyber: Client):
         except MessageNotModified:
             pass
         except Exception as e:
-            import logging as _log
-            _log.getLogger("BOT").error(f"[gss] edit_caption failed: {e}")
+            logger.error(f"[gss] edit_caption failed: {e}")
             try:
                 await q.message.edit_text(cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
             except Exception:
@@ -456,11 +441,11 @@ def register_filters(cyber: Client):
         _, uid, sid_or_series, season, lang = q.data.split("|", 4)
         series = _sid_to_series(sid_or_series)
         if not series:
-            return await q.answer("Session expired. Please search again.", show_alert=True)
+            return await safe_answer(q, "Session expired. Please search again.", show_alert=True)
         series = _strip_year(series)
         if not await check_owner(q, uid):
             return
-        await q.answer()
+        await safe_answer(q)
         settings = await _get_settings()
         qc_pairs, poster_r, (_, bot_username) = await asyncio.gather(
             get_unique_qualities_with_codec(series, lang, int(season)),
@@ -505,11 +490,11 @@ def register_filters(cyber: Client):
         _, uid, sid_or_series = q.data.split("|", 2)
         series = _sid_to_series(sid_or_series)
         if not series:
-            return await q.answer("Session expired. Please search again.", show_alert=True)
+            return await safe_answer(q, "Session expired. Please search again.", show_alert=True)
         series = _strip_year(series)
         if not await check_owner(q, uid):
             return
-        await q.answer()
+        await safe_answer(q)
         settings = await _get_settings()
         seasons, poster_r = await asyncio.gather(
             get_series_summary(series),
@@ -524,8 +509,7 @@ def register_filters(cyber: Client):
         except MessageNotModified:
             pass
         except Exception as _e:
-            import logging as _log
-            _log.getLogger("BOT").error(f"[bk_season] edit_caption failed: {_e}")
+            logger.error(f"[bk_season] edit_caption failed: {_e}")
             try:
                 await q.message.edit_text(cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
             except Exception:
@@ -536,11 +520,11 @@ def register_filters(cyber: Client):
         _, uid, sid_or_series, season = q.data.split("|", 3)
         series = _sid_to_series(sid_or_series)
         if not series:
-            return await q.answer("Session expired. Please search again.", show_alert=True)
+            return await safe_answer(q, "Session expired. Please search again.", show_alert=True)
         series = _strip_year(series)
         if not await check_owner(q, uid):
             return
-        await q.answer()
+        await safe_answer(q)
         settings = await _get_settings()
         langs, poster_r = await asyncio.gather(
             get_unique_languages_by_season(series, int(season)),
@@ -556,8 +540,7 @@ def register_filters(cyber: Client):
         except MessageNotModified:
             pass
         except Exception as _e:
-            import logging as _log
-            _log.getLogger("BOT").error(f"[bk_lang] edit_caption failed: {_e}")
+            logger.error(f"[bk_lang] edit_caption failed: {_e}")
             try:
                 await q.message.edit_text(cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
             except Exception:

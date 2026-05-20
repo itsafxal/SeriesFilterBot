@@ -5,10 +5,11 @@ from collections import OrderedDict
 from typing import Optional
 
 from pyrogram import Client, filters, enums
-from pyrogram.errors import FloodWait, ChannelPrivate
+from pyrogram.errors import ChannelPrivate, FloodWait
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import logger, ADMIN_USERS
+from utils.cyber_flood import retry_on_flood, flood_cooldown, _bump_cooldown
 from DB.database import (
     get_bot_state, save_bot_state,
     get_global_setting, set_global_setting,
@@ -66,39 +67,31 @@ def _clear_last_text():
 
 
 # ---------------------------------------------------------------
-# TELEGRAM WRAPPERS
+# TELEGRAM WRAPPERS  (centralised FloodWait → utils.cyber_flood)
 # ---------------------------------------------------------------
 
-async def _fw_sleep(exc: FloodWait):
-    wait = max(int(getattr(exc, "value", 10)), 5)
-    logger.warning(f"[INDEX] FloodWait {wait}s - sleeping")
-    await asyncio.sleep(wait + 2)
-
-
 async def safe_send(bot: Client, uid: int, text: str, **kw) -> Optional[Message]:
-    while True:
-        try:
-            return await bot.send_message(uid, text, **kw)
-        except FloodWait as f:
-            await _fw_sleep(f)
-        except Exception as e:
-            logger.error(f"[INDEX] safe_send: {e}")
-            return None
+    """Send a message with flood retry; returns None on non-flood errors."""
+    try:
+        return await retry_on_flood(
+            lambda: bot.send_message(uid, text, **kw),
+            label="index.send", max_retries=5,
+        )
+    except Exception as e:
+        logger.error(f"[INDEX] safe_send: {e}")
+        return None
 
 
 async def safe_edit(msg: Message, text: str, **kw):
+    """Edit with flood retry; silently skip duplicates and non-critical errors."""
     if msg is None or _last_text.get(msg.id) == text:
         return
     try:
-        await msg.edit_text(text, **kw)
+        await retry_on_flood(
+            lambda: msg.edit_text(text, **kw),
+            label="index.edit", max_retries=3,
+        )
         _set_last_text(msg.id, text)
-    except FloodWait as f:
-        await _fw_sleep(f)
-        try:
-            await msg.edit_text(text, **kw)
-            _set_last_text(msg.id, text)
-        except Exception:
-            pass
     except Exception as e:
         logger.debug(f"[INDEX] safe_edit: {e}")
 
@@ -179,6 +172,8 @@ async def _fetch_one(bot: Client, chat_id: int, id_window: list, fw_count: list)
         except FloodWait as fw:
             fw_count[0] += 1
             wait = max(int(getattr(fw, "value", 15)), 15)
+            # Sync global FloodWait tracker so other modules see the throttle
+            _bump_cooldown(wait)
             _round_cooldown = min(_COOLDOWN_MAX, _round_cooldown + _COOLDOWN_STEP_UP)
             _bucket_log.clear()
             logger.warning(
@@ -401,6 +396,31 @@ async def index_files_task(
                 parse_mode=enums.ParseMode.MARKDOWN,
             )
             logger.info(f"[INDEX] cancelled at id={cur_id[0]} saved={saved}")
+
+        except Exception as e:
+            logger.exception(f"[INDEX] FATAL error at id={cur_id[0]}: {e}")
+            # Save checkpoint so we can resume from where we left off
+            await save_bot_state(chat_key, cur_id[0])
+            # Flush any remaining buffer
+            if buf:
+                try:
+                    sv, nd = await _flush(buf, target)
+                    saved += sv; dup += nd
+                except Exception:
+                    pass
+            # Show error to the user with resume info
+            err_text = (
+                f"❌ **Index Crashed**\n\n"
+                f"Error     : `{type(e).__name__}: {e}`\n"
+                f"Checked   : `{checked:,}`\n"
+                f"Saved     : `{saved:,}` files\n"
+                f"Skipped   : `{skipped:,}`\n"
+                f"Duplicate : `{dup:,}`\n"
+                f"Stopped   : ID `{cur_id[0]}`\n"
+                f"Target    : `{target_label}`\n\n"
+                f"_Checkpoint saved — restart the bot to resume._"
+            )
+            await safe_edit(status_msg, err_text, parse_mode=enums.ParseMode.MARKDOWN)
 
         finally:
             _clear_last_text()

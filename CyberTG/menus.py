@@ -26,6 +26,7 @@ from DB.database import (
     set_caption_clean_keywords,
     get_files_count_per_channel,
 )
+from utils.cyber_flood import retry_on_flood, safe_answer
 
 from .fsub import (
     set_fsub_slot,
@@ -41,19 +42,10 @@ logger = logging.getLogger(__name__)
 # ── Shared state ──────────────────────────────────────────────
 admin_temp  = {}   # { user_id: { state, message, back } }
 
-# ── FIX: cache bot identity — avoids get_me() on every menu open ──
-_BOT_USERNAME:   str | None = None
-_BOT_FIRST_NAME: str | None = None
-
-
-async def _get_bot_identity(cyber) -> tuple[str, str]:
-    global _BOT_USERNAME, _BOT_FIRST_NAME
-    if _BOT_USERNAME and _BOT_FIRST_NAME:
-        return _BOT_USERNAME, _BOT_FIRST_NAME
-    me = await cyber.get_me()
-    _BOT_USERNAME   = me.username   or ""
-    _BOT_FIRST_NAME = me.first_name or ""
-    return _BOT_USERNAME, _BOT_FIRST_NAME
+async def _get_bot_identity(_cyber=None) -> tuple[str, str]:
+    """Return cached bot identity from startup — no API call."""
+    import config as cfg
+    return cfg.bot_username or "", cfg.bot_first_name or ""
 _fsub_state = {}   # { user_id: { step, slot, secondary, mode, msg } }
 
 # ── Caption format reference shown to admin ───────────────────
@@ -94,16 +86,22 @@ async def safe_edit(message, text=None, caption=None, reply_markup=None):
     """
     try:
         if caption is not None:
-            await message.edit_caption(
-                caption=caption,
-                reply_markup=reply_markup,
-                parse_mode=enums.ParseMode.HTML,
+            await retry_on_flood(
+                lambda: message.edit_caption(
+                    caption=caption,
+                    reply_markup=reply_markup,
+                    parse_mode=enums.ParseMode.HTML,
+                ),
+                label="menu.edit_cap", max_retries=2,
             )
         elif text is not None:
-            await message.edit_text(
-                text=text,
-                reply_markup=reply_markup,
-                parse_mode=enums.ParseMode.HTML,
+            await retry_on_flood(
+                lambda: message.edit_text(
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode=enums.ParseMode.HTML,
+                ),
+                label="menu.edit_text", max_retries=2,
             )
         return  # success — done
     except MessageNotModified:
@@ -111,7 +109,10 @@ async def safe_edit(message, text=None, caption=None, reply_markup=None):
         # The keyboard may still be different, so push it separately.
         if reply_markup is not None:
             try:
-                await message.edit_reply_markup(reply_markup=reply_markup)
+                await retry_on_flood(
+                    lambda: message.edit_reply_markup(reply_markup=reply_markup),
+                    label="menu.edit_rp", max_retries=2,
+                )
             except Exception:
                 pass
         return
@@ -120,16 +121,22 @@ async def safe_edit(message, text=None, caption=None, reply_markup=None):
         # Try edit_text as fallback.
         try:
             content = caption if caption is not None else (text or "")
-            await message.edit_text(
-                text=content,
-                reply_markup=reply_markup,
-                parse_mode=enums.ParseMode.HTML,
+            await retry_on_flood(
+                lambda: message.edit_text(
+                    text=content,
+                    reply_markup=reply_markup,
+                    parse_mode=enums.ParseMode.HTML,
+                ),
+                label="menu.edit_fb", max_retries=2,
             )
             return
         except MessageNotModified:
             if reply_markup is not None:
                 try:
-                    await message.edit_reply_markup(reply_markup=reply_markup)
+                    await retry_on_flood(
+                        lambda: message.edit_reply_markup(reply_markup=reply_markup),
+                        label="menu.edit_rp2", max_retries=2,
+                    )
                 except Exception:
                     pass
             return
@@ -138,7 +145,10 @@ async def safe_edit(message, text=None, caption=None, reply_markup=None):
             # Last resort — just push the new keyboard
             if reply_markup is not None:
                 try:
-                    await message.edit_reply_markup(reply_markup=reply_markup)
+                    await retry_on_flood(
+                        lambda: message.edit_reply_markup(reply_markup=reply_markup),
+                        label="menu.edit_rp3", max_retries=2,
+                    )
                 except Exception:
                     pass
 
@@ -1135,7 +1145,7 @@ def register_menu_handlers(cyber: Client):
             await q.message.delete()
         except Exception:
             pass
-        await q.answer()
+        await safe_answer(q)
 
     # ── Admin cancel — clears state and goes back ─────────────
     @cyber.on_callback_query(filters.regex(r"^admin_cancel\|") & filters.user(ADMIN_USERS))
@@ -1145,7 +1155,7 @@ def register_menu_handlers(cyber: Client):
         # Clear any pending state
         admin_temp.pop(uid, None)
         _fsub_state.pop(uid, None)
-        await q.answer("Cancelled.")
+        await safe_answer(q, "Cancelled.")
         # Route back to the correct menu
         # Synthesize a fake callback with the back cb_data
         q.data = back

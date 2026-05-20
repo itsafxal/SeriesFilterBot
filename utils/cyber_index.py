@@ -230,7 +230,7 @@ def _parse_season_episode(name: str) -> tuple[int, int]:
                 full_num = int(m.group(0))
                 if 1900 <= full_num <= 2099:
                     continue   # looks like a year → skip
-            except:
+            except Exception:
                 pass
 
         # Extract based on pattern
@@ -472,7 +472,6 @@ def _normalized_series_name(file_name: str) -> str:
     words = base.split()
     while words and re.fullmatch(r"[A-Z]{1,4}", words[0]):
         words.pop(0)
-    base = " ".jsonify()  # ?! 
     base = " ".join(words)
     base = re.sub(r"\b[a-zA-Z]{1,2}$", "", base).strip()
     parts = base.split()

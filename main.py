@@ -1,4 +1,5 @@
 import asyncio
+import signal
 from pyrogram import Client, enums
 from CyberTG.command import register_command_handlers
 from CyberTG.menus import register_menu_handlers
@@ -16,6 +17,9 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 _BOT_ID: int | None = None
 _BOT_USERNAME: str | None = None
+
+# ── Graceful shutdown event ────────────────────────────────────
+_shutdown_event = asyncio.Event()
 
 async def check_and_resume_index(cyber: Client):
     if lock.locked():
@@ -95,6 +99,18 @@ async def run_bot_async(cyber: Client):
     logger.info("[STARTUP] Connecting bot client...")
     await cyber.start()
     logger.info("[STARTUP] Bot client connected ✅")
+
+    # ── Global asyncio exception handler — catches silent failures in background tasks ──
+    loop = asyncio.get_running_loop()
+    def _global_exception_handler(loop, context):
+        exception = context.get('exception')
+        message = context.get('message', '') if isinstance(context, dict) else str(context)
+        logger.error(f"[ASYNCIO] Unhandled exception: {message}")
+        if exception:
+            logger.exception(f"[ASYNCIO] Traceback", exc_info=(type(exception), exception, exception.__traceback__))
+    loop.set_exception_handler(_global_exception_handler)
+    logger.info("[STARTUP] Global asyncio exception handler installed.")
+
     try:
         me = await cyber.get_me()
         _BOT_ID = me.id
@@ -139,7 +155,7 @@ async def run_bot_async(cyber: Client):
             logger.error(f"[STARTUP] Admin notification failed: {e}")
     logger.info("[STARTUP] Bot fully running")
     try:
-        await asyncio.Future()
+        await _shutdown_event.wait()
     except asyncio.CancelledError:
         logger.info("[SHUTDOWN] Received stop signal. Shutting down gracefully...")
     except Exception as e:
@@ -261,13 +277,21 @@ def main():
     _setup_group_tracking(cyber)
     logger.info("[INIT] ✅ All handlers registered.")
     
+    # ── Signal handling for Docker / systemd graceful shutdown ──
+    def _signal_handler(signum, frame):
+        logger.info(f"[SHUTDOWN] Received signal {signum} — triggering graceful shutdown.")
+        _shutdown_event.set()
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT,  _signal_handler)
+
     # Run the bot with graceful exit handling
     try:
         cyber.run(run_bot_async(cyber))
     except KeyboardInterrupt:
         logger.info("[SHUTDOWN] KeyboardInterrupt received. Exiting.")
     except Exception as e:
-        logger.error(f"[FATAL] Bot crashed: {e}")
+        logger.exception(f"[FATAL] Bot crashed: {e}")
 
 if __name__ == "__main__":
     main()

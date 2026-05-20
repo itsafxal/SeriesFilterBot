@@ -16,6 +16,7 @@ from DB.database import (
     save_sticker_style,
 )
 from utils.cyber_delete import delete_message_later
+from utils.cyber_flood import retry_on_flood
 
 # ── Constants ─────────────────────────────────────────────────
 DEFAULT_CAPTION = (
@@ -133,23 +134,24 @@ def make_media(f, caption):
 
 # ── Safe send ─────────────────────────────────────────────────
 async def safe_send(cyber, user_id, f, caption, auto_delay):
-    while True:
-        try:
-            sent = await cyber.send_document(
+    """Send document with flood retry; returns False on BadRequest / fatal errors."""
+    try:
+        sent = await retry_on_flood(
+            lambda: cyber.send_document(
                 user_id, f["file_id"],
                 caption=caption,
                 parse_mode=enums.ParseMode.HTML,
-            )
-            if auto_delay:
-                delete_message_later(cyber, user_id, sent.id, auto_delay)
-            return True
-        except FloodWait as fw:
-            await asyncio.sleep(fw.value + 1)
-        except BadRequest:
-            return False
-        except Exception as e:
-            logger.error(f"safe_send error: {e}")
-            return False
+            ),
+            label="files.send", max_retries=5,
+        )
+        if auto_delay:
+            delete_message_later(cyber, user_id, sent.id, auto_delay)
+        return True
+    except BadRequest:
+        return False
+    except Exception as e:
+        logger.error(f"safe_send error: {e}")
+        return False
 
 # ── Sticker helpers ────────────────────────────────────────────
 async def _send_start_sticker(cyber, user_id: int, season: int, auto_delay: int) -> int | None:

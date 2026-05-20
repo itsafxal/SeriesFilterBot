@@ -74,20 +74,11 @@ PROGRESS_MESSAGE_ENABLED  = os.getenv("PROGRESS_MESSAGE_ENABLED", "True").lower(
 FILTER_ENABLED_DEFAULT    = os.getenv("FILTER_ENABLED_DEFAULT", "True").lower() == "true"
 
 # Index settings
-INDEX_BATCH_SIZE    = _get_int_env("INDEX_BATCH_SIZE", 100)
 INDEX_CHANNELS      = [
     int(x) for x in os.getenv("INDEX_CHANNELS", "").split(",")
     if x.strip().lstrip('-').isdigit()
 ]
-MAX_CALLBACK_LENGTH = _get_int_env("MAX_CALLBACK_LENGTH", 50)
 SEASONS_PER_PAGE    = _get_int_env("SEASONS_PER_PAGE", 9)
-
-FORCE_SUB_CHANNEL = os.getenv("FORCE_SUB_CHANNEL")
-if FORCE_SUB_CHANNEL:
-    try:
-        FORCE_SUB_CHANNEL = int(FORCE_SUB_CHANNEL)
-    except ValueError:
-        FORCE_SUB_CHANNEL = None
 
 # Logging
 LOG_FILE_PATH = os.getenv("LOG_FILE_PATH", "bot.log")
