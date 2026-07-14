@@ -256,7 +256,7 @@ def _setup_group_tracking(cyber: Client):
         except Exception as e:
             logger.debug(f"[GROUP] _bot_left_group error: {e}")
 
-def main():
+async def main():
     if not all((API_ID, API_HASH, BOT_TOKEN)):
         logger.error("Missing required environment variables")
         return
@@ -287,11 +287,11 @@ def main():
 
     # Run the bot with graceful exit handling
     try:
-        asyncio.run(run_bot_async(cyber))
+        await run_bot_async(cyber)
     except KeyboardInterrupt:
         logger.info("[SHUTDOWN] KeyboardInterrupt received. Exiting.")
     except Exception as e:
         logger.exception(f"[FATAL] Bot crashed: {e}")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
