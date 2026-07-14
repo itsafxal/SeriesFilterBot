@@ -287,7 +287,7 @@ def main():
 
     # Run the bot with graceful exit handling
     try:
-        cyber.run(run_bot_async(cyber))
+        asyncio.run(run_bot_async(cyber))
     except KeyboardInterrupt:
         logger.info("[SHUTDOWN] KeyboardInterrupt received. Exiting.")
     except Exception as e:
