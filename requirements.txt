@@ -1,15 +1,8 @@
-pyrotgfork
-motor
+kurigram
 python-dotenv
 pymongo
 dnspython
 tgcrypto
-aiosqlite
-requests
-beautifulsoup4
-pyspellchecker
-aiohttp
-rapidfuzz
 apscheduler
 Pillow>=10.0.0
-aiofiles
+aiohttp

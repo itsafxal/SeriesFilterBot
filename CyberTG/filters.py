@@ -323,7 +323,8 @@ def register_filters(cyber: Client):
             for title, yr in suggestions:
                 display = format_suggestion_label(title, yr)
                 clean = _strip_year(title)
-                buttons.append([InlineKeyboardButton(f"🎬  {display}", callback_data=f"sug|{uid}|{clean}")])
+                sid = _get_sid(clean)
+                buttons.append([InlineKeyboardButton(f"🎬  {display}", callback_data=f"sug|{uid}|{sid}")])
             buttons.append([InlineKeyboardButton("✖️  Close", callback_data="close_spell")])
             msg = await _safe_reply_photo(
                 m, SPELL_IMG, "\n".join(lines),
@@ -334,6 +335,8 @@ def register_filters(cyber: Client):
             if auto_del > 0 and msg:
                 delete_message_later(cyber, msg.chat.id, msg.id, auto_del)
                 delete_message_later(cyber, m.chat.id, m.id, auto_del)
+            return
+        if m.chat.type in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
             return
         msg = await m.reply_text(
             "🔍 <b>No Results Found</b>\n"
@@ -359,7 +362,8 @@ def register_filters(cyber: Client):
         else:
             raw_series = parts[1]
         await safe_answer(q)
-        series = _strip_year(raw_series)
+        series = _sid_to_series(raw_series)
+        series = _strip_year(series)
         auto_del = settings["auto_delete_delay"]
         poster, year, genre, rating = await _get_poster(series, settings)
         seasons = list((await get_series_summary(series))["seasons"])
@@ -454,7 +458,8 @@ def register_filters(cyber: Client):
         )
         poster, year, genre, rating = poster_r
         qs = [qc[0] for qc in qc_pairs]
-        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_lang|{uid}|{series}|{season}")
+        sid_new = _get_sid(series)
+        back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_lang|{uid}|{sid_new}|{season}")
         _link_username = bot_username or "YourBot"
         payloads = await asyncio.gather(
             *[encode_payload(series, season, lang, quality, uid) for quality, _ in qc_pairs],

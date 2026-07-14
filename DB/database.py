@@ -227,6 +227,17 @@ def initialize_sql_db():
             yield from files_collection_1.find(filt, proj)
             yield from files_collection_2.find(filt, proj)
 
+        def find_one(self, filt=None, projection=None, sort=None):
+            doc1 = files_collection_1.find_one(filt or {}, projection or {}, sort=sort)
+            doc2 = files_collection_2.find_one(filt or {}, projection or {}, sort=sort)
+            if not doc1:
+                return doc2
+            if not doc2:
+                return doc1
+            if doc1["_id"] > doc2["_id"]:
+                return doc1
+            return doc2
+
     merged = _Merged()
     migrate_data_from_mongo_to_sql_sync(merged, create_sql_schema, logger)
 
