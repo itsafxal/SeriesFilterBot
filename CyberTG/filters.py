@@ -48,6 +48,33 @@ def _sid_to_series(sid_str: str) -> str:
     except (ValueError, TypeError):
         return sid_str.lower().strip()
 
+# ── Language name registry (LID) ──────────────────────────────
+_LID_MAP: dict[int, str] = {}
+_LID_REVMAP: dict[str, int] = {}
+_LID_NEXT: int = 1
+_LID_MAX = 5_000
+
+def _get_lid(lang: str) -> int:
+    global _LID_NEXT
+    lang = lang.lower().strip()
+    if lang in _LID_REVMAP:
+        return _LID_REVMAP[lang]
+    lid = _LID_NEXT
+    _LID_NEXT += 1
+    if len(_LID_MAP) >= _LID_MAX:
+        oldest_lid = next(iter(_LID_MAP))
+        oldest_name = _LID_MAP.pop(oldest_lid)
+        _LID_REVMAP.pop(oldest_name, None)
+    _LID_MAP[lid] = lang
+    _LID_REVMAP[lang] = lid
+    return lid
+
+def _lid_to_lang(lid_str: str) -> str:
+    try:
+        return _LID_MAP.get(int(lid_str), "")
+    except (ValueError, TypeError):
+        return lid_str.lower().strip()
+
 # ── Year suffix stripper ──────────────────────────────────────
 _YEAR_SUFFIX_RE = re.compile(r"\s*\(\d{4}\)\s*$")
 
@@ -427,7 +454,7 @@ def register_filters(cyber: Client):
         poster, year, genre, rating = poster_r
         sid_new = _get_sid(series)
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{sid_new}")
-        kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{sid_new}|{season}|{l}", back_btn=back)
+        kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{sid_new}|{season}|{_get_lid(l)}", back_btn=back)
         cap = build_caption(series, year, genre, rating, languages=langs, step="language")
         try:
             await q.message.edit_caption(cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
@@ -442,7 +469,8 @@ def register_filters(cyber: Client):
 
     @cyber.on_callback_query(filters.regex("^gls\\|"))
     async def gls(_, q):
-        _, uid, sid_or_series, season, lang = q.data.split("|", 4)
+        _, uid, sid_or_series, season, lang_or_lid = q.data.split("|", 4)
+        lang = _lid_to_lang(lang_or_lid)
         series = _sid_to_series(sid_or_series)
         if not series:
             return await safe_answer(q, "Session expired. Please search again.", show_alert=True)
@@ -538,7 +566,7 @@ def register_filters(cyber: Client):
         poster, year, genre, rating = poster_r
         sid_new = _get_sid(series)
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{sid_new}")
-        kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{sid_new}|{season}|{l}", back_btn=back)
+        kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{sid_new}|{season}|{_get_lid(l)}", back_btn=back)
         cap = build_caption(series, year, genre, rating, languages=langs, step="language")
         try:
             await q.message.edit_caption(cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
