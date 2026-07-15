@@ -102,25 +102,49 @@ _LANG_INFO = {
     "turkish": ("🇹🇷", "Tur"),
 }
 
-def _lang_display(lang: str) -> str:
+def _lang_display(lang: str, is_button: bool = False) -> str:
     parts = re.split(r'[+/,\-]', lang)
-    formatted_parts = []
+    cleaned_parts = []
     for p in parts:
-        p_clean = p.lower().strip()
+        p_clean = p.strip()
         if not p_clean:
             continue
+        cleaned_parts.append(p_clean)
+
+    if not cleaned_parts:
+        return "🌐 Unknown"
+
+    # If only one language
+    if len(cleaned_parts) == 1:
+        single_lang = cleaned_parts[0]
+        flag = "🌐"
+        for k, (f, _) in _LANG_INFO.items():
+            if k in single_lang.lower():
+                flag = f
+                break
+        return f"{flag} {single_lang.title()}"
+
+    # If multiple languages
+    abbr_list = []
+    for p in cleaned_parts:
         matched = False
-        for k, (flag, abbr) in _LANG_INFO.items():
-            if k in p_clean:
-                formatted_parts.append(f"{flag} {abbr}")
+        for k, (_, abbr) in _LANG_INFO.items():
+            if k in p.lower():
+                abbr_list.append(abbr)
                 matched = True
                 break
         if not matched:
-            formatted_parts.append(p.strip()[:3].title())
+            abbr_list.append(p[:3].title())
 
-    if not formatted_parts:
-        return f"🌐 {lang.title()}"
-    return " + ".join(formatted_parts)
+    if is_button and len(abbr_list) > 2:
+        abbr_str = " + ".join(abbr_list[:2]) + " + ..."
+    else:
+        abbr_str = " + ".join(abbr_list)
+
+    if len(cleaned_parts) == 2:
+        return f"🌐 Dual ({abbr_str})"
+    else:
+        return f"🌐 Multi ({abbr_str})"
 
 # ── Year suffix stripper ──────────────────────────────────────
 _YEAR_SUFFIX_RE = re.compile(r"\s*\(\d{4}\)\s*$")
@@ -310,7 +334,7 @@ def build_grid_keyboard(items, cb_builder, per_row=2, back_btn=None):
     for it in items:
         if not it:
             continue
-        display_label = _lang_display(it)
+        display_label = _lang_display(it, is_button=True)
         row.append(InlineKeyboardButton(display_label, callback_data=cb_builder(it)))
         if len(row) == per_row:
             rows.append(row)
