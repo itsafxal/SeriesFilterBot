@@ -122,7 +122,8 @@ async def fetch_tmdb(series_name: str, landscape: bool = False, retries: int = 2
         }
         language = LANG_MAP.get(lang_code, "Unknown")
 
-        return poster, year, genre, rating, language
+        plot = item.get("overview") or ""
+        return poster, year, genre, rating, language, plot
 
     return None
 
@@ -166,8 +167,9 @@ async def fetch_omdb(series_name: str, retries: int = 2):
 
         raw_langs = [l.strip() for l in data.get("Language", "").split(",") if l.strip()]
         language = raw_langs[0] if raw_langs else "Unknown"
+        plot = data.get("Plot") or ""
 
-        return poster, year, genre, rating, language
+        return poster, year, genre, rating, language, plot
 
     return None
 
@@ -178,39 +180,39 @@ async def fetch_omdb(series_name: str, retries: int = 2):
 
 async def get_series_info(series_name: str, landscape: bool = False):
     """
-    Returns (poster_url, year, genre, rating) or (None, None, None, None).
+    Returns (poster_url, year, genre, rating, plot) or (None, None, None, None, "").
     Uses TMDB with smart matching, then OMDb as fallback.
     """
     cache_key = f"{series_name}:wide" if landscape else series_name
 
     cached = get_cached(cache_key)
     if cached:
-        poster, year, genre, rating, source, language = cached
-        return poster, year, genre, rating
+        poster, year, genre, rating, source, language, plot = cached
+        return poster, year, genre, rating, plot or ""
 
     # 1️⃣ TMDB (smart match)
     tmdb = await fetch_tmdb(series_name, landscape=landscape)
     if tmdb:
-        poster, year, genre, rating, language = tmdb
-        save_cache(cache_key, poster, year, genre, rating, "tmdb", language)
-        return poster, year, genre, rating
+        poster, year, genre, rating, language, plot = tmdb
+        save_cache(cache_key, poster, year, genre, rating, "tmdb", language, plot)
+        return poster, year, genre, rating, plot
 
     # 2️⃣ Landscape fallback: if wide image not found, try standard poster
     if landscape:
         tmdb_portrait = await fetch_tmdb(series_name, landscape=False)
         if tmdb_portrait:
-            poster, year, genre, rating, language = tmdb_portrait
-            save_cache(cache_key, poster, year, genre, rating, "tmdb", language)
-            return poster, year, genre, rating
+            poster, year, genre, rating, language, plot = tmdb_portrait
+            save_cache(cache_key, poster, year, genre, rating, "tmdb", language, plot)
+            return poster, year, genre, rating, plot
 
     # 3️⃣ OMDB fallback
     omdb = await fetch_omdb(series_name)
     if omdb:
-        poster, year, genre, rating, language = omdb
-        save_cache(cache_key, poster, year, genre, rating, "omdb", language)
-        return poster, year, genre, rating
+        poster, year, genre, rating, language, plot = omdb
+        save_cache(cache_key, poster, year, genre, rating, "omdb", language, plot)
+        return poster, year, genre, rating, plot
 
-    return None, None, None, None
+    return None, None, None, None, ""
 
 
 # =========================================================
@@ -223,7 +225,7 @@ async def get_series_language(series_name: str):
     """
     cached = get_cached(series_name)
     if cached:
-        _, _, _, _, _, language = cached
+        _, _, _, _, _, language, _ = cached
         return language
 
     tmdb = await fetch_tmdb(series_name)
@@ -245,5 +247,5 @@ async def get_series_poster_async(series_name: str):
     """
     Convenience wrapper; returns poster URL or None.
     """
-    poster, _, _, _ = await get_series_info(series_name)
+    poster, _, _, _, _ = await get_series_info(series_name)
     return poster

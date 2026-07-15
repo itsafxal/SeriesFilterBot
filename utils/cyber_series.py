@@ -19,6 +19,7 @@ from typing import List, Optional, Tuple
 
 from DB.database import search_series
 from utils.cyber_flood import safe_answer
+from utils.cyber_poster import get_cached, save_cache
 
 
 # ─────────────────────────────────────────────────────────────
@@ -118,6 +119,16 @@ async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
     if entry is not None:
         return entry["year"], entry["found"]
 
+    # Try fetching from persistent SQLite cache
+    try:
+        cached = get_cached(key)
+        if cached:
+            poster, year, genre, rating, source, language, plot = cached
+            _cache_set(key, {"year": year, "found": True, "ts": time.time()})
+            return year, True
+    except Exception:
+        pass
+
     year  = None
     found = False
 
@@ -137,6 +148,21 @@ async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
                 found = True
                 date  = results[0].get("first_air_date", "") or ""
                 year  = date[:4] if len(date) >= 4 else None
+                plot  = results[0].get("overview", "")
+                try:
+                    img_path = results[0].get("poster_path")
+                    from config import TMDB_IMAGE_BASE
+                    poster = f"{TMDB_IMAGE_BASE}{img_path}" if img_path else None
+                    rating = str(results[0].get("vote_average", "N/A"))
+                    lang_code = results[0].get("original_language", "")
+                    LANG_MAP = {
+                        "en": "English", "hi": "Hindi", "ml": "Malayalam",
+                        "ta": "Tamil", "te": "Telugu", "kn": "Kannada",
+                    }
+                    language = LANG_MAP.get(lang_code, "Unknown")
+                    save_cache(key, poster, year, "Unknown", rating, "tmdb", language, plot)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -155,6 +181,16 @@ async def _lookup_title(title: str) -> Tuple[Optional[str], bool]:
                     found    = True
                     year_raw = data.get("Year", "") or ""
                     year     = year_raw[:4] if len(year_raw) >= 4 else None
+                    plot     = data.get("Plot") or ""
+                    try:
+                        poster = data.get("Poster")
+                        rating = data.get("imdbRating", "N/A")
+                        genre = data.get("Genre", "N/A")
+                        raw_langs = [l.strip() for l in data.get("Language", "").split(",") if l.strip()]
+                        language = raw_langs[0] if raw_langs else "Unknown"
+                        save_cache(key, poster, year, genre, rating, "omdb", language, plot)
+                    except Exception:
+                        pass
             except Exception:
                 pass
 

@@ -75,6 +75,41 @@ def _lid_to_lang(lid_str: str) -> str:
     except (ValueError, TypeError):
         return lid_str.lower().strip()
 
+# ── Language flag mappings ────────────────────────────────────
+_LANG_FLAGS = {
+    "english": "🇬🇧",
+    "hindi": "🇮🇳",
+    "tamil": "🇮🇳",
+    "telugu": "🇮🇳",
+    "malayalam": "🇮🇳",
+    "kannada": "🇮🇳",
+    "bengali": "🇮🇳",
+    "marathi": "🇮🇳",
+    "punjabi": "🇮🇳",
+    "gujarati": "🇮🇳",
+    "urdu": "🇵🇰",
+    "spanish": "🇪🇸",
+    "french": "🇫🇷",
+    "german": "🇩🇪",
+    "italian": "🇮🇹",
+    "japanese": "🇯🇵",
+    "korean": "🇰🇷",
+    "chinese": "🇨🇳",
+    "russian": "🇷🇺",
+    "portuguese": "🇵🇹",
+    "arabic": "🇸🇦",
+    "turkish": "🇹🇷",
+    "multi": "🌍",
+    "dual": "🌍",
+}
+
+def _lang_display(lang: str) -> str:
+    lang_clean = lang.lower().strip()
+    for k, flag in _LANG_FLAGS.items():
+        if k in lang_clean:
+            return f"{flag} {lang.title()}"
+    return f"🌐 {lang.title()}"
+
 # ── Year suffix stripper ──────────────────────────────────────
 _YEAR_SUFFIX_RE = re.compile(r"\s*\(\d{4}\)\s*$")
 
@@ -164,9 +199,10 @@ async def _safe_edit_media(q, photo, caption, parse_mode, reply_markup):
         pass
 
 # ── Poster helper ─────────────────────────────────────────────
+# ── Poster helper ─────────────────────────────────────────────
 async def _get_poster(series: str, settings: dict):
     if not settings.get("poster_enabled"):
-        return None, None, None, None
+        return None, None, None, None, ""
     landscape = settings.get("poster_landscape", False)
     from CyberTG.poster import get_series_info
     return await get_series_info(series, landscape=landscape)
@@ -217,34 +253,38 @@ async def resolve_series_with_suggestions(text: str):
     return None, [(s, None) for s in unique]
 
 # ── Caption & keyboard builders ───────────────────────────────
-def build_caption(series, year, genre, rating, seasons=None, languages=None, qualities=None, step="season"):
+def build_caption(series, year, genre, rating, seasons=None, languages=None, qualities=None, step="season", plot=None):
     lines = [
-        f"🎬 <b>{series}</b>",
+        f"🎬 <b>{series.upper()}</b>",
         f"<b>━━━━━━━━━━━━━━━━━━━━━</b>",
         f"<blockquote>",
         f"📅  <b>Year:</b>     <code>{year or 'N/A'}</code>",
         f"🎭  <b>Genre:</b>    <code>{genre or 'N/A'}</code>",
-        f"⭐  <b>Rating:</b>   <code>{rating or 'N/A'}</code>",
-        f"</blockquote>",
-        "",
+        f"⭐  <b>Rating:</b>   <code>{rating or 'N/A'} ⭐</code>",
     ]
+    if plot:
+        short_plot = plot[:150] + "..." if len(plot) > 150 else plot
+        lines.append(f"✍️  <b>Story:</b>   <i>{short_plot}</i>")
+    lines.append(f"</blockquote>")
+    lines.append("")
+
     if step == "season":
         if seasons:
-            lines.append(f"📂  <b>Seasons:</b>  <code>{' · '.join(f'S{s:02d}' for s in seasons)}</code>")
+            lines.append(f"📂  <b>Seasons Available:</b>  <code>{' · '.join(f'S{s:02d}' for s in seasons)}</code>")
         lines.append("")
-        lines.append("<i>Select a Season to continue ⬇️</i>")
+        lines.append("<i>👇 Select a Season from below to continue:</i>")
     elif step == "language":
-        txt = "  ·  ".join(languages)
-        lines.append(f"🌐  <b>Available:</b>  <code>{txt}</code>")
+        txt = "  ·  ".join(_lang_display(l) for l in languages)
+        lines.append(f"🌐  <b>Languages:</b>  <code>{txt}</code>")
         lines.append("")
-        lines.append("<i>Select a Language to continue ⬇️</i>")
+        lines.append("<i>👇 Select a Language from below to continue:</i>")
     elif step == "quality":
-        lt = "  ·  ".join(languages)
-        qt = "  ·  ".join(qualities)
+        lt = "  ·  ".join(_lang_display(l) for l in languages)
+        qt = "  ·  ".join(QUALITY_DISPLAY.get((q or "").upper().strip(), q) for q in qualities)
         lines.append(f"🌐  <b>Language:</b>   <code>{lt}</code>")
-        lines.append(f"🎞  <b>Quality:</b>    <code>{qt}</code>")
+        lines.append(f"🎞  <b>Qualities:</b>  <code>{qt}</code>")
         lines.append("")
-        lines.append("<i>Select a Quality to continue ⬇️</i>")
+        lines.append("<i>👇 Select a Quality from below to get download links:</i>")
     return "\n".join(lines)
 
 def build_grid_keyboard(items, cb_builder, per_row=2, back_btn=None):
@@ -252,7 +292,8 @@ def build_grid_keyboard(items, cb_builder, per_row=2, back_btn=None):
     for it in items:
         if not it:
             continue
-        row.append(InlineKeyboardButton(it, callback_data=cb_builder(it)))
+        display_label = _lang_display(it)
+        row.append(InlineKeyboardButton(display_label, callback_data=cb_builder(it)))
         if len(row) == per_row:
             rows.append(row)
             row = []
@@ -269,7 +310,7 @@ def build_season_pages(seasons, uid, series, page=0):
     chunk = seasons[start:start + SEASONS_PER_PAGE]
     rows, row = [], []
     for s in chunk:
-        row.append(InlineKeyboardButton(f"Season {s:02d}", callback_data=f"gss|{uid}|{sid}|{s}"))
+        row.append(InlineKeyboardButton(f"Season {s:02d} 📂", callback_data=f"gss|{uid}|{sid}|{s}"))
         if len(row) == 3:
             rows.append(row)
             row = []
@@ -286,8 +327,13 @@ def build_season_pages(seasons, uid, series, page=0):
     return InlineKeyboardMarkup(rows)
 
 QUALITY_DISPLAY = {
-    "4K": "4K", "2160P": "2160p", "1080P": "1080p",
-    "720P": "720p", "480P": "480p", "360P": "360p", "UNKNOWN": "Unknown",
+    "4K": "4K Ultra HD 💎",
+    "2160P": "2160p 💎",
+    "1080P": "1080p Full HD 🎬",
+    "720P": "720p HD 🍿",
+    "480P": "480p SD 📼",
+    "360P": "360p 📼",
+    "UNKNOWN": "Unknown 🌐",
 }
 def _quality_label(quality: str, codec: str) -> str:
     disp = QUALITY_DISPLAY.get((quality or "").upper().strip(), quality)
@@ -322,13 +368,13 @@ def register_filters(cyber: Client):
         series, suggestions = await resolve_series_with_suggestions(m.text)
         if series:
             series = _strip_year(series)
-            poster, year, genre, rating = await _get_poster(series, settings)
+            poster, year, genre, rating, plot = await _get_poster(series, settings)
             seasons = list((await get_series_summary(series))["seasons"])
             kb = build_season_pages(seasons, uid, series)
             photo = poster or DEFAULT_POSTER
             msg = await _safe_reply_photo(
                 m, photo,
-                build_caption(series, year, genre, rating, seasons=seasons, step="season"),
+                build_caption(series, year, genre, rating, seasons=seasons, step="season", plot=plot),
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb,
             )
@@ -392,13 +438,13 @@ def register_filters(cyber: Client):
         series = _sid_to_series(raw_series)
         series = _strip_year(series)
         auto_del = settings["auto_delete_delay"]
-        poster, year, genre, rating = await _get_poster(series, settings)
+        poster, year, genre, rating, plot = await _get_poster(series, settings)
         seasons = list((await get_series_summary(series))["seasons"])
         owner_uid = int(uid_str) if len(parts) == 3 else q.from_user.id
         kb = build_season_pages(seasons, owner_uid, series)
         await _safe_edit_media(
             q, poster or DEFAULT_POSTER,
-            build_caption(series, year, genre, rating, seasons=seasons, step="season"),
+            build_caption(series, year, genre, rating, seasons=seasons, step="season", plot=plot),
             enums.ParseMode.HTML, kb,
         )
         if auto_del > 0 and q.message:
@@ -451,11 +497,11 @@ def register_filters(cyber: Client):
             get_unique_languages_by_season(series, int(season)),
             _get_poster(series, settings),
         )
-        poster, year, genre, rating = poster_r
+        poster, year, genre, rating, plot = poster_r
         sid_new = _get_sid(series)
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{sid_new}")
         kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{sid_new}|{season}|{_get_lid(l)}", back_btn=back)
-        cap = build_caption(series, year, genre, rating, languages=langs, step="language")
+        cap = build_caption(series, year, genre, rating, languages=langs, step="language", plot=plot)
         try:
             await q.message.edit_caption(cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
         except MessageNotModified:
@@ -484,7 +530,7 @@ def register_filters(cyber: Client):
             _get_poster(series, settings),
             _get_bot_info(cyber),
         )
-        poster, year, genre, rating = poster_r
+        poster, year, genre, rating, plot = poster_r
         qs = [qc[0] for qc in qc_pairs]
         sid_new = _get_sid(series)
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_lang|{uid}|{sid_new}|{season}")
@@ -509,7 +555,7 @@ def register_filters(cyber: Client):
         kb = InlineKeyboardMarkup(rows)
         try:
             await q.message.edit_caption(
-                build_caption(series, year, genre, rating, languages=[lang], qualities=qs, step="quality"),
+                build_caption(series, year, genre, rating, languages=[lang], qualities=qs, step="quality", plot=plot),
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=kb,
             )
@@ -534,9 +580,9 @@ def register_filters(cyber: Client):
             _get_poster(series, settings),
         )
         season_list = list(seasons["seasons"])
-        poster, year, genre, rating = poster_r
+        poster, year, genre, rating, plot = poster_r
         kb = build_season_pages(season_list, uid, series, page=0)
-        cap = build_caption(series, year, genre, rating, seasons=season_list, step="season")
+        cap = build_caption(series, year, genre, rating, seasons=season_list, step="season", plot=plot)
         try:
             await q.message.edit_caption(cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
         except MessageNotModified:
@@ -563,11 +609,11 @@ def register_filters(cyber: Client):
             get_unique_languages_by_season(series, int(season)),
             _get_poster(series, settings),
         )
-        poster, year, genre, rating = poster_r
+        poster, year, genre, rating, plot = poster_r
         sid_new = _get_sid(series)
         back = InlineKeyboardButton("⬅️  Back", callback_data=f"bk_season|{uid}|{sid_new}")
         kb = build_grid_keyboard(langs, lambda l: f"gls|{uid}|{sid_new}|{season}|{_get_lid(l)}", back_btn=back)
-        cap = build_caption(series, year, genre, rating, languages=langs, step="language")
+        cap = build_caption(series, year, genre, rating, languages=langs, step="language", plot=plot)
         try:
             await q.message.edit_caption(cap, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
         except MessageNotModified:

@@ -37,6 +37,7 @@ def init_cache():
             rating     TEXT,
             source     TEXT,
             language   TEXT,
+            plot       TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -44,6 +45,8 @@ def init_cache():
     existing = {row[1] for row in conn.execute("PRAGMA table_info(poster_cache)").fetchall()}
     if "language" not in existing:
         conn.execute("ALTER TABLE poster_cache ADD COLUMN language TEXT")
+    if "plot" not in existing:
+        conn.execute("ALTER TABLE poster_cache ADD COLUMN plot TEXT")
     conn.commit()
 
 
@@ -53,19 +56,19 @@ init_cache()
 def get_cached(title: str):
     conn   = _get_conn()
     cursor = conn.execute("""
-        SELECT poster, year, genre, rating, source, language
+        SELECT poster, year, genre, rating, source, language, plot
         FROM poster_cache WHERE title=?
     """, (title.lower(),))
     return cursor.fetchone()
 
 
-def save_cache(title, poster, year, genre, rating, source, language):
+def save_cache(title, poster, year, genre, rating, source, language, plot=""):
     conn = _get_conn()
     conn.execute("""
         INSERT OR REPLACE INTO poster_cache
-        (title, poster, year, genre, rating, source, language)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (title.lower(), poster, year, genre, rating, source, language))
+        (title, poster, year, genre, rating, source, language, plot)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (title.lower(), poster, year, genre, rating, source, language, plot))
     conn.commit()
 
 
