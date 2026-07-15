@@ -56,24 +56,25 @@ _LID_MAX = 5_000
 
 def _get_lid(lang: str) -> int:
     global _LID_NEXT
-    lang = lang.lower().strip()
-    if lang in _LID_REVMAP:
-        return _LID_REVMAP[lang]
+    lang_clean = lang.strip()
+    lang_lower = lang_clean.lower()
+    if lang_lower in _LID_REVMAP:
+        return _LID_REVMAP[lang_lower]
     lid = _LID_NEXT
     _LID_NEXT += 1
     if len(_LID_MAP) >= _LID_MAX:
         oldest_lid = next(iter(_LID_MAP))
         oldest_name = _LID_MAP.pop(oldest_lid)
-        _LID_REVMAP.pop(oldest_name, None)
-    _LID_MAP[lid] = lang
-    _LID_REVMAP[lang] = lid
+        _LID_REVMAP.pop(oldest_name.lower(), None)
+    _LID_MAP[lid] = lang_clean
+    _LID_REVMAP[lang_lower] = lid
     return lid
 
 def _lid_to_lang(lid_str: str) -> str:
     try:
         return _LID_MAP.get(int(lid_str), "")
     except (ValueError, TypeError):
-        return lid_str.lower().strip()
+        return lid_str.strip()
 
 # ── Language flag mappings ────────────────────────────────────
 _LANG_FLAGS = {
