@@ -77,39 +77,50 @@ def _lid_to_lang(lid_str: str) -> str:
         return lid_str.strip()
 
 # ── Language flag mappings ────────────────────────────────────
-_LANG_FLAGS = {
-    "english": "🇬🇧",
-    "hindi": "🇮🇳",
-    "tamil": "🇮🇳",
-    "telugu": "🇮🇳",
-    "malayalam": "🇮🇳",
-    "kannada": "🇮🇳",
-    "bengali": "🇮🇳",
-    "marathi": "🇮🇳",
-    "punjabi": "🇮🇳",
-    "gujarati": "🇮🇳",
-    "urdu": "🇵🇰",
-    "spanish": "🇪🇸",
-    "french": "🇫🇷",
-    "german": "🇩🇪",
-    "italian": "🇮🇹",
-    "japanese": "🇯🇵",
-    "korean": "🇰🇷",
-    "chinese": "🇨🇳",
-    "russian": "🇷🇺",
-    "portuguese": "🇵🇹",
-    "arabic": "🇸🇦",
-    "turkish": "🇹🇷",
-    "multi": "🌍",
-    "dual": "🌍",
+_LANG_INFO = {
+    "english": ("🇬🇧", "Eng"),
+    "hindi": ("🇮🇳", "Hin"),
+    "tamil": ("🇮🇳", "Tam"),
+    "telugu": ("🇮🇳", "Tel"),
+    "malayalam": ("🇮🇳", "Mal"),
+    "kannada": ("🇮🇳", "Kan"),
+    "bengali": ("🇮🇳", "Ben"),
+    "marathi": ("🇮🇳", "Mar"),
+    "punjabi": ("🇮🇳", "Pun"),
+    "gujarati": ("🇮🇳", "Guj"),
+    "urdu": ("🇵🇰", "Urd"),
+    "spanish": ("🇪🇸", "Esp"),
+    "french": ("🇫🇷", "Fre"),
+    "german": ("🇩🇪", "Ger"),
+    "italian": ("🇮🇹", "Ita"),
+    "japanese": ("🇯🇵", "Jap"),
+    "korean": ("🇰🇷", "Kor"),
+    "chinese": ("🇨🇳", "Chi"),
+    "russian": ("🇷🇺", "Rus"),
+    "portuguese": ("🇵🇹", "Por"),
+    "arabic": ("🇸🇦", "Ara"),
+    "turkish": ("🇹🇷", "Tur"),
 }
 
 def _lang_display(lang: str) -> str:
-    lang_clean = lang.lower().strip()
-    for k, flag in _LANG_FLAGS.items():
-        if k in lang_clean:
-            return f"{flag} {lang.title()}"
-    return f"🌐 {lang.title()}"
+    parts = re.split(r'[+/,\-]', lang)
+    formatted_parts = []
+    for p in parts:
+        p_clean = p.lower().strip()
+        if not p_clean:
+            continue
+        matched = False
+        for k, (flag, abbr) in _LANG_INFO.items():
+            if k in p_clean:
+                formatted_parts.append(f"{flag} {abbr}")
+                matched = True
+                break
+        if not matched:
+            formatted_parts.append(p.strip()[:3].title())
+
+    if not formatted_parts:
+        return f"🌐 {lang.title()}"
+    return " + ".join(formatted_parts)
 
 # ── Year suffix stripper ──────────────────────────────────────
 _YEAR_SUFFIX_RE = re.compile(r"\s*\(\d{4}\)\s*$")
@@ -255,35 +266,41 @@ async def resolve_series_with_suggestions(text: str):
 
 # ── Caption & keyboard builders ───────────────────────────────
 def build_caption(series, year, genre, rating, seasons=None, languages=None, qualities=None, step="season", plot=None):
+    title_display = series.title()
+    rating_val = f"{rating}/10" if rating and rating != 'N/A' else "N/A"
+
     lines = [
-        f"🎬 <b>{series.upper()}</b>",
-        f"<b>━━━━━━━━━━━━━━━━━━━━━</b>",
-        f"<blockquote>",
-        f"📅  <b>Year:</b>     <code>{year or 'N/A'}</code>",
-        f"🎭  <b>Genre:</b>    <code>{genre or 'N/A'}</code>",
-        f"⭐  <b>Rating:</b>   <code>{rating or 'N/A'} ⭐</code>",
+        f"✨ <b>{title_display}</b>" + (f" ({year})" if year and year != 'N/A' else ""),
+        f"<b>━━━━━━━━━━━━━━━━━━━━━━</b>",
+        f"🎭 <b>Genre:</b> <code>{genre or 'N/A'}</code>",
+        f"⭐ <b>Rating:</b> <code>{rating_val}</code>",
     ]
-    if plot:
-        short_plot = plot[:150] + "..." if len(plot) > 150 else plot
-        lines.append(f"✍️  <b>Story:</b>   <i>{short_plot}</i>")
-    lines.append(f"</blockquote>")
-    lines.append("")
+
+    if plot and plot != 'N/A' and plot.strip():
+        short_plot = plot[:180] + "..." if len(plot) > 180 else plot
+        lines.append("")
+        lines.append(f"✍️ <b>Synopsis:</b>")
+        lines.append(f"<i>\"{short_plot}\"</i>")
+
+    lines.append(f"<b>━━━━━━━━━━━━━━━━━━━━━━</b>")
 
     if step == "season":
         if seasons:
-            lines.append(f"📂  <b>Seasons Available:</b>  <code>{' · '.join(f'S{s:02d}' for s in seasons)}</code>")
+            seasons_str = " · ".join(f"S{s:02d}" for s in seasons)
+            lines.append(f"📂 <b>Seasons Available:</b> <code>{seasons_str}</code>")
         lines.append("")
         lines.append("<i>👇 Select a Season from below to continue:</i>")
     elif step == "language":
-        txt = "  ·  ".join(_lang_display(l) for l in languages)
-        lines.append(f"🌐  <b>Languages:</b>  <code>{txt}</code>")
+        lines.append(f"🌐 <b>Available Languages:</b>")
+        for l in languages:
+            lines.append(f"• {_lang_display(l)}")
         lines.append("")
         lines.append("<i>👇 Select a Language from below to continue:</i>")
     elif step == "quality":
-        lt = "  ·  ".join(_lang_display(l) for l in languages)
-        qt = "  ·  ".join(QUALITY_DISPLAY.get((q or "").upper().strip(), q) for q in qualities)
-        lines.append(f"🌐  <b>Language:</b>   <code>{lt}</code>")
-        lines.append(f"🎞  <b>Qualities:</b>  <code>{qt}</code>")
+        lt_str = ", ".join(_lang_display(l) for l in languages)
+        qt_str = " · ".join(QUALITY_DISPLAY.get((q or "").upper().strip(), q) for q in qualities)
+        lines.append(f"🌐 <b>Selected Language:</b> <code>{lt_str}</code>")
+        lines.append(f"🎞 <b>Available Qualities:</b> <code>{qt_str}</code>")
         lines.append("")
         lines.append("<i>👇 Select a Quality from below to get download links:</i>")
     return "\n".join(lines)
