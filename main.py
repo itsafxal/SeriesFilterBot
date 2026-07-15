@@ -105,6 +105,11 @@ async def run_bot_async(cyber: Client):
     def _global_exception_handler(loop, context):
         exception = context.get('exception')
         message = context.get('message', '') if isinstance(context, dict) else str(context)
+        if exception:
+            err_msg = str(exception).lower()
+            if "closed database" in err_msg or "cannot operate on a closed database" in err_msg:
+                logger.debug(f"[ASYNCIO] Ignored closed database connection exception: {exception}")
+                return
         logger.error(f"[ASYNCIO] Unhandled exception: {message}")
         if exception:
             logger.exception(f"[ASYNCIO] Traceback", exc_info=(type(exception), exception, exception.__traceback__))
