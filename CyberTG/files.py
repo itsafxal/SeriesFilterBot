@@ -132,16 +132,31 @@ def make_media(f, caption):
         return InputMediaAudio(file_id, caption=caption, parse_mode=enums.ParseMode.HTML)
     return InputMediaDocument(file_id, caption=caption, parse_mode=enums.ParseMode.HTML)
 
-# ── Safe send ─────────────────────────────────────────────────
 async def safe_send(cyber, user_id, f, caption, auto_delay):
-    """Send document with flood retry; returns False on BadRequest / fatal errors."""
+    """Send correct media type (video, audio, or document) with flood retry; returns False on BadRequest / fatal errors."""
+    media_type = f.get("media_type", "document")
+    if media_type == "video":
+        send_fn = lambda: cyber.send_video(
+            user_id, f["file_id"],
+            caption=caption,
+            parse_mode=enums.ParseMode.HTML,
+        )
+    elif media_type == "audio":
+        send_fn = lambda: cyber.send_audio(
+            user_id, f["file_id"],
+            caption=caption,
+            parse_mode=enums.ParseMode.HTML,
+        )
+    else:
+        send_fn = lambda: cyber.send_document(
+            user_id, f["file_id"],
+            caption=caption,
+            parse_mode=enums.ParseMode.HTML,
+        )
+
     try:
         sent = await retry_on_flood(
-            lambda: cyber.send_document(
-                user_id, f["file_id"],
-                caption=caption,
-                parse_mode=enums.ParseMode.HTML,
-            ),
+            send_fn,
             label="files.send", max_retries=5,
         )
         if auto_delay:
