@@ -24,6 +24,7 @@ from config import (
     MONGO_URI_CONFIG,
     MONGO_URI_DB1,
     MONGO_URI_DB2,
+    DATABASE_NAME,
     logger,
 )
 
@@ -41,7 +42,7 @@ _MONGO_POOL_OPTS = dict(
 )
 
 config_client = MongoClient(MONGO_URI_CONFIG, **_MONGO_POOL_OPTS)
-config_db      = config_client["SeriesBotConfig"]
+config_db      = config_client[DATABASE_NAME]
 
 state_collection    = config_db["bot_state"]
 users_collection    = config_db["users"]

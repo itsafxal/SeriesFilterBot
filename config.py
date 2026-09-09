@@ -22,15 +22,19 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 if not all((API_ID, API_HASH, BOT_TOKEN)):
     raise SystemExit("❌ Missing API_ID, API_HASH, or BOT_TOKEN")
 
-# MongoDB URIs
+# MongoDB Settings
 MONGO_URI_CONFIG = os.getenv("MONGO_URI_CONFIG", "")
 MONGO_URI_DB1    = os.getenv("MONGO_URI_DB1", "")
 MONGO_URI_DB2    = os.getenv("MONGO_URI_DB2", "")
+DATABASE_NAME    = os.getenv("DATABASE_NAME", "SeriesBotConfig")
+
+if not MONGO_URI_CONFIG:
+    raise SystemExit("❌ Missing MONGO_URI_CONFIG in environment or .env file.")
 
 # Admin IDs
 ADMIN_USERS = [
     int(uid.strip())
-    for uid in os.getenv("ADMIN_USERS", "").split(",")
+    for uid in os.getenv("ADMIN_USERS", "").replace(" ", ",").split(",")
     if uid.strip().isdigit()
 ]
 
@@ -40,8 +44,9 @@ SPELL_IMG      = os.getenv("SPELL_IMG", "https://files.catbox.moe/krlzjs.jpg")
 DEFAULT_POSTER = os.getenv("DEFAULT_POSTER", "https://files.catbox.moe/rjj4do.jpg")
 
 # API keys (rotating)
-TMDB_API_KEYS = [k.strip() for k in os.getenv("TMDB_API_KEYS", "").split(",") if k.strip()]
-OMDB_API_KEYS = [k.strip() for k in os.getenv("OMDB_API_KEYS", "").split(",") if k.strip()]
+import re
+TMDB_API_KEYS = [k.strip() for k in re.split(r'[,\s]+', os.getenv("TMDB_API_KEYS", "")) if k.strip()]
+OMDB_API_KEYS = [k.strip() for k in re.split(r'[,\s]+', os.getenv("OMDB_API_KEYS", "")) if k.strip()]
 if not TMDB_API_KEYS:
     TMDB_API_KEYS = [""]
 if not OMDB_API_KEYS:
