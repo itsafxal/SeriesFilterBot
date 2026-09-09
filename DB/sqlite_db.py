@@ -431,6 +431,21 @@ def repair_normalized_names_in_sqlite_sync(logger):
         pass
 
     cursor = conn.cursor()
+    # Purge any non-video subtitle/document rows (.srt, .vtt, .sub, .ass, .txt, .nfo)
+    cursor.execute("""
+        DELETE FROM files
+        WHERE LOWER(file_name) LIKE '%.srt'
+           OR LOWER(file_name) LIKE '%.vtt'
+           OR LOWER(file_name) LIKE '%.sub'
+           OR LOWER(file_name) LIKE '%.ass'
+           OR LOWER(file_name) LIKE '%.txt'
+           OR LOWER(file_name) LIKE '%.nfo'
+    """)
+    deleted_subs = cursor.rowcount
+    if deleted_subs > 0:
+        conn.commit()
+        logger.info(f"🧹 [PURGE] Removed {deleted_subs} subtitle/non-video file rows from SQLite.")
+
     cursor.execute("SELECT rowid, file_name, normalized_name FROM files")
     rows = cursor.fetchall()
     updates = []

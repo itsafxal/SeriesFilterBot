@@ -653,6 +653,11 @@ async def save_series_file_for_bulk_index(msg, target: str = "both") -> tuple[bo
         if not file_name or not file_name.strip():
             return False, 0
 
+        # Skip subtitle files (.srt, .vtt, .sub, .ass) and non-video documents
+        if file_name.lower().endswith(('.srt', '.vtt', '.sub', '.ass', '.txt', '.zip', '.rar', '.pdf', '.jpg', '.png', '.jpeg', '.nfo', '.html', '.htm', '.url')):
+            logger.debug(f"[cyber_index] ⏭ Subtitle / non-video file skipped: {file_name}")
+            return False, 0
+
         caption_raw = getattr(msg, "caption", None) or ""
         if not isinstance(caption_raw, str):
             caption_raw = str(caption_raw)
@@ -741,6 +746,11 @@ async def parse_message_to_doc(msg) -> dict | None:
         file_name = getattr(file_obj, "file_name", None)
         if not file_name or not file_name.strip():
             return None
+
+        # Skip subtitle files (.srt, .vtt, .sub, .ass) and non-video documents
+        if file_name.lower().endswith(('.srt', '.vtt', '.sub', '.ass', '.txt', '.zip', '.rar', '.pdf', '.jpg', '.png', '.jpeg', '.nfo', '.html', '.htm', '.url')):
+            return None
+
         caption_raw = getattr(msg, "caption", None) or ""
         if not isinstance(caption_raw, str):
             caption_raw = str(caption_raw)
