@@ -23,12 +23,31 @@ if not all((API_ID, API_HASH, BOT_TOKEN)):
     raise SystemExit("❌ Missing API_ID, API_HASH, or BOT_TOKEN")
 
 # MongoDB Settings & Aliases
-MONGO_URI_CONFIG = os.getenv("MONGO_URI_CONFIG", "") or os.getenv("DATABASE_URI", "") or os.getenv("MONGO_DB_URI", "")
+MONGO_URI_CONFIG = (
+    os.getenv("MONGO_URI_CONFIG", "")
+    or os.getenv("DATABASE_URI", "")
+    or os.getenv("MONGO_DB_URI", "")
+    or os.getenv("MONGO_URI", "")
+    or os.getenv("MONGO_URL", "")
+    or os.getenv("DATABASE_URL", "")
+    or os.getenv("DB_URI", "")
+    or os.getenv("DB_URL", "")
+)
 MONGO_URI_DB1    = os.getenv("MONGO_URI_DB1", "") or MONGO_URI_CONFIG
 MONGO_URI_DB2    = os.getenv("MONGO_URI_DB2", "") or MONGO_URI_CONFIG
 DATABASE_URI     = MONGO_URI_CONFIG
 MONGO_DB_URI     = MONGO_URI_CONFIG
+DATABASE_URL     = MONGO_URI_CONFIG
+MONGO_URI        = MONGO_URI_CONFIG
+MONGO_URL        = MONGO_URI_CONFIG
+DB_URI           = MONGO_URI_CONFIG
+DB_URL           = MONGO_URI_CONFIG
 DATABASE_NAME    = os.getenv("DATABASE_NAME", "SeriesBotConfig")
+
+# Export all aliases to os.environ so third-party/legacy modules find them
+for _alias in ("DATABASE_URI", "MONGO_DB_URI", "DATABASE_URL", "MONGO_URI", "MONGO_URL", "DB_URI", "DB_URL", "MONGO_URI_CONFIG"):
+    if MONGO_URI_CONFIG and not os.getenv(_alias):
+        os.environ[_alias] = MONGO_URI_CONFIG
 
 if not MONGO_URI_CONFIG:
     raise SystemExit("❌ Missing MONGO_URI_CONFIG or DATABASE_URI in environment or .env file.")
