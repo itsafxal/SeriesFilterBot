@@ -44,10 +44,10 @@ def _get_conn() -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         # ── Performance pragmas (tuned for 256 MB VPS) ──────
         conn.execute("PRAGMA journal_mode=WAL")        # concurrent reads + writes
-        conn.execute("PRAGMA synchronous=NORMAL")      # safe + fast (vs FULL)
-        conn.execute("PRAGMA cache_size=-8000")        # 8 MB page cache (was 32 MB)
+        conn.execute("PRAGMA synchronous=NORMAL")      # safe + ultra-fast (vs FULL)
+        conn.execute("PRAGMA cache_size=-16000")       # 16 MB page cache for blazing fast lookups
         conn.execute("PRAGMA temp_store=MEMORY")       # temp tables in RAM
-        conn.execute("PRAGMA mmap_size=33554432")      # 32 MB memory-mapped I/O (was 256 MB)
+        conn.execute("PRAGMA mmap_size=134217728")     # 128 MB memory-mapped I/O for zero-copy reads
         _local.conn = conn
     return conn
 
@@ -197,6 +197,10 @@ def create_sql_schema(conn):
     if "codec" not in existing_cols:
         cursor.execute("ALTER TABLE files ADD COLUMN codec TEXT DEFAULT ''")
 
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_norm_only
+        ON files (normalized_name)
+    """)
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_series_lookup
         ON files (normalized_name, language, season)
