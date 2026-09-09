@@ -22,14 +22,16 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 if not all((API_ID, API_HASH, BOT_TOKEN)):
     raise SystemExit("❌ Missing API_ID, API_HASH, or BOT_TOKEN")
 
-# MongoDB Settings
-MONGO_URI_CONFIG = os.getenv("MONGO_URI_CONFIG", "")
-MONGO_URI_DB1    = os.getenv("MONGO_URI_DB1", "")
-MONGO_URI_DB2    = os.getenv("MONGO_URI_DB2", "")
+# MongoDB Settings & Aliases
+MONGO_URI_CONFIG = os.getenv("MONGO_URI_CONFIG", "") or os.getenv("DATABASE_URI", "") or os.getenv("MONGO_DB_URI", "")
+MONGO_URI_DB1    = os.getenv("MONGO_URI_DB1", "") or MONGO_URI_CONFIG
+MONGO_URI_DB2    = os.getenv("MONGO_URI_DB2", "") or MONGO_URI_CONFIG
+DATABASE_URI     = MONGO_URI_CONFIG
+MONGO_DB_URI     = MONGO_URI_CONFIG
 DATABASE_NAME    = os.getenv("DATABASE_NAME", "SeriesBotConfig")
 
 if not MONGO_URI_CONFIG:
-    raise SystemExit("❌ Missing MONGO_URI_CONFIG in environment or .env file.")
+    raise SystemExit("❌ Missing MONGO_URI_CONFIG or DATABASE_URI in environment or .env file.")
 
 # Admin IDs
 ADMIN_USERS = [
