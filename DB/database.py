@@ -50,11 +50,13 @@ pending_collection  = config_db["pending_delivery"]
 sticker_collection  = config_db["season_stickers"]
 groups_collection   = config_db["groups"]
 
-file_client_1      = MongoClient(MONGO_URI_DB1, **_MONGO_POOL_OPTS)
+uri_db1 = MONGO_URI_DB1.strip() if MONGO_URI_DB1 and MONGO_URI_DB1.strip() else MONGO_URI_CONFIG
+file_client_1      = MongoClient(uri_db1, **_MONGO_POOL_OPTS)
 file_db_1          = file_client_1["SeriesBotFiles1"]
 files_collection_1 = file_db_1["files"]
 
-file_client_2      = MongoClient(MONGO_URI_DB2, **_MONGO_POOL_OPTS)
+uri_db2 = MONGO_URI_DB2.strip() if MONGO_URI_DB2 and MONGO_URI_DB2.strip() else MONGO_URI_CONFIG
+file_client_2      = MongoClient(uri_db2, **_MONGO_POOL_OPTS)
 file_db_2          = file_client_2["SeriesBotFiles2"]
 files_collection_2 = file_db_2["files"]
 
